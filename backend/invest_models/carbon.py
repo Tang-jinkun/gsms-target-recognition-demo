@@ -7,11 +7,22 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from .common import (
+    SUPPORTED_RASTER_SUFFIXES,
+    check_raster_pair_alignment,
+    code_sort_key,
+    index_workspace_outputs,
+    log,
+    normalize_code,
+    optional_asset_path,
+    read_raster_codes,
+    safe_asset_path,
+    validate_raster,
+)
+
 logger = logging.getLogger("invest.carbon")
 
 REQUIRED_CARBON_COLUMNS = {"lucode", "c_above", "c_below", "c_soil", "c_dead"}
-SUPPORTED_RASTER_SUFFIXES = {".tif", ".tiff"}
-COPY_OUTPUT_SUFFIXES = {".tif", ".tiff", ".csv", ".html", ".htm", ".txt", ".json", ".geojson"}
 
 MODEL_SCHEMA = {
     "id": "carbon",
@@ -173,23 +184,6 @@ MODEL_SCHEMA = {
 }
 
 
-def normalize_code(value) -> str:
-    text = str(value).strip()
-    if not text:
-        return text
-    try:
-        as_float = float(text)
-        if as_float.is_integer():
-            return str(int(as_float))
-    except Exception:
-        pass
-    return text
-
-
-def code_sort_key(value: str) -> tuple[int, int | str]:
-    return (0, int(value)) if value.isdigit() else (1, value)
-
-
 def read_carbon_pool_codes(path: Path) -> tuple[set[str], list[str]]:
     with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -208,42 +202,6 @@ def read_carbon_pool_codes(path: Path) -> tuple[set[str], list[str]]:
     return codes, []
 
 
-def read_raster_codes(path: Path, max_size: int = 2048) -> set[str]:
-    import numpy as np
-    import rasterio
-    from rasterio.enums import Resampling
-
-    with rasterio.open(path) as dataset:
-        scale = min(max_size / dataset.width, max_size / dataset.height, 1.0)
-        out_width = max(1, int(dataset.width * scale))
-        out_height = max(1, int(dataset.height * scale))
-        data = dataset.read(
-            1,
-            out_shape=(out_height, out_width),
-            resampling=Resampling.nearest,
-            masked=True,
-        )
-        values = np.ma.compressed(data)
-        if values.size == 0:
-            return set()
-        unique_values = np.unique(values)
-        return {normalize_code(value) for value in unique_values.tolist()}
-
-
-def check_raster_pair_alignment(baseline_path: Path, alternate_path: Path) -> list[str]:
-    import rasterio
-
-    warnings: list[str] = []
-    with rasterio.open(baseline_path) as baseline, rasterio.open(alternate_path) as alternate:
-        if baseline.crs != alternate.crs:
-            warnings.append("Baseline and alternate LULC rasters use different CRS values.")
-        if baseline.width != alternate.width or baseline.height != alternate.height:
-            warnings.append("Baseline and alternate LULC rasters have different dimensions.")
-        if baseline.transform != alternate.transform:
-            warnings.append("Baseline and alternate LULC rasters have different geotransforms.")
-    return warnings
-
-
 def check_inputs(
     inputs: dict,
     assets_dir: Path,
@@ -260,9 +218,9 @@ def check_inputs(
     do_valuation = bool(inputs.get("do_valuation", False))
     alternate_id = str(inputs.get("lulc_alt_asset_id") or "")
 
-    baseline_path = assets_dir / Path(baseline_id).name if baseline_id else None
-    carbon_pools_path = assets_dir / Path(carbon_pools_id).name if carbon_pools_id else None
-    alternate_path = assets_dir / Path(alternate_id).name if alternate_id else None
+    baseline_path = optional_asset_path(assets_dir, baseline_id)
+    carbon_pools_path = optional_asset_path(assets_dir, carbon_pools_id)
+    alternate_path = optional_asset_path(assets_dir, alternate_id)
 
     if not baseline_path:
         errors.append("Baseline LULC raster is required.")
@@ -375,7 +333,12 @@ def check_inputs(
 
     if calc_sequestration and alternate_path and alternate_path.exists() and baseline_path and baseline_path.exists():
         try:
-            warnings.extend(check_raster_pair_alignment(baseline_path, alternate_path))
+            warnings.extend(check_raster_pair_alignment(
+                baseline_path,
+                alternate_path,
+                "Baseline",
+                "alternate LULC",
+            ))
         except Exception as exc:
             warnings.append(f"Could not compare baseline and alternate raster alignment: {exc}")
 
@@ -389,34 +352,6 @@ def check_inputs(
         "info": info,
         "details": details,
     }
-
-
-def safe_asset_path(assets_dir: Path, asset_id: str) -> Path:
-    safe_name = Path(str(asset_id)).name
-    return assets_dir / safe_name
-
-
-def log(handle, message: str) -> None:
-    handle.write(f"{message}\n")
-    handle.flush()
-
-
-def validate_raster(path: Path, label: str) -> None:
-    if not path.exists() or not path.is_file():
-        raise ValueError(f"{label} asset does not exist: {path.name}")
-    if path.suffix.lower() not in SUPPORTED_RASTER_SUFFIXES:
-        raise ValueError(f"{label} must be a GeoTIFF, got: {path.name}")
-
-    try:
-        import rasterio
-
-        with rasterio.open(path) as dataset:
-            if dataset.width <= 0 or dataset.height <= 0 or dataset.count <= 0:
-                raise ValueError(f"{label} is not a readable raster: {path.name}")
-    except ValueError:
-        raise
-    except Exception as exc:
-        raise ValueError(f"{label} could not be read as GeoTIFF: {exc}") from exc
 
 
 def validate_carbon_pools(path: Path) -> None:
@@ -502,20 +437,6 @@ def build_invest_args(
             "rate_change": float(job_inputs["rate_change"]),
         })
     return invest_args
-
-
-def index_workspace_outputs(workspace_dir: Path, outputs_dir: Path, handle) -> None:
-    outputs_dir.mkdir(exist_ok=True)
-    copied = 0
-    for path in workspace_dir.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in COPY_OUTPUT_SUFFIXES:
-            continue
-        dest = outputs_dir / path.name
-        if dest.exists():
-            dest = outputs_dir / f"{path.stem}.{copied}{path.suffix}"
-        shutil.copy2(path, dest)
-        copied += 1
-    log(handle, f"indexed {copied} workspace output files")
 
 
 def write_stub_outputs(job_id: str, out_dir: Path, baseline_path: Path | None, results_suffix: str, handle) -> None:

@@ -2,7 +2,17 @@ import csv
 from pathlib import Path
 from typing import Callable
 
-from .carbon import check_raster_pair_alignment, code_sort_key, read_raster_codes
+from .common import (
+    SUPPORTED_RASTER_SUFFIXES,
+    SUPPORTED_TABLE_SUFFIXES,
+    SUPPORTED_VECTOR_SUFFIXES,
+    check_raster_pair_alignment,
+    code_sort_key,
+    normalized_csv_headers,
+    optional_asset_path,
+    read_raster_codes,
+    require_asset,
+)
 
 REQUIRED_THREATS_COLUMNS = {"threat", "max_dist", "weight", "decay", "cur_path"}
 REQUIRED_SENSITIVITY_COLUMNS = {"lucode", "habitat"}
@@ -137,22 +147,8 @@ MODEL_SCHEMA = {
 }
 
 
-def asset_path(assets_dir: Path, asset_id: str) -> Path | None:
-    return assets_dir / Path(asset_id).name if asset_id else None
-
-
-def read_csv_headers(path: Path) -> list[str]:
-    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
-        reader = csv.reader(handle)
-        return next(reader, [])
-
-
-def normalized_headers(path: Path) -> dict[str, str]:
-    return {header.strip().lower(): header for header in read_csv_headers(path)}
-
-
 def read_threat_names(path: Path) -> tuple[list[str], list[str]]:
-    headers = normalized_headers(path)
+    headers = normalized_csv_headers(path)
     missing = sorted(REQUIRED_THREATS_COLUMNS - set(headers))
     if missing:
         return [], missing
@@ -169,7 +165,7 @@ def read_threat_names(path: Path) -> tuple[list[str], list[str]]:
 
 
 def read_sensitivity_codes(path: Path) -> tuple[set[str], list[str], set[str]]:
-    headers = normalized_headers(path)
+    headers = normalized_csv_headers(path)
     missing = sorted(REQUIRED_SENSITIVITY_COLUMNS - set(headers))
     if missing:
         return set(), missing, set(headers)
@@ -183,26 +179,6 @@ def read_sensitivity_codes(path: Path) -> tuple[set[str], list[str], set[str]]:
             if value:
                 codes.add(value[:-2] if value.endswith(".0") else value)
     return codes, [], set(headers)
-
-
-def require_asset(
-    errors: list[str],
-    assets_dir: Path,
-    asset_id: str,
-    label: str,
-    suffixes: set[str],
-) -> Path | None:
-    path = asset_path(assets_dir, asset_id)
-    if not path:
-        errors.append(f"{label} is required.")
-        return None
-    if not path.exists():
-        errors.append(f"{label} asset was not found: {asset_id}")
-        return None
-    if path.suffix.lower() not in suffixes:
-        errors.append(f"{label} must use one of these formats: {', '.join(sorted(suffixes))}.")
-        return None
-    return path
 
 
 def check_inputs(
@@ -220,21 +196,21 @@ def check_inputs(
         assets_dir,
         str(inputs.get("lulc_cur_asset_id") or ""),
         "Current LULC raster",
-        {".tif", ".tiff"},
+        SUPPORTED_RASTER_SUFFIXES,
     )
     threats_path = require_asset(
         errors,
         assets_dir,
         str(inputs.get("threats_table_asset_id") or ""),
         "Threats table",
-        {".csv"},
+        SUPPORTED_TABLE_SUFFIXES,
     )
     sensitivity_path = require_asset(
         errors,
         assets_dir,
         str(inputs.get("sensitivity_table_asset_id") or ""),
         "Sensitivity table",
-        {".csv"},
+        SUPPORTED_TABLE_SUFFIXES,
     )
 
     include_future = bool(inputs.get("include_future", False))
@@ -247,7 +223,7 @@ def check_inputs(
             assets_dir,
             str(inputs.get("lulc_fut_asset_id") or ""),
             "Future LULC raster",
-            {".tif", ".tiff"},
+            SUPPORTED_RASTER_SUFFIXES,
         )
     if include_baseline:
         baseline_path = require_asset(
@@ -255,15 +231,15 @@ def check_inputs(
             assets_dir,
             str(inputs.get("lulc_hq_bas_asset_id") or ""),
             "Baseline LULC raster",
-            {".tif", ".tiff"},
+            SUPPORTED_RASTER_SUFFIXES,
         )
 
     access_id = str(inputs.get("access_vector_asset_id") or "")
     if access_id:
-        access_path = asset_path(assets_dir, access_id)
+        access_path = optional_asset_path(assets_dir, access_id)
         if not access_path or not access_path.exists():
             errors.append(f"Accessibility vector asset was not found: {access_id}")
-        elif access_path.suffix.lower() not in {".geojson", ".json", ".zip"}:
+        elif access_path.suffix.lower() not in SUPPORTED_VECTOR_SUFFIXES:
             errors.append("Accessibility vector must be GeoJSON or shapefile zip.")
 
     half_saturation = inputs.get("half_saturation_constant")
@@ -338,13 +314,13 @@ def check_inputs(
 
     if future_path and current_path:
         try:
-            warnings.extend(check_raster_pair_alignment(current_path, future_path))
+            warnings.extend(check_raster_pair_alignment(current_path, future_path, "Current", "future LULC"))
         except Exception as exc:
             warnings.append(f"Could not compare current and future raster alignment: {exc}")
 
     if baseline_path and current_path:
         try:
-            warnings.extend(check_raster_pair_alignment(current_path, baseline_path))
+            warnings.extend(check_raster_pair_alignment(current_path, baseline_path, "Current", "baseline LULC"))
         except Exception as exc:
             warnings.append(f"Could not compare current and baseline raster alignment: {exc}")
 
