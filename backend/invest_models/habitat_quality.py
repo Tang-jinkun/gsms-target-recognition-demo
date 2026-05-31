@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +13,7 @@ from .common import (
     optional_asset_path,
     read_raster_codes,
     require_asset,
+    safe_asset_path,
 )
 
 REQUIRED_THREATS_COLUMNS = {"threat", "max_dist", "weight", "decay", "cur_path"}
@@ -334,3 +336,176 @@ def check_inputs(
         "info": info,
         "details": details,
     }
+
+
+def log(handle, message: str) -> None:
+    handle.write(f"{message}\n")
+    handle.flush()
+
+
+def required_safe_asset_path(assets_dir: Path, asset_id: str, label: str, suffixes: set[str]) -> Path:
+    if not asset_id:
+        raise ValueError(f"{label} is required")
+    path = safe_asset_path(assets_dir, asset_id)
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"{label} asset does not exist: {asset_id}")
+    if path.suffix.lower() not in suffixes:
+        raise ValueError(f"{label} must use one of these formats: {', '.join(sorted(suffixes))}")
+    return path
+
+
+def optional_safe_asset_path(assets_dir: Path, asset_id: str, label: str, suffixes: set[str]) -> Path | None:
+    if not asset_id:
+        return None
+    path = safe_asset_path(assets_dir, asset_id)
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"{label} asset does not exist: {asset_id}")
+    if path.suffix.lower() not in suffixes:
+        raise ValueError(f"{label} must use one of these formats: {', '.join(sorted(suffixes))}")
+    return path
+
+
+def build_invest_args(job_inputs: dict, assets_dir: Path, workspace_dir: Path) -> dict:
+    current_path = required_safe_asset_path(
+        assets_dir,
+        str(job_inputs.get("lulc_cur_asset_id") or ""),
+        "current LULC raster",
+        SUPPORTED_RASTER_SUFFIXES,
+    )
+    threats_table_path = required_safe_asset_path(
+        assets_dir,
+        str(job_inputs.get("threats_table_asset_id") or ""),
+        "threats table",
+        SUPPORTED_TABLE_SUFFIXES,
+    )
+    sensitivity_table_path = required_safe_asset_path(
+        assets_dir,
+        str(job_inputs.get("sensitivity_table_asset_id") or ""),
+        "sensitivity table",
+        SUPPORTED_TABLE_SUFFIXES,
+    )
+
+    try:
+        half_saturation_constant = float(job_inputs.get("half_saturation_constant"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("half_saturation_constant must be numeric") from exc
+    if half_saturation_constant <= 0:
+        raise ValueError("half_saturation_constant must be greater than 0")
+
+    include_future = bool(job_inputs.get("include_future", False))
+    include_baseline = bool(job_inputs.get("include_baseline", False))
+    future_path = optional_safe_asset_path(
+        assets_dir,
+        str(job_inputs.get("lulc_fut_asset_id") or "") if include_future else "",
+        "future LULC raster",
+        SUPPORTED_RASTER_SUFFIXES,
+    )
+    baseline_path = optional_safe_asset_path(
+        assets_dir,
+        str(job_inputs.get("lulc_hq_bas_asset_id") or "") if include_baseline else "",
+        "baseline LULC raster",
+        SUPPORTED_RASTER_SUFFIXES,
+    )
+    access_vector_path = optional_safe_asset_path(
+        assets_dir,
+        str(job_inputs.get("access_vector_asset_id") or ""),
+        "accessibility vector",
+        SUPPORTED_VECTOR_SUFFIXES,
+    )
+
+    invest_args = {
+        "workspace_dir": str(workspace_dir),
+        "lulc_cur_path": str(current_path),
+        "threats_table_path": str(threats_table_path),
+        "sensitivity_table_path": str(sensitivity_table_path),
+        "half_saturation_constant": half_saturation_constant,
+        "results_suffix": str(job_inputs.get("results_suffix") or "hq_mvp"),
+        "n_workers": int(job_inputs.get("n_workers", -1)),
+    }
+    if future_path:
+        invest_args["lulc_fut_path"] = str(future_path)
+    if baseline_path:
+        invest_args["lulc_bas_path"] = str(baseline_path)
+    if access_vector_path:
+        invest_args["access_vector_path"] = str(access_vector_path)
+    return invest_args
+
+
+def inspect_threat_table_paths(threats_table_path: Path) -> dict:
+    headers = normalized_csv_headers(threats_table_path)
+    path_columns = [column for column in ("cur_path", "fut_path", "base_path") if column in headers]
+    missing_by_column: dict[str, list[str]] = {}
+    present_by_column: dict[str, list[str]] = {}
+
+    with threats_table_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            for column in path_columns:
+                raw_value = str(row.get(headers[column], "")).strip()
+                if not raw_value:
+                    continue
+                resolved = (threats_table_path.parent / raw_value).resolve()
+                target = present_by_column if resolved.exists() else missing_by_column
+                target.setdefault(column, []).append(raw_value)
+
+    return {
+        "path_columns": path_columns,
+        "present_by_column": present_by_column,
+        "missing_by_column": missing_by_column,
+    }
+
+
+def run_job(
+    job_id: str,
+    job_inputs: dict,
+    assets_dir: Path,
+    workspace_dir: Path,
+    outputs_dir: Path,
+    run_mode: str,
+    handle,
+) -> None:
+    log(handle, "preparing Habitat Quality job")
+    log(handle, f"run mode: {run_mode}")
+    log(handle, "runner state: schema/check ready; real Habitat execution is not wired yet")
+
+    invest_args = build_invest_args(job_inputs, assets_dir, workspace_dir)
+    threats_table_path = Path(invest_args["threats_table_path"])
+    threat_path_report = inspect_threat_table_paths(threats_table_path)
+
+    log(handle, f"current LULC asset: {job_inputs.get('lulc_cur_asset_id') or 'missing'}")
+    log(handle, f"threats table asset: {job_inputs.get('threats_table_asset_id') or 'missing'}")
+    log(handle, f"sensitivity table asset: {job_inputs.get('sensitivity_table_asset_id') or 'missing'}")
+    log(handle, f"include future scenario: {bool(job_inputs.get('include_future', False))}")
+    log(handle, f"include baseline scenario: {bool(job_inputs.get('include_baseline', False))}")
+    log(handle, f"results suffix: {invest_args['results_suffix']}")
+    log(handle, f"mapped InVEST args: {', '.join(sorted(invest_args))}")
+
+    if threat_path_report["path_columns"]:
+        log(handle, "threat raster paths are resolved by InVEST relative to the threats table directory")
+        for column, missing_paths in threat_path_report["missing_by_column"].items():
+            preview = ", ".join(missing_paths[:8])
+            log(handle, f"WARN: {len(missing_paths)} {column} path(s) do not exist next to the threats table: {preview}")
+    else:
+        log(handle, "WARN: threats table has no threat raster path columns to inspect")
+
+    outputs_dir.mkdir(exist_ok=True)
+    (outputs_dir / "habitat_quality_args_preview.json").write_text(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "model_id": "habitat_quality",
+                "runner_state": "not_implemented",
+                "invest_args": invest_args,
+                "threat_path_report": threat_path_report,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    log(handle, "wrote habitat_quality_args_preview.json")
+
+    raise RuntimeError(
+        "Habitat Quality real execution is not implemented yet. "
+        "Next step: add a sample package importer that keeps threats_table_path "
+        "and threat raster relative paths together, then call natcap.invest.habitat_quality.execute."
+    )

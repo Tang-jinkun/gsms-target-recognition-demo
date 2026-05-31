@@ -181,9 +181,10 @@ export default function RightPanel() {
   }, [selectedModelId])
 
   const selectedModelRunnable = selectedModelId === 'carbon' && selectedModel?.status !== 'planned'
+  const selectedModelPreparable = selectedModelId === 'habitat_quality' && selectedModel?.status === 'schema'
   const requiredInputsSatisfied = areRequiredInputsSatisfied(schemaInputs, formValues)
   const canCheck = Boolean(schemaInputs.length > 0 && requiredInputsSatisfied && activeJobStatus !== 'running')
-  const canRun = Boolean(selectedModelRunnable && requiredInputsSatisfied && activeJobStatus !== 'running')
+  const canRun = Boolean((selectedModelRunnable || selectedModelPreparable) && requiredInputsSatisfied && activeJobStatus !== 'running')
 
   React.useEffect(() => {
     const logPanel = logsRef.current
@@ -246,7 +247,7 @@ export default function RightPanel() {
 
   const handleRun = async () => {
     setFormError(undefined)
-    if (!selectedModelRunnable) {
+    if (!selectedModelRunnable && !selectedModelPreparable) {
       setFormError(`${selectedModel?.name ?? 'This model'} does not have a runnable backend yet.`)
       return
     }
@@ -406,7 +407,13 @@ export default function RightPanel() {
             </Button>
             <Button disabled={!canRun} onClick={() => void handleRun()}>
             {activeJobStatus === 'running' ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" />}
-            {activeJobStatus === 'running' ? 'Running' : selectedModelRunnable ? `Run ${selectedModel?.name ?? 'model'}` : 'Not runnable'}
+            {activeJobStatus === 'running'
+              ? 'Running'
+              : selectedModelRunnable
+                ? `Run ${selectedModel?.name ?? 'model'}`
+                : selectedModelPreparable
+                  ? 'Prepare Habitat Job'
+                  : 'Not runnable'}
             </Button>
           </div>
 

@@ -6,6 +6,7 @@ from .carbon import check_inputs as check_carbon_inputs
 from .carbon import run_job as run_carbon_job
 from .habitat_quality import MODEL_SCHEMA as HABITAT_QUALITY_MODEL_SCHEMA
 from .habitat_quality import check_inputs as check_habitat_quality_inputs
+from .habitat_quality import run_job as run_habitat_quality_job
 
 
 PLANNED_MODEL_SCHEMAS = [
@@ -89,6 +90,9 @@ def run_model_job(
 ) -> None:
     if model_id == "carbon":
         run_carbon_job(job_id, job_inputs, assets_dir, workspace_dir, outputs_dir, run_mode, handle)
+        return
+    if model_id == "habitat_quality":
+        run_habitat_quality_job(job_id, job_inputs, assets_dir, workspace_dir, outputs_dir, run_mode, handle)
         return
 
     model = get_model_schema(model_id)
