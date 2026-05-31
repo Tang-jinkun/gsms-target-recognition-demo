@@ -4,19 +4,11 @@ from typing import Callable
 from .carbon import MODEL_SCHEMA as CARBON_MODEL_SCHEMA
 from .carbon import check_inputs as check_carbon_inputs
 from .carbon import run_job as run_carbon_job
+from .habitat_quality import MODEL_SCHEMA as HABITAT_QUALITY_MODEL_SCHEMA
+from .habitat_quality import check_inputs as check_habitat_quality_inputs
 
 
 PLANNED_MODEL_SCHEMAS = [
-    {
-        "id": "habitat_quality",
-        "name": "Habitat Quality",
-        "family": "Terrestrial",
-        "description": "Registered placeholder for future Habitat Quality support. Schema and runner are not wired yet.",
-        "status": "planned",
-        "runner": None,
-        "inputs": [],
-        "outputs": [],
-    },
     {
         "id": "annual_water_yield",
         "name": "Annual Water Yield",
@@ -42,6 +34,7 @@ PLANNED_MODEL_SCHEMAS = [
 
 MODEL_REGISTRY = [
     CARBON_MODEL_SCHEMA,
+    HABITAT_QUALITY_MODEL_SCHEMA,
     *PLANNED_MODEL_SCHEMAS,
 ]
 
@@ -65,6 +58,8 @@ def check_model_inputs(
 ) -> dict:
     if model_id == "carbon":
         return check_carbon_inputs(inputs, assets_dir, read_asset_metadata)
+    if model_id == "habitat_quality":
+        return check_habitat_quality_inputs(inputs, assets_dir, read_asset_metadata)
 
     model = get_model_schema(model_id)
     if not model:

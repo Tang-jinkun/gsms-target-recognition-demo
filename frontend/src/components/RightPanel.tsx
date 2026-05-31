@@ -17,6 +17,7 @@ type ModelSchema = {
 
 type ModelInputSpec = {
   id: string
+  invest_arg?: string
   label: string
   help?: string
   kind?: 'asset' | 'boolean' | 'number' | 'string'
@@ -42,7 +43,7 @@ type CarbonSampleImportResponse = {
   }
 }
 
-type CarbonCheckResult = {
+type InputCheckResult = {
   status: 'ok' | 'warning' | 'error'
   errors: string[]
   warnings: string[]
@@ -70,8 +71,12 @@ export default function RightPanel() {
   const [runMode, setRunMode] = React.useState<RunMode>('auto')
   const [logsCopied, setLogsCopied] = React.useState(false)
   const [checkingInputs, setCheckingInputs] = React.useState(false)
-  const [checkResult, setCheckResult] = React.useState<CarbonCheckResult>()
+  const [checkResult, setCheckResult] = React.useState<InputCheckResult>()
   const logsRef = React.useRef<HTMLPreElement | null>(null)
+  const selectedModel = modelSchema ?? models.find(model => model.id === selectedModelId)
+  const schemaInputs = React.useMemo(() => selectedModel?.inputs ?? [], [selectedModel])
+  const visibleInputCount = schemaInputs.filter(input => !input.hidden).length
+  const requiredInputCount = schemaInputs.filter(input => input.required || input.required_if).length
 
   const setFormValue = React.useCallback((inputId: string, value: ModelInputValue) => {
     setFormValues(prev => {
@@ -83,6 +88,12 @@ export default function RightPanel() {
       if (inputId === 'do_valuation' && value === true) {
         next.calc_sequestration = true
       }
+      if (inputId === 'include_future' && value === false) {
+        next.lulc_fut_asset_id = undefined
+      }
+      if (inputId === 'include_baseline' && value === false) {
+        next.lulc_hq_bas_asset_id = undefined
+      }
       return next
     })
     setCheckResult(undefined)
@@ -90,34 +101,53 @@ export default function RightPanel() {
   }, [])
 
   React.useEffect(() => {
-    const rasterAssets = assets.filter(asset => asset.type === 'raster')
-    const tableAssets = assets.filter(asset => asset.type === 'table')
-    const rasterIds = new Set(rasterAssets.map(asset => asset.id))
-    const tableIds = new Set(tableAssets.map(asset => asset.id))
-    const baselineRaster = String(formValues.lulc_bas_asset_id ?? '')
-    const alternateRaster = String(formValues.lulc_alt_asset_id ?? '')
-    const carbonPools = String(formValues.carbon_pools_asset_id ?? '')
-    const calcSequestration = Boolean(formValues.calc_sequestration)
+    setFormValues(prev => {
+      const next = { ...prev }
+      let changed = false
+      schemaInputs.forEach(input => {
+        if (input.default !== undefined && next[input.id] === undefined) {
+          next[input.id] = input.default
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [schemaInputs])
+
+  React.useEffect(() => {
+    const assetsByType = assets.reduce<Record<string, Asset[]>>((acc, asset) => {
+      acc[asset.type] = [...(acc[asset.type] ?? []), asset]
+      return acc
+    }, {})
 
     setFormValues(prev => {
       const next = { ...prev }
       let changed = false
-      if ((!baselineRaster || !rasterIds.has(baselineRaster)) && rasterAssets[0]) {
-        next.lulc_bas_asset_id = rasterAssets[0].id
-        changed = true
-      }
-      if ((!carbonPools || !tableIds.has(carbonPools)) && tableAssets[0]) {
-        next.carbon_pools_asset_id = tableAssets[0].id
-        changed = true
-      }
-      if (calcSequestration && (!alternateRaster || !rasterIds.has(alternateRaster) || alternateRaster === baselineRaster)) {
-        const fallbackAlt = rasterAssets.find(asset => asset.id !== (next.lulc_bas_asset_id ?? baselineRaster))
-        next.lulc_alt_asset_id = fallbackAlt?.id
-        changed = true
-      }
+
+      schemaInputs
+        .filter(input => input.kind === 'asset' && isInputAllowed(input, next))
+        .forEach(input => {
+          const candidates = assetsByType[input.asset_type ?? 'unknown'] ?? []
+          const currentValue = String(next[input.id] ?? '')
+          const currentIsValid = candidates.some(asset => asset.id === currentValue)
+          if (currentIsValid || candidates.length === 0) return
+
+          const disallowedIds = new Set<string>()
+          if (input.id === 'lulc_alt_asset_id' && next.lulc_bas_asset_id) {
+            disallowedIds.add(String(next.lulc_bas_asset_id))
+          }
+          if ((input.id === 'lulc_fut_asset_id' || input.id === 'lulc_hq_bas_asset_id') && next.lulc_cur_asset_id) {
+            disallowedIds.add(String(next.lulc_cur_asset_id))
+          }
+
+          const fallback = candidates.find(asset => !disallowedIds.has(asset.id)) ?? candidates[0]
+          next[input.id] = fallback.id
+          changed = true
+        })
+
       return changed ? next : prev
     })
-  }, [assets, formValues.carbon_pools_asset_id, formValues.calc_sequestration, formValues.lulc_alt_asset_id, formValues.lulc_bas_asset_id])
+  }, [assets, schemaInputs])
 
   React.useEffect(() => {
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -150,17 +180,10 @@ export default function RightPanel() {
     }
   }, [selectedModelId])
 
-  const selectedModel = modelSchema ?? models.find(model => model.id === selectedModelId)
   const selectedModelRunnable = selectedModelId === 'carbon' && selectedModel?.status !== 'planned'
-  const canRun = Boolean(
-    selectedModelRunnable &&
-    formValues.lulc_bas_asset_id &&
-    formValues.carbon_pools_asset_id &&
-    activeJobStatus !== 'running',
-  )
-  const schemaInputs = selectedModel?.inputs ?? []
-  const visibleInputCount = schemaInputs.filter(input => !input.hidden).length
-  const requiredInputCount = schemaInputs.filter(input => input.required || input.required_if).length
+  const requiredInputsSatisfied = areRequiredInputsSatisfied(schemaInputs, formValues)
+  const canCheck = Boolean(schemaInputs.length > 0 && requiredInputsSatisfied && activeJobStatus !== 'running')
+  const canRun = Boolean(selectedModelRunnable && requiredInputsSatisfied && activeJobStatus !== 'running')
 
   React.useEffect(() => {
     const logPanel = logsRef.current
@@ -213,7 +236,7 @@ export default function RightPanel() {
         body: JSON.stringify({ inputs: buildModelInputs() }),
       })
       if (!response.ok) throw new Error(`Input check returned ${response.status}`)
-      setCheckResult((await response.json()) as CarbonCheckResult)
+      setCheckResult((await response.json()) as InputCheckResult)
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Unable to check inputs')
     } finally {
@@ -223,8 +246,12 @@ export default function RightPanel() {
 
   const handleRun = async () => {
     setFormError(undefined)
-    if (!formValues.lulc_bas_asset_id || !formValues.carbon_pools_asset_id) {
-      setFormError('Baseline LULC raster and carbon pools CSV are required.')
+    if (!selectedModelRunnable) {
+      setFormError(`${selectedModel?.name ?? 'This model'} does not have a runnable backend yet.`)
+      return
+    }
+    if (!areRequiredInputsSatisfied(schemaInputs, formValues)) {
+      setFormError('Required model inputs are missing.')
       return
     }
     if (
@@ -325,7 +352,11 @@ export default function RightPanel() {
           ) : (
             <div className="mt-3 flex gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">
               <Layers3 aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-              <span>This model is registered for the workbench roadmap but its runnable schema is not implemented yet.</span>
+              <span>
+                {selectedModel?.status === 'schema'
+                  ? 'This model has schema-driven parameters and input checks, but its real runner is not wired yet.'
+                  : 'This model is registered for the workbench roadmap but its runnable schema is not implemented yet.'}
+              </span>
             </div>
           )}
 
@@ -369,13 +400,13 @@ export default function RightPanel() {
           )}
 
           <div className="mt-4 grid grid-cols-2 gap-2">
-            <Button variant="outline" disabled={!canRun || checkingInputs} onClick={() => void handleCheckInputs()}>
+            <Button variant="outline" disabled={!canCheck || checkingInputs} onClick={() => void handleCheckInputs()}>
               {checkingInputs ? <Loader2 aria-hidden="true" className="animate-spin" /> : <FileSearch aria-hidden="true" />}
               Check inputs
             </Button>
             <Button disabled={!canRun} onClick={() => void handleRun()}>
             {activeJobStatus === 'running' ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" />}
-            {activeJobStatus === 'running' ? 'Running' : selectedModelId === 'carbon' ? 'Run Carbon' : 'Not available'}
+            {activeJobStatus === 'running' ? 'Running' : selectedModelRunnable ? `Run ${selectedModel?.name ?? 'model'}` : 'Not runnable'}
             </Button>
           </div>
 
@@ -576,6 +607,17 @@ function isInputAllowed(input: ModelInputSpec, values: ModelInputValues) {
   return Boolean(values[input.allowed_if])
 }
 
+function areRequiredInputsSatisfied(inputs: ModelInputSpec[], values: ModelInputValues) {
+  return inputs
+    .filter(input => !input.hidden && isInputAllowed(input, values))
+    .filter(input => input.required || (input.required_if && values[input.required_if]))
+    .every(input => {
+      const value = values[input.id]
+      if (input.kind === 'boolean') return true
+      return value !== undefined && String(value).trim() !== ''
+    })
+}
+
 function assetIcon(assetType?: AssetType) {
   if (assetType === 'table') return <FileText aria-hidden="true" className="size-4" />
   return <Database aria-hidden="true" className="size-4" />
@@ -660,8 +702,9 @@ function ModelInputControl({
     const matchingAssets = assets
       .filter(asset => asset.type === assetType)
       .filter(asset => {
-        if (input.id !== 'lulc_alt_asset_id') return true
-        return asset.id !== values.lulc_bas_asset_id
+        if (input.id === 'lulc_alt_asset_id') return asset.id !== values.lulc_bas_asset_id
+        if (input.id === 'lulc_fut_asset_id' || input.id === 'lulc_hq_bas_asset_id') return asset.id !== values.lulc_cur_asset_id
+        return true
       })
 
     return (
@@ -834,7 +877,7 @@ function SchemaSummary({ inputs }: { inputs: ModelInputSpec[] }) {
   )
 }
 
-function InputCheckPanel({ result }: { result: CarbonCheckResult }) {
+function InputCheckPanel({ result }: { result: InputCheckResult }) {
   const hasErrors = result.errors.length > 0
   const hasWarnings = result.warnings.length > 0
   const styles = hasErrors
