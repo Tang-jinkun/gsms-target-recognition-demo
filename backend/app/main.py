@@ -10,8 +10,7 @@ import os
 import subprocess
 import sys
 
-from invest_models.carbon import check_inputs as check_carbon_model_inputs
-from invest_models.registry import get_model_schema, list_model_schemas
+from invest_models.registry import check_model_inputs, get_model_schema, list_model_schemas
 
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "data" / "projects" / "default" / "assets"
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -429,7 +428,16 @@ async def model_schema(model_id: str):
 @app.post("/api/models/carbon/check-inputs")
 async def check_carbon_inputs(payload: dict):
     inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else payload
-    return check_carbon_model_inputs(inputs, ASSETS_DIR, read_asset_metadata)
+    return check_model_inputs("carbon", inputs, ASSETS_DIR, read_asset_metadata)
+
+
+@app.post("/api/models/{model_id}/check-inputs")
+async def check_inputs_for_model(model_id: str, payload: dict):
+    inputs = payload.get("inputs") if isinstance(payload.get("inputs"), dict) else payload
+    try:
+        return check_model_inputs(model_id, inputs, ASSETS_DIR, read_asset_metadata)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Model not found") from exc
 
 
 @app.get("/api/assets")

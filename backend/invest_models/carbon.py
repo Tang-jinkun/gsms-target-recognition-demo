@@ -1,5 +1,8 @@
 import csv
+import importlib
+import json
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Callable
@@ -7,6 +10,8 @@ from typing import Callable
 logger = logging.getLogger("invest.carbon")
 
 REQUIRED_CARBON_COLUMNS = {"lucode", "c_above", "c_below", "c_soil", "c_dead"}
+SUPPORTED_RASTER_SUFFIXES = {".tif", ".tiff"}
+COPY_OUTPUT_SUFFIXES = {".tif", ".tiff", ".csv", ".html", ".htm", ".txt", ".json", ".geojson"}
 
 MODEL_SCHEMA = {
     "id": "carbon",
@@ -384,6 +389,260 @@ def check_inputs(
         "info": info,
         "details": details,
     }
+
+
+def safe_asset_path(assets_dir: Path, asset_id: str) -> Path:
+    safe_name = Path(str(asset_id)).name
+    return assets_dir / safe_name
+
+
+def log(handle, message: str) -> None:
+    handle.write(f"{message}\n")
+    handle.flush()
+
+
+def validate_raster(path: Path, label: str) -> None:
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"{label} asset does not exist: {path.name}")
+    if path.suffix.lower() not in SUPPORTED_RASTER_SUFFIXES:
+        raise ValueError(f"{label} must be a GeoTIFF, got: {path.name}")
+
+    try:
+        import rasterio
+
+        with rasterio.open(path) as dataset:
+            if dataset.width <= 0 or dataset.height <= 0 or dataset.count <= 0:
+                raise ValueError(f"{label} is not a readable raster: {path.name}")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"{label} could not be read as GeoTIFF: {exc}") from exc
+
+
+def validate_carbon_pools(path: Path) -> None:
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"carbon pools asset does not exist: {path.name}")
+    if path.suffix.lower() != ".csv":
+        raise ValueError(f"carbon pools must be a CSV file, got: {path.name}")
+
+    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+        reader = csv.reader(handle)
+        headers = next(reader, [])
+    normalized = {header.strip().lower() for header in headers}
+    missing = sorted(REQUIRED_CARBON_COLUMNS - normalized)
+    if missing:
+        raise ValueError(f"carbon pools CSV is missing required columns: {', '.join(missing)}")
+
+
+def import_carbon_execute():
+    candidates = [
+        "natcap.invest.carbon",
+        "natcap.invest.carbon.carbon",
+    ]
+    errors = []
+    for module_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            execute_func = getattr(module, "execute", None)
+            if callable(execute_func):
+                return execute_func, module_name
+            errors.append(f"{module_name} has no execute()")
+        except Exception as exc:
+            errors.append(f"{module_name}: {exc}")
+    raise ImportError("; ".join(errors))
+
+
+def validate_valuation_inputs(job_inputs: dict, calc_sequestration: bool) -> None:
+    if not calc_sequestration:
+        raise ValueError("valuation requires calc_sequestration to be true")
+    required_valuation = [
+        "lulc_bas_year",
+        "lulc_alt_year",
+        "price_per_metric_ton_of_c",
+        "discount_rate",
+        "rate_change",
+    ]
+    missing = [key for key in required_valuation if job_inputs.get(key) in ("", None)]
+    if missing:
+        raise ValueError(f"valuation inputs are missing: {', '.join(missing)}")
+
+    bas_year = int(float(job_inputs["lulc_bas_year"]))
+    alt_year = int(float(job_inputs["lulc_alt_year"]))
+    if bas_year >= alt_year:
+        raise ValueError("alternate LULC year must be greater than baseline LULC year")
+
+
+def build_invest_args(
+    job_inputs: dict,
+    workspace_dir: Path,
+    baseline_path: Path,
+    carbon_pools_path: Path,
+    alt_path: Path | None,
+    calc_sequestration: bool,
+    do_valuation: bool,
+    results_suffix: str,
+) -> dict:
+    invest_args = {
+        "workspace_dir": str(workspace_dir),
+        "lulc_bas_path": str(baseline_path),
+        "carbon_pools_path": str(carbon_pools_path),
+        "calc_sequestration": calc_sequestration,
+        "do_valuation": do_valuation,
+        "results_suffix": results_suffix,
+        "n_workers": int(job_inputs.get("n_workers", -1)),
+    }
+    if calc_sequestration and alt_path:
+        invest_args["lulc_alt_path"] = str(alt_path)
+    if do_valuation:
+        invest_args.update({
+            "lulc_bas_year": int(float(job_inputs["lulc_bas_year"])),
+            "lulc_alt_year": int(float(job_inputs["lulc_alt_year"])),
+            "price_per_metric_ton_of_c": float(job_inputs["price_per_metric_ton_of_c"]),
+            "discount_rate": float(job_inputs["discount_rate"]),
+            "rate_change": float(job_inputs["rate_change"]),
+        })
+    return invest_args
+
+
+def index_workspace_outputs(workspace_dir: Path, outputs_dir: Path, handle) -> None:
+    outputs_dir.mkdir(exist_ok=True)
+    copied = 0
+    for path in workspace_dir.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in COPY_OUTPUT_SUFFIXES:
+            continue
+        dest = outputs_dir / path.name
+        if dest.exists():
+            dest = outputs_dir / f"{path.stem}.{copied}{path.suffix}"
+        shutil.copy2(path, dest)
+        copied += 1
+    log(handle, f"indexed {copied} workspace output files")
+
+
+def write_stub_outputs(job_id: str, out_dir: Path, baseline_path: Path | None, results_suffix: str, handle) -> None:
+    out_dir.mkdir(exist_ok=True)
+    (out_dir / "dummy_output.txt").write_text(
+        f"This is a development stub model output for job {job_id}",
+        encoding="utf-8",
+    )
+
+    if baseline_path and baseline_path.exists() and baseline_path.suffix.lower() in SUPPORTED_RASTER_SUFFIXES:
+        raster_name = f"carbon_output_{results_suffix}{baseline_path.suffix.lower()}"
+        shutil.copy2(baseline_path, out_dir / raster_name)
+        log(handle, f"wrote stub raster output: {raster_name}")
+
+    (out_dir / "carbon_preview.geojson").write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "model": "Carbon Storage and Sequestration",
+                            "job_id": job_id,
+                            "output": "carbon_preview",
+                            "results_suffix": results_suffix,
+                            "status": "stub",
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [-88.5, 39.25],
+                                    [-84.25, 39.25],
+                                    [-84.25, 42.75],
+                                    [-88.5, 42.75],
+                                    [-88.5, 39.25],
+                                ]
+                            ],
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def run_job(
+    job_id: str,
+    job_inputs: dict,
+    assets_dir: Path,
+    workspace_dir: Path,
+    outputs_dir: Path,
+    run_mode: str,
+    handle,
+) -> None:
+    results_suffix = str(job_inputs.get("results_suffix") or "mvp")
+    calc_sequestration = bool(job_inputs.get("calc_sequestration", False))
+    do_valuation = bool(job_inputs.get("do_valuation", False))
+
+    baseline_asset_id = str(job_inputs.get("lulc_bas_asset_id") or "")
+    carbon_pools_asset_id = str(job_inputs.get("carbon_pools_asset_id") or "")
+    alt_asset_id = str(job_inputs.get("lulc_alt_asset_id") or "")
+
+    baseline_path = safe_asset_path(assets_dir, baseline_asset_id) if baseline_asset_id else None
+    carbon_pools_path = safe_asset_path(assets_dir, carbon_pools_asset_id) if carbon_pools_asset_id else None
+    alt_path = safe_asset_path(assets_dir, alt_asset_id) if alt_asset_id else None
+
+    log(handle, f"baseline asset: {baseline_asset_id or 'missing'}")
+    log(handle, f"carbon pools asset: {carbon_pools_asset_id or 'missing'}")
+    log(handle, f"alternate asset: {alt_asset_id or 'none'}")
+    log(handle, f"calculate sequestration: {calc_sequestration}")
+    log(handle, f"run valuation: {do_valuation}")
+    log(handle, f"results suffix: {results_suffix}")
+
+    if not baseline_path:
+        raise ValueError("baseline LULC raster is required")
+    if not carbon_pools_path:
+        raise ValueError("carbon pools CSV is required")
+
+    log(handle, "validating Carbon inputs")
+    validate_raster(baseline_path, "baseline LULC raster")
+    validate_carbon_pools(carbon_pools_path)
+    if calc_sequestration:
+        if not alt_path:
+            raise ValueError("alternate LULC raster is required when calc_sequestration is true")
+        validate_raster(alt_path, "alternate LULC raster")
+    if do_valuation:
+        validate_valuation_inputs(job_inputs, calc_sequestration)
+
+    execute_func = None
+    module_name = None
+    try:
+        execute_func, module_name = import_carbon_execute()
+    except ImportError as exc:
+        if run_mode == "real":
+            raise RuntimeError(
+                "natcap.invest Carbon execute() is not available. "
+                "Install natcap.invest or set INVEST_RUNNER_MODE=auto for development stub output. "
+                f"Import errors: {exc}"
+            ) from exc
+        log(handle, f"WARN: natcap.invest is not available; using development stub outputs. {exc}")
+
+    if execute_func:
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        invest_args = build_invest_args(
+            job_inputs,
+            workspace_dir,
+            baseline_path,
+            carbon_pools_path,
+            alt_path,
+            calc_sequestration,
+            do_valuation,
+            results_suffix,
+        )
+        log(handle, f"running {module_name}.execute")
+        execute_func(invest_args)
+        log(handle, "InVEST Carbon execution completed")
+        index_workspace_outputs(workspace_dir, outputs_dir, handle)
+        return
+
+    for i in range(5):
+        log(handle, f"stub step {i + 1}/5: working...")
+        time.sleep(0.5)
+    write_stub_outputs(job_id, outputs_dir, baseline_path, results_suffix, handle)
 
 
 def execute(args: dict):

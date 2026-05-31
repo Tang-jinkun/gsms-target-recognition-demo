@@ -1,4 +1,9 @@
+from pathlib import Path
+from typing import Callable
+
 from .carbon import MODEL_SCHEMA as CARBON_MODEL_SCHEMA
+from .carbon import check_inputs as check_carbon_inputs
+from .carbon import run_job as run_carbon_job
 
 
 PLANNED_MODEL_SCHEMAS = [
@@ -50,3 +55,48 @@ def get_model_schema(model_id: str) -> dict | None:
         if model["id"] == model_id:
             return model
     return None
+
+
+def check_model_inputs(
+    model_id: str,
+    inputs: dict,
+    assets_dir: Path,
+    read_asset_metadata: Callable[[Path], dict],
+) -> dict:
+    if model_id == "carbon":
+        return check_carbon_inputs(inputs, assets_dir, read_asset_metadata)
+
+    model = get_model_schema(model_id)
+    if not model:
+        raise KeyError(model_id)
+
+    return {
+        "status": "error",
+        "errors": [f"{model['name']} input checking is not implemented yet."],
+        "warnings": [],
+        "info": ["This model is registered as a roadmap placeholder."],
+        "details": {
+            "model_id": model_id,
+            "status": model.get("status"),
+        },
+    }
+
+
+def run_model_job(
+    model_id: str,
+    job_id: str,
+    job_inputs: dict,
+    assets_dir: Path,
+    workspace_dir: Path,
+    outputs_dir: Path,
+    run_mode: str,
+    handle,
+) -> None:
+    if model_id == "carbon":
+        run_carbon_job(job_id, job_inputs, assets_dir, workspace_dir, outputs_dir, run_mode, handle)
+        return
+
+    model = get_model_schema(model_id)
+    if model:
+        raise ValueError(f"{model['name']} is registered but does not have a runner yet.")
+    raise ValueError(f"unsupported model id: {model_id}")

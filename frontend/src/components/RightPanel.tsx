@@ -207,7 +207,7 @@ export default function RightPanel() {
     setCheckingInputs(true)
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
     try {
-      const response = await fetch(`${apiBaseUrl}/api/models/carbon/check-inputs`, {
+      const response = await fetch(`${apiBaseUrl}/api/models/${selectedModelId}/check-inputs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inputs: buildModelInputs() }),
