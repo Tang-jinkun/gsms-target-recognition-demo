@@ -21,4 +21,6 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER sample_data /workspace/sample_data
 
 EXPOSE 8000
 
+USER root
+
 CMD ["micromamba", "run", "-n", "gsms-invest", "python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
