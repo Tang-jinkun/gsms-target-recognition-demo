@@ -25,7 +25,7 @@ export default function Layout() {
             </div>
           </div>
 
-          <div className="hidden items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600 md:flex">
+          <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex">
             <span className="inline-flex items-center gap-1">
               <Database aria-hidden="true" className="size-3.5" />
               {assets.length} assets
@@ -40,9 +40,15 @@ export default function Layout() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={useSampleData}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-slate-500"
+              title="Fill the workbench with offline placeholder rows (no backend files; not runnable)"
+              onClick={useSampleData}
+            >
               <FolderUp aria-hidden="true" data-icon="inline-start" />
-              Sample data
+              Demo data
             </Button>
             <Button variant="ghost" size="icon" aria-label="Settings">
               <Settings aria-hidden="true" />

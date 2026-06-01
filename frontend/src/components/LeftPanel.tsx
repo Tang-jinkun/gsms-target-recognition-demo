@@ -22,14 +22,8 @@ import {
   type AssetType,
   type JobOutput,
 } from '../stores/useStores'
-import { Button } from './ui'
-
-function formatBytes(size?: number) {
-  if (!size) return 'size unknown'
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
-}
+import { Button, SegmentedTabs } from './ui'
+import { formatBytes } from '../lib/format'
 
 function typeLabel(type: AssetType) {
   const labels: Record<AssetType, string> = {
@@ -104,26 +98,14 @@ export default function LeftPanel() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-slate-200 p-3">
-        <div className="flex rounded-md bg-slate-100 p-1">
-          <button
-            className={`flex h-8 flex-1 items-center justify-center gap-2 rounded text-sm font-medium transition ${
-              tab === 'files' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-            }`}
-            onClick={() => setTab('files')}
-          >
-            <FileText aria-hidden="true" className="size-4" />
-            Files
-          </button>
-          <button
-            className={`flex h-8 flex-1 items-center justify-center gap-2 rounded text-sm font-medium transition ${
-              tab === 'layers' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-            }`}
-            onClick={() => setTab('layers')}
-          >
-            <Layers aria-hidden="true" className="size-4" />
-            Layers
-          </button>
-        </div>
+        <SegmentedTabs<'files' | 'layers'>
+          value={tab}
+          onChange={setTab}
+          items={[
+            { value: 'files', label: 'Files', icon: <FileText aria-hidden="true" className="size-4" /> },
+            { value: 'layers', label: 'Layers', icon: <Layers aria-hidden="true" className="size-4" /> },
+          ]}
+        />
       </div>
 
       {tab === 'files' ? (
@@ -221,13 +203,13 @@ export default function LeftPanel() {
             ) : (
               <div className="flex flex-col gap-2">
                 {layers.map(layer => (
-                  <div key={layer.id} className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+                  <div key={layer.id} className="group rounded-md border border-slate-200 bg-white p-3 transition hover:border-slate-300">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium">{layer.name}</div>
                         <div className="mt-1 text-xs text-slate-500">{layer.type === 'raster' ? 'Raster preview' : 'GeoJSON preview'}</div>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
                         <Button
                           variant="ghost"
                           size="icon"
@@ -331,7 +313,7 @@ function AssetCard({
   onDelete: () => void
 }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+    <div className="group rounded-md border border-slate-200 bg-white p-3 transition hover:border-slate-300">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-slate-900">{asset.name}</div>
@@ -340,7 +322,7 @@ function AssetCard({
             <span>{formatBytes(asset.size)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className={`flex items-center gap-1 transition focus-within:opacity-100 group-hover:opacity-100 ${expanded ? '' : 'opacity-0'}`}>
           <Button variant="ghost" size="icon" aria-label={`View metadata for ${asset.name}`} onClick={onToggleMetadata}>
             <Info aria-hidden="true" />
           </Button>
@@ -375,7 +357,7 @@ function OutputCard({
   const canMapOutput = Boolean((output.type === 'geojson' && output.geojsonUrl) || (output.type === 'raster' && output.previewUrl))
 
   return (
-    <div className="rounded-md border border-emerald-200 bg-emerald-50/60 p-3 shadow-sm">
+    <div className="group rounded-md border border-emerald-200 bg-emerald-50/60 p-3 transition hover:border-emerald-300">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-slate-900">{output.name}</div>
@@ -384,7 +366,7 @@ function OutputCard({
             <span>{formatBytes(output.size)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
           <Button
             variant={canMapOutput ? 'secondary' : 'ghost'}
             size="icon"

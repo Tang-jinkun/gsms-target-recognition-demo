@@ -1,6 +1,6 @@
 import React from 'react'
 import maplibregl from 'maplibre-gl'
-import { Crosshair, Layers3, LocateFixed, MousePointer2, Ruler } from 'lucide-react'
+import { Crosshair, Layers3, LocateFixed, MousePointer2, Ruler, X } from 'lucide-react'
 import { useLayersStore } from '../stores/useStores'
 import { Button } from './ui'
 
@@ -263,11 +263,11 @@ export default function MapCanvas() {
               </div>
             </div>
             <button
-              className="rounded px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
               aria-label="Close feature properties"
               onClick={() => setSelectedFeature(undefined)}
             >
-              x
+              <X aria-hidden="true" className="size-4" />
             </button>
           </div>
           <div className="max-h-48 overflow-auto rounded border border-slate-200 bg-slate-50">
