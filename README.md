@@ -61,7 +61,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 cd frontend
 npm install
 $env:NEXT_PUBLIC_API_URL = "http://127.0.0.1:8000"
-npm run dev -- --port 3002
+npm run dev -- --port 3000
 ```
 
 Windows 上 Next.js 偶尔会卡在 build/dev worker。先停止相关 node/npm/next 进程，再清理缓存：

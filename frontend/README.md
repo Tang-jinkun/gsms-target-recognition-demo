@@ -8,13 +8,13 @@ Next.js desktop Workbench frontend.
 cd frontend
 npm install
 $env:NEXT_PUBLIC_API_URL = "http://127.0.0.1:8000"
-npm run dev -- --port 3002
+npm run dev -- --port 3000
 ```
 
 Open:
 
 ```text
-http://localhost:3002/workbench
+http://localhost:3000/workbench
 ```
 
 ## Verify

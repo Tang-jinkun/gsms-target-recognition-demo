@@ -16,7 +16,7 @@ services:
         NEXT_PUBLIC_API_URL: ""
         INTERNAL_API_URL: "http://backend:8000"
     ports:
-      - "3002:3002"
+      - "3000:3000"
     depends_on:
       - backend
     restart: unless-stopped

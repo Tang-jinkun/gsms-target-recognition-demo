@@ -40,7 +40,7 @@ docker compose up --build
 Open:
 
 ```text
-http://SERVER_IP:3002/workbench
+http://SERVER_IP:3000/workbench
 ```
 
 The frontend proxies `/api/*` requests to the backend container, so the browser
@@ -49,7 +49,7 @@ does not need to know the backend container hostname.
 ## Ports
 
 ```text
-3002  Next.js frontend
+3000  Next.js frontend
 8000  FastAPI backend, exposed for direct API checks
 ```
 
@@ -59,7 +59,7 @@ For a quick health check:
 curl http://SERVER_IP:8000/health
 ```
 
-If the server is public, open port `3002` at minimum. Port `8000` is useful for
+If the server is public, open port `3000` at minimum. Port `8000` is useful for
 debugging but can be closed later if a reverse proxy is added.
 
 ## Persistent Data
