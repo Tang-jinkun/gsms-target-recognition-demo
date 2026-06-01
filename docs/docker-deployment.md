@@ -105,9 +105,16 @@ docker compose logs -f frontend
 ## Notes
 
 - The backend image uses `mambaorg/micromamba` and creates the `gsms-invest`
-  environment from `backend/environment.yml`.
+  environment from `backend/environment.yml`. The Dockerfile writes a Tsinghua
+  TUNA `.condarc` so conda default channels and `conda-forge` resolve through
+  `https://mirrors.tuna.tsinghua.edu.cn/anaconda`.
 - The frontend image builds Next.js with `NEXT_PUBLIC_API_URL=""`, so browser
-  requests are relative and go through the Next.js rewrite proxy.
+  requests are relative and go through the Next.js rewrite proxy. The frontend
+  Dockerfile switches Alpine package repositories to
+  `https://mirrors.tuna.tsinghua.edu.cn/alpine`. npm registry stays on the
+  official registry by default because TUNA does not currently provide a working
+  npm registry endpoint; it can be overridden with the `NPM_REGISTRY` build arg
+  if needed.
 - The first backend build can be slow because it downloads conda-forge packages,
   including `natcap.invest`, GDAL, rasterio, and geopandas. Later builds reuse
   Docker cache unless `backend/environment.yml` changes.

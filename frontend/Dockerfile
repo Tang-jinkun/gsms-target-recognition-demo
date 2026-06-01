@@ -1,20 +1,27 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.tuna.tsinghua.edu.cn/alpine#g' /etc/apk/repositories
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+RUN npm config set registry "$NPM_REGISTRY"
 COPY package.json package-lock.json* ./
 RUN npm ci
 
 FROM node:20-alpine AS builder
 WORKDIR /app
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.tuna.tsinghua.edu.cn/alpine#g' /etc/apk/repositories
 ARG NEXT_PUBLIC_API_URL=
 ARG INTERNAL_API_URL=http://backend:8000
+ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV INTERNAL_API_URL=$INTERNAL_API_URL
+RUN npm config set registry "$NPM_REGISTRY"
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.tuna.tsinghua.edu.cn/alpine#g' /etc/apk/repositories
 ENV NODE_ENV=production
 ENV PORT=3000
 COPY --from=builder /app/package.json ./package.json
