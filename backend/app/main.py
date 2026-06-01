@@ -407,6 +407,25 @@ def carbon_sample_role(filename: str) -> str | None:
     return None
 
 
+def unique_asset_destination(filename: str) -> Path:
+    safe_name = Path(filename or "upload.bin").name
+    dest = ASSETS_DIR / safe_name
+    if dest.exists():
+        original = Path(safe_name)
+        dest = ASSETS_DIR / f"{original.stem}.{uuid.uuid4().hex}{original.suffix}"
+    return dest
+
+
+def persist_upload_file(file: UploadFile) -> dict:
+    dest = unique_asset_destination(file.filename or "upload.bin")
+    try:
+        with dest.open("wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save {file.filename}: {exc}") from exc
+    return asset_summary(dest)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -495,17 +514,18 @@ async def asset_preview_png(asset_id: str, request: Request, max_size: int = 102
 
 @app.post("/api/assets/upload")
 async def upload_asset(file: UploadFile = File(...)):
-    filename = file.filename
-    dest = ASSETS_DIR / filename
-    if dest.exists():
-        original = Path(filename)
-        dest = ASSETS_DIR / f"{original.stem}.{uuid.uuid4().hex}{original.suffix}"
-    try:
-        with dest.open("wb") as f:
-            shutil.copyfileobj(file.file, f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return asset_summary(dest)
+    return persist_upload_file(file)
+
+
+@app.post("/api/assets/upload-many")
+async def upload_many_assets(files: list[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    imported = [persist_upload_file(file) for file in files]
+    return {
+        "count": len(imported),
+        "imported": imported,
+    }
 
 
 @app.post("/api/sample-data/carbon/import")

@@ -56,6 +56,7 @@ export default function LeftPanel() {
     metadataError,
     loadAssets,
     uploadAsset,
+    uploadAssets,
     loadAssetMetadata,
     deleteAsset,
   } = useAssetsStore()
@@ -65,11 +66,15 @@ export default function LeftPanel() {
   const canMap = (asset: Asset) => asset.type === 'raster' || asset.type === 'geojson'
 
   const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
+    const files = Array.from(event.target.files ?? [])
+    if (files.length === 0) return
     setUploadError(undefined)
     try {
-      await uploadAsset(file)
+      if (files.length === 1) {
+        await uploadAsset(files[0])
+      } else {
+        await uploadAssets(files)
+      }
       setTab('files')
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : 'Upload failed')
@@ -132,13 +137,14 @@ export default function LeftPanel() {
               <Button variant="ghost" size="icon" aria-label="Refresh assets" onClick={() => void loadAssets()}>
                 <RefreshCw aria-hidden="true" className={assetsStatus === 'loading' ? 'animate-spin' : ''} />
               </Button>
-              <Button variant="outline" size="icon" aria-label="Upload asset" onClick={() => fileInputRef.current?.click()}>
+              <Button variant="outline" size="icon" aria-label="Upload assets" title="Upload one or more assets" onClick={() => fileInputRef.current?.click()}>
                 <Upload aria-hidden="true" />
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
+                multiple
                 accept=".tif,.tiff,.geojson,.json,.zip,.csv,.html,.txt"
                 onChange={handleUpload}
               />

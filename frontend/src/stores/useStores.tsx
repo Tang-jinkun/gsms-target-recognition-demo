@@ -104,6 +104,7 @@ type Stores = {
   jobHistory: JobSummary[]
   loadAssets: () => Promise<void>
   uploadAsset: (file: File) => Promise<void>
+  uploadAssets: (files: File[]) => Promise<void>
   loadAssetMetadata: (assetId: string) => Promise<void>
   deleteAsset: (assetId: string) => Promise<void>
   useSampleData: () => void
@@ -307,17 +308,26 @@ export function StoresProvider({ children }: { children: React.ReactNode }) {
     void loadAssets()
   }, [loadAssets])
 
-  const uploadAsset = React.useCallback(async (file: File) => {
+  const uploadAssets = React.useCallback(async (files: File[]) => {
+    if (files.length === 0) return
     const formData = new FormData()
-    formData.append('file', file)
-    const response = await fetch(`${apiBaseUrl}/api/assets/upload`, {
+    files.forEach(file => formData.append('files', file))
+    const response = await fetch(`${apiBaseUrl}/api/assets/upload-many`, {
       method: 'POST',
       body: formData,
     })
     if (!response.ok) throw new Error(`Upload failed with ${response.status}`)
-    const created = normalizeAsset(await response.json())
-    setAssets(prev => [created, ...prev.filter(asset => asset.id !== created.id)])
+    const data = await response.json()
+    const createdAssets = Array.isArray(data.imported) ? data.imported.map(normalizeAsset) : []
+    setAssets(prev => [
+      ...createdAssets,
+      ...prev.filter(asset => !createdAssets.some((created: Asset) => created.id === asset.id)),
+    ])
   }, [apiBaseUrl])
+
+  const uploadAsset = React.useCallback(async (file: File) => {
+    await uploadAssets([file])
+  }, [uploadAssets])
 
   const loadAssetMetadata = React.useCallback(async (assetId: string) => {
     setMetadataStatus(prev => ({ ...prev, [assetId]: 'loading' }))
@@ -623,6 +633,7 @@ export function StoresProvider({ children }: { children: React.ReactNode }) {
     jobHistory,
     loadAssets,
     uploadAsset,
+    uploadAssets,
     loadAssetMetadata,
     deleteAsset,
     useSampleData,
@@ -657,6 +668,7 @@ export function useAssetsStore() {
     metadataError: ctx.metadataError,
     loadAssets: ctx.loadAssets,
     uploadAsset: ctx.uploadAsset,
+    uploadAssets: ctx.uploadAssets,
     loadAssetMetadata: ctx.loadAssetMetadata,
     deleteAsset: ctx.deleteAsset,
     useSampleData: ctx.useSampleData,
