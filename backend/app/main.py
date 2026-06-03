@@ -14,17 +14,22 @@ import sys
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from sqlalchemy.orm import Session
 
 from invest_models.registry import check_model_inputs, get_model_schema, list_model_schemas
 
 # New modules added in B1
-from app.db import init_db
+from app.db import get_db, init_db
+from app.models import Job as DbJob
 from app.routers import scenes as scenes_router
 from app.routers import data as data_router
 from app.routers import scene_files as scene_files_router
+from app.routers import jobs as scene_jobs_router
+from app.routers import skills as skills_router
+from app.routers import settings as settings_router
 from app.files_util import (
     infer_file_type as infer_asset_type,
     infer_file_format as infer_asset_format,
@@ -64,6 +69,9 @@ app.add_middleware(
 app.include_router(scenes_router.router)
 app.include_router(data_router.router)
 app.include_router(scene_files_router.router)
+app.include_router(scene_jobs_router.router)
+app.include_router(skills_router.router)
+app.include_router(settings_router.router)
 
 
 @app.on_event("startup")
@@ -307,7 +315,12 @@ def output_summary(job_id: str, path: Path) -> dict:
 
 
 @app.post("/api/jobs")
-async def create_job(payload: dict):
+async def create_job(payload: dict, db: Session = Depends(get_db)):
+    scene_id = payload.get("scene_id")
+    if scene_id:
+        body = scene_jobs_router.JobCreateIn(**payload)
+        return scene_jobs_router.create_scene_job(str(scene_id), body, db)
+
     job_id = uuid.uuid4().hex
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -331,7 +344,11 @@ async def list_jobs(limit: int = 20):
 
 
 @app.get("/api/jobs/{job_id}")
-async def job_status(job_id: str):
+async def job_status(job_id: str, db: Session = Depends(get_db)):
+    db_job = db.get(DbJob, job_id)
+    if db_job:
+        return scene_jobs_router.get_scene_job(db_job.scene_id, job_id, db)
+
     job_dir = JOBS_DIR / job_id
     if not (job_dir / "run.log").exists():
         raise HTTPException(status_code=404, detail="Job not found")
@@ -339,7 +356,11 @@ async def job_status(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/logs")
-async def job_logs(job_id: str):
+async def job_logs(job_id: str, db: Session = Depends(get_db)):
+    db_job = db.get(DbJob, job_id)
+    if db_job:
+        return scene_jobs_router.get_scene_job_logs(db_job.scene_id, job_id, db)
+
     job_log = JOBS_DIR / job_id / "run.log"
     if not job_log.exists():
         raise HTTPException(status_code=404, detail="Job or logs not found")
@@ -347,7 +368,11 @@ async def job_logs(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/outputs")
-async def job_outputs(job_id: str):
+async def job_outputs(job_id: str, db: Session = Depends(get_db)):
+    db_job = db.get(DbJob, job_id)
+    if db_job:
+        return scene_jobs_router.list_scene_job_outputs(db_job.scene_id, job_id, db)
+
     outputs_dir = JOBS_DIR / job_id / "outputs"
     if not outputs_dir.exists():
         return []
@@ -355,18 +380,36 @@ async def job_outputs(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/outputs/{filename}/download")
-async def download_job_output(job_id: str, filename: str):
+async def download_job_output(job_id: str, filename: str, db: Session = Depends(get_db)):
+    db_job = db.get(DbJob, job_id)
+    if db_job:
+        return scene_jobs_router.download_scene_job_output(db_job.scene_id, job_id, filename)
+
     path = get_job_output_path(job_id, filename)
     return FileResponse(str(path), filename=path.name)
 
 
 @app.get("/api/jobs/{job_id}/outputs/{filename}/geojson")
-async def job_output_geojson(job_id: str, filename: str):
+async def job_output_geojson(job_id: str, filename: str, db: Session = Depends(get_db)):
+    db_job = db.get(DbJob, job_id)
+    if db_job:
+        return scene_jobs_router.scene_job_output_geojson(db_job.scene_id, job_id, filename)
+
     return read_geojson_asset(get_job_output_path(job_id, filename))
 
 
 @app.api_route("/api/jobs/{job_id}/outputs/{filename}/preview.png", methods=["GET", "HEAD"])
-async def job_output_preview_png(job_id: str, filename: str, request: Request, max_size: int = 1024):
+async def job_output_preview_png(
+    job_id: str,
+    filename: str,
+    request: Request,
+    max_size: int = 1024,
+    db: Session = Depends(get_db),
+):
+    db_job = db.get(DbJob, job_id)
+    if db_job:
+        return scene_jobs_router.scene_job_output_preview(db_job.scene_id, job_id, filename, request, max_size)
+
     output_path = get_job_output_path(job_id, filename)
     if output_path.suffix.lower() not in {".tif", ".tiff"}:
         raise HTTPException(status_code=400, detail="Output is not a GeoTIFF")

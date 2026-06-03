@@ -24,14 +24,17 @@ def load_job_payload(job_payload_path: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
+    parser.add_argument("--scene-id")
+    parser.add_argument("--job-dir")
+    parser.add_argument("--assets-dir")
     args = parser.parse_args()
 
     backend_root = Path(__file__).resolve().parent
     project_root = backend_root / "data" / "projects" / "default"
     jobs_root = project_root / "jobs"
-    assets_dir = project_root / "assets"
+    assets_dir = Path(args.assets_dir) if args.assets_dir else project_root / "assets"
 
-    job_dir = jobs_root / args.job_id
+    job_dir = Path(args.job_dir) if args.job_dir else jobs_root / args.job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     workspace_dir = job_dir / "workspace"
     outputs_dir = job_dir / "outputs"
@@ -46,6 +49,8 @@ def main() -> int:
     with log_path.open("a", encoding="utf-8") as handle:
         try:
             log(handle, "=== job runner started ===")
+            if args.scene_id:
+                log(handle, f"scene: {args.scene_id}")
             log(handle, f"model: {model_id}")
             log(handle, f"run mode: {run_mode}")
             run_model_job(
