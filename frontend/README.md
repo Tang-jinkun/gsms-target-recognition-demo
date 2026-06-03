@@ -8,6 +8,7 @@ Next.js desktop Workbench frontend.
 cd frontend
 npm install
 $env:NEXT_PUBLIC_API_URL = "http://127.0.0.1:8000"
+$env:NEXT_PUBLIC_BASEMAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 npm run dev -- --port 3000
 ```
 
