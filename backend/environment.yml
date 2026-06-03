@@ -12,3 +12,8 @@ dependencies:
   - geopandas
   - pillow
   - numpy
+  - sqlalchemy>=2.0
+  - geoalchemy2
+  - psycopg2
+  - alembic
+  - cryptography

@@ -1,4 +1,21 @@
 services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: gsms
+      POSTGRES_USER: gsms
+      POSTGRES_PASSWORD: gsms
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gsms -d gsms"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -7,6 +24,12 @@ services:
       - "8000:8000"
     volumes:
       - backend-data:/workspace/backend/data
+    environment:
+      DATABASE_URL: "postgresql+psycopg2://gsms:gsms@db:5432/gsms"
+      FERNET_KEY: ""
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "micromamba run -n gsms-invest python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()\""]
       interval: 10s
@@ -31,3 +54,4 @@ services:
 
 volumes:
   backend-data:
+  pgdata:
