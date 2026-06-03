@@ -1,20 +1,13 @@
-@tailwind base;
+/*
+ * The GSMS pages reproduce the static prototype verbatim via styles/prototype.css.
+ * Tailwind's preflight reset is intentionally NOT loaded here: the prototype was
+ * authored without Tailwind and relies on browser defaults (list bullets, etc.),
+ * so loading preflight would subtly diverge from "一模一样". prototype.css ships
+ * its own reset (* { box-sizing }, body, scrollbars).
+ */
 @tailwind components;
 @tailwind utilities;
 
 :root { color-scheme: light; }
 
-* { box-sizing: border-box; }
-
-html, body, #__next {
-  height: 100%;
-  margin: 0;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
-  background: #f1f5f9;
-}
-
-button { cursor: pointer }
-button:disabled { cursor: not-allowed; }
-
-.maplibregl-ctrl-top-right { top: 64px; right: 16px; }
-.maplibregl-ctrl-bottom-left { bottom: 56px; left: 12px; }
+#__next { height: 100%; }

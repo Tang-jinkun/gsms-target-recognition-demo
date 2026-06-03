@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能工作台 · GSMS</title>
+<link rel="stylesheet" href="assets/app.css">
+<style>
+  .app { overflow-x: auto; }
+  /* scene breadcrumb bar */
+  .scene-bar { height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .scene-bar .breadcrumb { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--muted); }
+  .scene-bar .breadcrumb a { color: var(--accent-ink); font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+  .scene-bar .breadcrumb a:hover { text-decoration: underline; }
+  .scene-bar .breadcrumb b { color: var(--fg-strong); font-weight: 650; }
+  .scene-bar .region { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); }
+  .scene-bar .region .ic { width: 13px; height: 13px; }
+  .work { min-width: 1240px; }
+  /* columns */
+  .c-left  { width: 276px; flex: none; border-right: 1px solid var(--border); }
+  .c-right { width: 312px; flex: none; border-left: 1px solid var(--border); }
+  .c-center{ flex: 1; min-width: 560px; background: var(--bg); }
+  /* view host: make the active panel actually fill the column (fixes Map/Split collapsing to 0 height) */
+  #viewHost { display: flex; }
+  #viewHost > [data-view-panel] { flex: 1; min-width: 0; min-height: 0; }
+  #viewHost > [data-view-panel][hidden] { display: none; }
+
+  /* layer item */
+  .layer { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .layer-top { display: flex; align-items: center; gap: 9px; }
+  .layer-name { font-size: 12.5px; font-weight: 500; color: var(--fg-strong); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .layer-ctl { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-left: 39px; }
+  .layer-ctl .range { flex: 1; }
+  .layer-ctl .pct { font-size: 11px; color: var(--faint); width: 30px; text-align: right; font-family: var(--mono); }
+  .layer .hideact { opacity: 0; transition: opacity .12s; display: flex; gap: 1px; }
+  .layer:hover .hideact, .layer:focus-within .hideact { opacity: 1; }
+
+  /* invest model row */
+  .model-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
+  .model-row:hover { background: var(--surface-2); }
+  .model-row.disabled { cursor: not-allowed; }
+  .model-row.disabled:hover { background: transparent; }
+
+  /* agent chat — bubbles, user right / agent left */
+  .chat-wrap { height: 100%; display: flex; flex-direction: column; }
+  .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 0 8px; }
+  .chat-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { display: flex; align-items: flex-end; gap: 9px; }
+  .msg.user { flex-direction: row-reverse; }
+  .msg .who { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
+  .msg.user .who { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent-line); }
+  .msg.agent .who { background: var(--accent); color: #fff; }
+  .msg .bubble { max-width: 76%; min-width: 0; }
+  .msg .body { font-size: 13.5px; line-height: 1.62; padding: 9px 13px; border-radius: 14px; }
+  .msg.agent .body { background: var(--surface); border: 1px solid var(--border); color: var(--fg); border-bottom-left-radius: 4px; }
+  .msg.user .body { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg .body p { margin: 0; }
+  .msg .body p + .att-tags { margin-top: 8px; }
+  .msg.agent .body code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
+  .msg.user .body code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,.18); padding: 1px 5px; border-radius: 4px; }
+  .msg .att-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .msg.user .att-chip { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.28); color: #fff; }
+  .cursor-blink { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; animation: blink 1s step-end infinite; border-radius: 1px; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* input card */
+  .composer { flex: none; padding: 0 24px 18px; }
+  .composer-inner { max-width: 760px; margin: 0 auto; }
+  .att-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .att-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px 0 9px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; font-size: 12px; font-family: var(--mono); color: var(--fg); }
+  .att-chip button { border: 0; background: transparent; color: var(--faint); cursor: pointer; display: grid; place-items: center; padding: 2px; border-radius: 4px; }
+  .att-chip button:hover { background: var(--inset); color: var(--danger); }
+  .card-box { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-float); transition: border-color .12s, box-shadow .12s; }
+  .card-box:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .composer textarea { width: 100%; border: 0; outline: none; resize: none; font-family: inherit; font-size: 13.5px; line-height: 1.55; color: var(--fg); background: transparent; padding: 13px 15px 4px; max-height: 160px; }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer-bar { display: flex; align-items: center; gap: 8px; padding: 7px 9px 9px; }
+  .composer-bar .grow { flex: 1; }
+  .mini-select { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface); font-size: 12.5px; color: var(--fg); cursor: pointer; }
+  .mini-select:hover { background: var(--inset); }
+  .send-btn { width: 32px; height: 32px; border-radius: var(--r-sm); border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; cursor: pointer; transition: background .12s; }
+  .send-btn:hover { background: var(--accent-ink); }
+  .send-btn:disabled { background: var(--border-strong); cursor: not-allowed; }
+
+  /* attach menu */
+  .pop { position: absolute; bottom: 42px; left: 0; min-width: 190px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-pop); padding: 5px; z-index: 30; display: none; }
+  .pop.open { display: block; }
+  .pop button { width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 0; background: transparent; border-radius: var(--r-sm); font-size: 12.5px; color: var(--fg); cursor: pointer; text-align: left; }
+  .pop button:hover { background: var(--inset); }
+  .pop .head { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 6px 9px 3px; }
+
+  /* map — placeholder (gentle grid, no saturated fills) */
+  .map-ph { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 13px; text-align: center; padding: 28px;
+    background:
+      linear-gradient(var(--border) 1px, transparent 1px) 0 0 / 40px 40px,
+      linear-gradient(90deg, var(--border) 1px, transparent 1px) 0 0 / 40px 40px,
+      var(--bg);
+  }
+  .map-ph .glyph { width: 56px; height: 56px; border-radius: 16px; background: var(--accent-soft); color: var(--accent-ink); display: grid; place-items: center; }
+  .map-ph .glyph .ic { width: 26px; height: 26px; }
+  .map-ph h3 { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+  .map-ph p { margin: 0; font-size: 12.5px; color: var(--muted); max-width: 300px; line-height: 1.65; }
+  .map-ph.compact { padding: 18px; gap: 9px; }
+  .map-ph.compact .glyph { width: 44px; height: 44px; border-radius: 13px; }
+  .map-ph.compact .glyph .ic { width: 21px; height: 21px; }
+
+  .split { display: flex; height: 100%; }
+  .split .half { flex: 1; min-width: 0; }
+  .split .half:first-child { border-right: 1px solid var(--border); background: var(--bg); }
+
+  /* run log */
+  .log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .log-out { flex: 1; min-height: 0; overflow-y: auto; background: oklch(26% 0.02 255); color: oklch(85% 0.02 230); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; padding: 12px 13px; }
+  .log-out .l-time { color: oklch(58% 0.02 230); }
+  .log-out .l-ok { color: oklch(72% 0.13 165); }
+  .log-out .l-warn { color: oklch(78% 0.13 80); }
+  .log-out .l-err { color: oklch(70% 0.16 25); }
+  .log-out .l-dim { color: oklch(55% 0.02 230); }
+  .task-card { padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  .task-state { display: flex; align-items: center; gap: 9px; }
+  .task-state .ti { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+  .ti.idle { background: var(--inset); color: var(--faint); }
+  .ti.run  { background: var(--warn-soft); color: oklch(55% 0.12 65); }
+  .ti.done { background: var(--ok-soft); color: var(--ok); }
+  .ti.fail { background: var(--danger-soft); color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topnav" data-topnav></header>
+
+  <!-- scene breadcrumb: 工作台 / {场景名} -->
+  <div class="scene-bar">
+    <div class="breadcrumb">
+      <a href="scenes.html"><i data-ic="arrow-left" data-cls="ic-sm"></i>工作台</a>
+      <i data-ic="chevron-right" data-cls="ic-sm"></i>
+      <b id="crScene">场景</b>
+    </div>
+    <span style="flex:1"></span>
+    <span class="region" id="crRegion"></span>
+  </div>
+
+  <div class="work">
+    <!-- ============ LEFT: resource panel ============ -->
+    <aside class="col c-left">
+      <div class="tabs" id="resTabs">
+        <button class="on" data-tab="layers"><i data-ic="layers" data-cls="ic-sm"></i>图层</button>
+        <button data-tab="files"><i data-ic="file" data-cls="ic-sm"></i>文件</button>
+        <button data-tab="invest"><i data-ic="box" data-cls="ic-sm"></i>InVEST</button>
+      </div>
+
+      <!-- layers -->
+      <div class="col-body" data-panel="layers">
+        <div id="layerList"></div>
+      </div>
+
+      <!-- files -->
+      <div class="col-body" data-panel="files" hidden>
+        <div id="fileList"></div>
+      </div>
+
+      <!-- invest -->
+      <div class="col-body" data-panel="invest" hidden>
+        <div id="investList"></div>
+        <div class="pad meta" style="border-top:1px solid var(--border)">点击模型打开配置弹窗，设置输入与参数后手动运行。</div>
+      </div>
+    </aside>
+
+    <!-- ============ CENTER: canvas ============ -->
+    <main class="col c-center">
+      <div class="col-head" style="padding:0 14px; height:46px; background:var(--surface)">
+        <div class="seg" id="viewSeg">
+          <button class="on" data-view="agent"><i data-ic="message-square" data-cls="ic-sm"></i>Agent</button>
+          <button data-view="map"><i data-ic="map" data-cls="ic-sm"></i>Map</button>
+          <button data-view="split"><i data-ic="columns" data-cls="ic-sm"></i>Split</button>
+        </div>
+        <div class="right" style="margin-left:auto; display:flex; align-items:center; gap:8px">
+          <span class="meta">场景：<b style="color:var(--fg); font-weight:600" id="hdScene">—</b></span>
+        </div>
+      </div>
+
+      <div style="flex:1; min-height:0" id="viewHost">
+        <!-- agent view -->
+        <div class="chat-wrap" data-view-panel="agent">
+          <div class="chat-scroll" id="chatScroll">
+            <div class="chat-inner" id="chatInner"></div>
+          </div>
+          <div class="composer">
+            <div class="composer-inner">
+              <div class="att-strip" id="attStrip"></div>
+              <div class="card-box">
+                <textarea id="ta" rows="1" placeholder="描述你的地理分析任务，或询问当前项目数据与模型结果..."></textarea>
+                <div class="composer-bar">
+                  <div style="position:relative">
+                    <button class="icon-btn" id="attBtn" title="添加附件" aria-label="添加附件"><i data-ic="paperclip"></i></button>
+                    <div class="pop" id="attPop">
+                      <div class="head">添加附件</div>
+                      <button data-src="local"><i data-ic="upload" data-cls="ic-sm"></i>从本地上传</button>
+                      <div class="head">当前项目文件</div>
+                      <button data-file="landuse_2020.tif"><i data-ic="image" data-cls="ic-sm"></i>landuse_2020.tif</button>
+                      <button data-file="study_boundary.shp"><i data-ic="map" data-cls="ic-sm"></i>study_boundary.shp</button>
+                      <button data-file="carbon_pools.csv"><i data-ic="table" data-cls="ic-sm"></i>carbon_pools.csv</button>
+                    </div>
+                  </div>
+                  <span class="grow"></span>
+                  <div class="mini-select" id="modelSel" title="对话模型">
+                    <i data-ic="sparkles" data-cls="ic-sm"></i>
+                    <span id="modelSelName">GPT-4o · 默认</span>
+                    <i data-ic="chevron-down" data-cls="ic-sm"></i>
+                  </div>
+                  <button class="send-btn" id="sendBtn" title="发送" aria-label="发送"><i data-ic="send" data-cls="ic-sm"></i></button>
+                </div>
+              </div>
+              <div class="meta" id="modelWarn" style="margin-top:7px; display:none; color:var(--warn)">
+                未配置对话模型，请先到设置页配置后再发送。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- map view (placeholder) -->
+        <div data-view-panel="map" hidden>
+          <div class="map-ph">
+            <span class="glyph"><i data-ic="map"></i></span>
+            <span class="badge badge-muted">占位 · Placeholder</span>
+            <h3>地图视图</h3>
+            <p>底图与图层渲染区域。接入地图服务后，研究区边界、栅格图层与要素属性将在此显示。</p>
+          </div>
+        </div>
+
+        <!-- split view -->
+        <div data-view-panel="split" hidden style="height:100%">
+          <div class="split">
+            <div class="half" id="splitChat" style="display:flex; flex-direction:column">
+              <div class="chat-scroll" style="padding:16px 0">
+                <div class="chat-inner" style="padding:0 18px" id="splitChatInner"></div>
+              </div>
+            </div>
+            <div class="half">
+              <div class="map-ph compact">
+                <span class="glyph"><i data-ic="map"></i></span>
+                <h3 style="font-size:13.5px">地图视图</h3>
+                <p style="font-size:12px">地图渲染占位区域</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ RIGHT: run info ============ -->
+    <aside class="col c-right">
+      <div class="col-head"><h2>运行信息</h2></div>
+
+      <div class="task-card" id="taskCard"></div>
+
+      <div class="col-head" style="border-top:1px solid var(--border)">
+        <h2 style="font-size:12px">运行日志</h2>
+        <div class="right">
+          <button class="icon-btn sm" id="copyLog" title="复制日志" aria-label="复制日志"><i data-ic="copy" data-cls="ic-sm"></i></button>
+        </div>
+      </div>
+      <div class="log">
+        <div class="log-out" id="logOut"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- ============ InVEST model config modal ============ -->
+<div class="modal-scrim" id="investModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="imTitle">
+    <div class="modal-head">
+      <div>
+        <h3 id="imTitle">Carbon Storage <span style="color:var(--faint); font-weight:500">· 模型配置</span></h3>
+        <div class="sub" id="imSub">碳储量与固碳 · 估算研究区地上/地下/土壤/枯落物碳库</div>
+      </div>
+      <button class="icon-btn" style="margin-left:auto" data-close aria-label="关闭"><i data-ic="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="glabel" style="margin-bottom:9px">输入数据</div>
+      <div id="imInputs"></div>
+
+      <div class="sec-divider" style="margin:16px 0 14px"></div>
+      <div class="glabel" style="margin-bottom:9px">参数设置</div>
+      <div class="field">
+        <label>运行名称</label>
+        <input class="input" id="imRunName" value="carbon_2020_baseline">
+      </div>
+      <div class="field" style="margin-bottom:6px">
+        <label>输出目录</label>
+        <input class="input" value="outputs/carbon_storage/" >
+      </div>
+      <details class="collapse">
+        <summary><i data-ic="chevron-right" data-cls="chev ic-sm"></i>高级选项</summary>
+        <div class="field" style="margin-top:10px">
+          <label>运行模式</label>
+          <select class="select">
+            <option>标准（完整计算）</option>
+            <option>快速预览（降采样）</option>
+          </select>
+        </div>
+      </details>
+
+      <div id="imCheck" style="margin-top:14px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sm" id="imCheckBtn"><i data-ic="check-circle" data-cls="ic-sm"></i>检查输入</button>
+      <span class="grow"></span>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="imRunBtn"><i data-ic="play" data-cls="ic-sm"></i>运行模型</button>
+    </div>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+renderTopnav('workbench');
+hydrateIcons();
+
+/* ---------------- scene context (from scene list) ---------------- */
+(function () {
+  const q = new URLSearchParams(location.search);
+  const name = q.get('name') || '未命名场景';
+  const region = q.get('region') || '';
+  document.title = name + ' · 工作台 · GSMS';
+  document.getElementById('crScene').textContent = name;
+  document.getElementById('hdScene').textContent = name;
+  const reg = document.getElementById('crRegion');
+  if (region) { reg.innerHTML = icon('map', 'ic-sm') + '研究区：' + region; }
+  else { reg.textContent = ''; }
+})();
+
+/* ---------------- data ---------------- */
+const layers = [
+  { name: 'landuse_2020.tif', type: 'raster', vis: true,  op: 100 },
+  { name: '研究区边界', type: 'vector', vis: true,  op: 80 },
+  { name: 'carbon_output.tif', type: 'raster', vis: false, op: 60 },
+];
+const files = [
+  { name: 'landuse_2020.tif', type: 'raster', size: '184 MB', icon: 'image' },
+  { name: 'study_boundary.shp', type: 'vector', size: '2.1 MB', icon: 'map' },
+  { name: 'carbon_pools.csv', type: 'table', size: '6 KB', icon: 'table' },
+  { name: 'dem_30m.tif', type: 'raster', size: '92 MB', icon: 'image' },
+];
+const models = [
+  { name: 'Carbon Storage', cn: '碳储量与固碳', status: 'ready', desc: '估算研究区地上/地下/土壤/枯落物碳库',
+    inputs: [['土地利用数据', 'raster'], ['碳密度表', 'table'], ['研究区边界', 'vector']] },
+  { name: 'Habitat Quality', cn: '生境质量', status: 'ready', desc: '基于威胁因子评估生境退化与质量',
+    inputs: [['土地利用数据', 'raster'], ['威胁因子表', 'table'], ['敏感度表', 'table']] },
+  { name: 'Water Yield', cn: '产水量', status: 'ready', desc: '流域尺度年均产水量估算',
+    inputs: [['土地利用数据', 'raster'], ['降水量栅格', 'raster'], ['蒸散发栅格', 'raster'], ['流域边界', 'vector']] },
+  { name: 'Sediment Delivery Ratio', cn: '泥沙输移比', status: 'planned', desc: '土壤侵蚀与泥沙输移（规划中）',
+    inputs: [['土地利用数据', 'raster'], ['DEM', 'raster'], ['降雨侵蚀力', 'raster']] },
+  { name: 'Nutrient Delivery Ratio', cn: '养分输移比', status: 'planned', desc: '氮磷负荷与输移（规划中）',
+    inputs: [['土地利用数据', 'raster'], ['DEM', 'raster'], ['养分负荷表', 'table']] },
+];
+
+/* ---------------- left: tabs ---------------- */
+document.querySelectorAll('#resTabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#resTabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('[data-panel]').forEach(p => p.hidden = p.dataset.panel !== b.dataset.tab);
+});
+
+/* layers */
+function renderLayers() {
+  const host = document.getElementById('layerList');
+  if (!layers.length) { host.innerHTML = '<div class="state-empty"><i data-ic="layers"></i><b>地图上还没有图层</b>从「文件」标签把数据加入地图，或运行模型生成输出。</div>'; hydrateIcons(host); return; }
+  host.innerHTML = layers.map((l, i) => `
+    <div class="layer">
+      <div class="layer-top">
+        <span class="fchip ${l.type}" style="width:26px;height:26px">${icon(l.type === 'raster' ? 'image' : 'map', 'ic-sm')}</span>
+        <span class="layer-name" title="${l.name}">${l.name}</span>
+        <span class="badge badge-muted">${l.type === 'raster' ? '栅格' : '矢量'}</span>
+        <label class="switch" title="显隐"><input type="checkbox" ${l.vis ? 'checked' : ''} data-vis="${i}"><span class="track"></span></label>
+      </div>
+      <div class="layer-ctl">
+        <input class="range" type="range" min="0" max="100" value="${l.op}" data-op="${i}" aria-label="透明度">
+        <span class="pct">${l.op}%</span>
+        <span class="hideact">
+          <button class="icon-btn sm" title="缩放到图层" aria-label="缩放到图层">${icon('maximize', 'ic-sm')}</button>
+          <button class="icon-btn sm" title="移除" aria-label="移除" data-del="${i}">${icon('trash', 'ic-sm')}</button>
+        </span>
+      </div>
+    </div>`).join('');
+  host.querySelectorAll('[data-op]').forEach(r => r.oninput = e => { e.target.nextElementSibling.textContent = e.target.value + '%'; layers[+e.target.dataset.op].op = +e.target.value; });
+  host.querySelectorAll('[data-vis]').forEach(c => c.onchange = e => { layers[+e.target.dataset.vis].vis = e.target.checked; });
+  host.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { layers.splice(+b.dataset.del, 1); renderLayers(); toast('已移除图层'); });
+}
+renderLayers();
+
+/* files */
+document.getElementById('fileList').innerHTML = files.map(f => `
+  <div class="row">
+    <span class="fchip ${f.type}">${icon(f.icon, 'ic-sm')}</span>
+    <div style="min-width:0">
+      <div class="ftitle" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.name}</div>
+      <div class="fsub">${typeLabel(f.type)} · ${f.size}</div>
+    </div>
+    <span class="actions">
+      <button class="icon-btn sm" title="加入地图" data-add="${f.name}" aria-label="加入地图">${icon('map', 'ic-sm')}</button>
+      <button class="icon-btn sm" title="作为附件引用" data-ref="${f.name}" aria-label="作为附件">${icon('paperclip', 'ic-sm')}</button>
+    </span>
+  </div>`).join('');
+document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => { toast('已加入地图：' + b.dataset.add); });
+document.querySelectorAll('[data-ref]').forEach(b => b.onclick = () => { addAtt(b.dataset.ref); toast('已作为附件引用'); });
+function typeLabel(t){ return ({raster:'栅格',vector:'矢量',table:'表格',text:'文本',folder:'文件夹'})[t] || '其他'; }
+
+/* invest */
+document.getElementById('investList').innerHTML = models.map((m, i) => `
+  <div class="model-row ${m.status === 'planned' ? 'disabled' : ''}" data-model="${i}">
+    <span class="fchip" style="background:${m.status==='ready'?'var(--accent-soft)':'var(--inset)'}; color:${m.status==='ready'?'var(--accent-ink)':'var(--faint)'}">${icon('box', 'ic-sm')}</span>
+    <div style="flex:1; min-width:0">
+      <div class="ftitle">${m.name}</div>
+      <div class="fsub">${m.cn}</div>
+    </div>
+    <span class="badge ${m.status === 'ready' ? 'badge-ok' : 'badge-muted'}">${m.status === 'ready' ? '可运行' : '规划中'}</span>
+  </div>`).join('');
+document.querySelectorAll('[data-model]').forEach(r => r.onclick = () => {
+  const m = models[+r.dataset.model];
+  if (m.status === 'planned') { toast('该模型规划中，暂不可运行'); return; }
+  openInvest(m);
+});
+
+/* ---------------- center: view switch ---------------- */
+document.querySelectorAll('#viewSeg button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#viewSeg button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('[data-view-panel]').forEach(p => p.hidden = p.dataset.viewPanel !== b.dataset.view);
+});
+
+/* ---------------- agent chat ---------------- */
+const seed = [
+  { role: 'user', text: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', att: [] },
+  { role: 'agent', text: '当前项目包含 <code>landuse_2020.tif</code>（土地利用栅格）、<code>study_boundary.shp</code>（研究区边界）和 <code>carbon_pools.csv</code>（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', att: [] },
+  { role: 'user', text: '好的，先把这份土地利用数据作为上下文。', att: ['landuse_2020.tif'] },
+  { role: 'agent', text: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
+];
+let atts = [];
+function chatRowHTML(m) {
+  const who = m.role === 'user' ? '我' : 'AI';
+  const tags = (m.att && m.att.length) ? `<div class="att-tags">${m.att.map(a => `<span class="att-chip" style="height:24px">${icon('paperclip','ic-sm')}${a}</span>`).join('')}</div>` : '';
+  return `<div class="msg ${m.role}"><span class="who">${who}</span><div class="bubble"><div class="body"><p>${m.text}</p>${tags}</div></div></div>`;
+}
+function renderChat() {
+  const html = seed.map(chatRowHTML).join('');
+  document.getElementById('chatInner').innerHTML = html;
+  document.getElementById('splitChatInner').innerHTML = html;
+  scrollChat();
+}
+function scrollChat(){ const s = document.getElementById('chatScroll'); s.scrollTop = s.scrollHeight; }
+renderChat();
+
+/* attachments */
+function addAtt(name) { if (!atts.includes(name)) atts.push(name); renderAtt(); }
+function renderAtt() {
+  document.getElementById('attStrip').innerHTML = atts.map(a =>
+    `<span class="att-chip">${icon('paperclip','ic-sm')}${a}<button data-rm="${a}" aria-label="移除">${icon('x','ic-sm')}</button></span>`).join('');
+  document.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { atts = atts.filter(x => x !== b.dataset.rm); renderAtt(); });
+}
+
+/* attach menu */
+const attPop = document.getElementById('attPop');
+document.getElementById('attBtn').onclick = e => { e.stopPropagation(); attPop.classList.toggle('open'); };
+document.addEventListener('click', () => attPop.classList.remove('open'));
+attPop.querySelectorAll('button').forEach(b => b.onclick = () => {
+  if (b.dataset.file) addAtt(b.dataset.file);
+  else addAtt('本地文件_' + Math.floor(performance.now() % 1000) + '.tif');
+});
+
+/* model selector (from settings, default selected) */
+document.getElementById('modelSel').onclick = () => toast('对话模型在「设置 · 模型配置」中管理');
+
+/* send + streaming */
+const ta = document.getElementById('ta');
+ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; };
+let streaming = false;
+function send() {
+  const text = ta.value.trim();
+  if (!text || streaming) return;
+  seed.push({ role: 'user', text: escapeHtml(text), att: atts.slice() });
+  ta.value = ''; ta.style.height = 'auto'; atts = []; renderAtt(); renderChat();
+  // agent streaming reply
+  streaming = true; document.getElementById('sendBtn').disabled = true;
+  const reply = '收到。我会基于当前项目的数据回答——你可以在左栏 InVEST 标签选择模型、配置输入后手动运行，运行状态与日志会显示在右侧面板。';
+  const m = { role: 'agent', text: '', att: [] }; seed.push(m);
+  let i = 0;
+  const tick = () => {
+    m.text = escapeHtml(reply.slice(0, i)) + '<span class="cursor-blink"></span>';
+    renderChat();
+    if (i < reply.length) { i += 2; setTimeout(tick, 18); }
+    else { m.text = escapeHtml(reply); streaming = false; document.getElementById('sendBtn').disabled = false; renderChat(); }
+  };
+  tick();
+}
+document.getElementById('sendBtn').onclick = send;
+ta.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+function escapeHtml(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+/* ---------------- right: task + log ---------------- */
+const TASK = {
+  idle: { ic:'idle', icn:'box',          title:'当前无运行任务', sub:'配置并运行一个 InVEST 模型后，状态会显示在这里', badge:'' },
+  run:  { ic:'run',  icn:'refresh-cw',   title:'InVEST 正在运行', sub:'', badge:'<span class="badge badge-warn"><span class="bdot"></span>运行中</span>' },
+  done: { ic:'done', icn:'check-circle', title:'运行完成', sub:'', badge:'<span class="badge badge-ok"><span class="bdot"></span>完成</span>' },
+  fail: { ic:'fail', icn:'alert-circle', title:'运行失败，请查看日志', sub:'', badge:'<span class="badge badge-danger"><span class="bdot"></span>失败</span>' },
+};
+let curModel = 'Carbon Storage';
+function setTask(state, modelName) {
+  if (modelName) curModel = modelName;
+  const t = TASK[state];
+  document.getElementById('taskCard').innerHTML = `
+    <div class="glabel" style="margin-bottom:9px">任务状态</div>
+    <div class="task-state">
+      <span class="ti ${t.ic}">${state==='run' ? '<span class="spinner"></span>' : icon(t.icn)}</span>
+      <div style="flex:1; min-width:0">
+        <div style="font-size:13px; font-weight:600; color:var(--fg-strong)">${t.title}</div>
+        <div class="meta" style="margin-top:1px">${state==='idle' ? t.sub : ('模型：' + curModel)}</div>
+      </div>
+      ${t.badge}
+    </div>`;
+}
+setTask('idle');
+
+const L = {
+  time: () => { const n = (12.5 + performance.now()/9000) % 24; const h = String(Math.floor(n)).padStart(2,'0'); const m = String(Math.floor((n*60)%60)).padStart(2,'0'); const s = String(Math.floor((n*3600)%60)).padStart(2,'0'); return `${h}:${m}:${s}`; }
+};
+const logOut = document.getElementById('logOut');
+function logLine(cls, text) {
+  const div = document.createElement('div');
+  div.innerHTML = `<span class="l-time">${L.time()}</span> <span class="${cls}">${text}</span>`;
+  logOut.appendChild(div); logOut.scrollTop = logOut.scrollHeight;
+}
+// initial empty-ish log
+logLine('l-dim', '等待任务… 运行模型后日志将显示在此。');
+
+document.getElementById('copyLog').onclick = () => {
+  navigator.clipboard?.writeText(logOut.innerText).then(() => toast('日志已复制'), () => toast('复制失败', 'error'));
+};
+
+/* run a model — drives right panel */
+function runModel(name) {
+  setTask('run', name);
+  logOut.innerHTML = '';
+  logLine('l-dim', `$ invest run ${name.toLowerCase().replace(/ /g,'-')}`);
+  const steps = [
+    ['l-ok', '已加载输入：土地利用数据、碳密度表、研究区边界'],
+    ['l-dim', '校验栅格对齐与坐标系 EPSG:4326 … 通过'],
+    ['l-dim', '计算碳库：地上 / 地下 / 土壤 / 枯落物 …'],
+    ['l-warn', '警告：3.2% 像元缺失碳密度，已按邻域均值填充'],
+    ['l-dim', '汇总研究区总碳储量 …'],
+    ['l-ok', '输出已写入 outputs/carbon_storage/  →  tot_c_cur.tif'],
+  ];
+  let i = 0;
+  const next = () => {
+    if (i < steps.length) { logLine(steps[i][0], steps[i][1]); i++; setTimeout(next, 520); }
+    else { logLine('l-ok', '✓ 运行完成，用时 9.4s'); setTask('done', name); toast('运行完成：' + name); }
+  };
+  setTimeout(next, 420);
+}
+
+/* ---------------- InVEST modal ---------------- */
+const modal = document.getElementById('investModal');
+const assetOptions = { raster: ['landuse_2020.tif','dem_30m.tif','carbon_output.tif'], table: ['carbon_pools.csv','threats.csv','sensitivity.csv'], vector: ['study_boundary.shp'] };
+function openInvest(m) {
+  document.getElementById('imTitle').innerHTML = `${m.name} <span style="color:var(--faint); font-weight:500">· 模型配置</span>`;
+  document.getElementById('imSub').textContent = m.cn + ' · ' + m.desc;
+  document.getElementById('imRunName').value = m.name.toLowerCase().replace(/ /g,'_') + '_run';
+  document.getElementById('imInputs').innerHTML = m.inputs.map(([label, kind]) => `
+    <div class="field">
+      <label>${label} <span style="color:var(--faint); font-weight:400">· ${typeLabel(kind)}</span></label>
+      <select class="select">
+        <option value="">从项目资产中选择…</option>
+        ${(assetOptions[kind]||[]).map(o => `<option>${o}</option>`).join('')}
+      </select>
+    </div>`).join('');
+  document.getElementById('imCheck').innerHTML = '';
+  document.getElementById('imRunBtn').onclick = () => { closeModal(); runModel(m.name); };
+  hydrateIcons(modal);
+  modal.classList.add('open');
+}
+function closeModal(){ modal.classList.remove('open'); }
+modal.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal);
+modal.onclick = e => { if (e.target === modal) closeModal(); };
+document.getElementById('imCheckBtn').onclick = () => {
+  document.getElementById('imCheck').innerHTML = `
+    <div class="notice notice-ok" style="margin-bottom:7px">${icon('check-circle','ic-sm')}<div>研究区边界、土地利用数据 — 通过</div></div>
+    <div class="notice notice-warn" style="margin-bottom:7px">${icon('alert-triangle','ic-sm')}<div>碳密度表 — 警告：缺少 3 个土地利用类别的碳值，将按 0 处理</div></div>
+    <div class="notice notice-info">${icon('info','ic-sm')}<div>检查完成：1 项警告，0 项错误，可继续运行。</div></div>`;
+};
+</script>
+</body>
+</html>

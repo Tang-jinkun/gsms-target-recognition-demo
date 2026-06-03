@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数据管理 / Data Hub · GSMS</title>
+<link rel="stylesheet" href="assets/app.css">
+<style>
+  .app { overflow-x: auto; }
+  .hub-head { height: 56px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .hub-head h1 { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+  .hub-head .search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); width: 240px; color: var(--faint); }
+  .hub-head .search input { border: 0; outline: none; font-family: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
+  .work { min-width: 1180px; }
+  .c-tree { width: 240px; flex: none; border-right: 1px solid var(--border); }
+  .c-list { width: 360px; flex: none; border-right: 1px solid var(--border); }
+  .c-detail { flex: 1; min-width: 380px; }
+
+  .tree-node { display: flex; align-items: center; gap: 7px; padding: 7px 12px; cursor: pointer; font-size: 13px; color: var(--fg); border-radius: 0; transition: background .1s; }
+  .tree-node:hover { background: var(--surface-2); }
+  .tree-node.sel { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+  .tree-node .chev { color: var(--faint); transition: transform .12s; }
+  .tree-node.open .chev { transform: rotate(90deg); }
+  .tree-count { margin-left: auto; font-size: 11px; color: var(--faint); font-family: var(--mono); }
+  .tree-children .tree-node { padding-left: 30px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topnav" data-topnav></header>
+
+  <div class="hub-head">
+    <h1>数据管理 / Data Hub</h1>
+    <span class="grow" style="flex:1"></span>
+    <div class="search"><i data-ic="search" data-cls="ic-sm"></i><input placeholder="搜索文件名…" id="search"></div>
+    <button class="btn btn-primary"><i data-ic="upload" data-cls="ic-sm"></i>上传数据</button>
+    <button class="btn"><i data-ic="folder-plus" data-cls="ic-sm"></i>新建文件夹</button>
+    <button class="btn"><i data-ic="download" data-cls="ic-sm"></i>导入</button>
+  </div>
+
+  <div class="work">
+    <!-- tree -->
+    <aside class="col c-tree">
+      <div class="col-head"><h2>数据目录</h2></div>
+      <div class="col-body" id="tree"></div>
+    </aside>
+
+    <!-- list -->
+    <section class="col c-list">
+      <div class="col-head"><h2 id="listTitle">raw</h2><span class="right meta" id="listMeta"></span></div>
+      <div class="col-body" id="list"></div>
+    </section>
+
+    <!-- detail -->
+    <section class="col c-detail">
+      <div class="col-head"><h2>文件详情</h2></div>
+      <div class="col-body" id="detail"></div>
+    </section>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+renderTopnav('data');
+hydrateIcons();
+
+const tree = [
+  { name: 'raw', count: 4 },
+  { name: 'processed', count: 3 },
+  { name: 'outputs', count: 2 },
+  { name: 'documents', count: 1 },
+  { name: 'temp', count: 0 },
+];
+const filesByDir = {
+  raw: [
+    { name: 'landuse_2020.tif', type: 'raster', size: '184 MB', fmt: 'GeoTIFF', created: '2024-03-12 09:21', modified: '2024-03-12 09:21', enc: '—', note: '2020 年土地利用分类', spatial: { crs: 'EPSG:4326', geom: '—', feat: '—', extent: '111.2,29.4 — 114.6,31.8', res: '30 m', bands: 1 } },
+    { name: 'dem_30m.tif', type: 'raster', size: '92 MB', fmt: 'GeoTIFF', created: '2024-03-10 14:02', modified: '2024-03-10 14:02', enc: '—', note: 'SRTM 数字高程', spatial: { crs: 'EPSG:4326', geom: '—', feat: '—', extent: '111.2,29.4 — 114.6,31.8', res: '30 m', bands: 1 } },
+    { name: 'study_boundary.shp', type: 'vector', size: '2.1 MB', fmt: 'ESRI Shapefile', created: '2024-02-28 11:40', modified: '2024-03-01 08:15', enc: 'UTF-8', note: '研究区边界', spatial: { crs: 'EPSG:4326', geom: 'Polygon', feat: 12, extent: '111.6,29.8 — 114.1,31.4', res: '—', bands: '—' } },
+    { name: 'carbon_pools.csv', type: 'table', size: '6 KB', fmt: 'CSV', created: '2024-03-05 16:30', modified: '2024-03-11 10:05', enc: 'UTF-8', note: '各地类碳密度（t/ha）' },
+  ],
+  processed: [
+    { name: 'landuse_reclass.tif', type: 'raster', size: '171 MB', fmt: 'GeoTIFF', created: '2024-03-13 09:00', modified: '2024-03-13 09:00', enc: '—', note: '重分类后土地利用', spatial: { crs: 'EPSG:4326', geom: '—', feat: '—', extent: '111.2,29.4 — 114.6,31.8', res: '30 m', bands: 1 } },
+    { name: 'watershed.shp', type: 'vector', size: '3.4 MB', fmt: 'ESRI Shapefile', created: '2024-03-13 10:20', modified: '2024-03-13 10:20', enc: 'UTF-8', note: '提取流域边界', spatial: { crs: 'EPSG:4326', geom: 'Polygon', feat: 5, extent: '111.5,29.7 — 114.2,31.5', res: '—', bands: '—' } },
+    { name: 'precip_annual.tif', type: 'raster', size: '44 MB', fmt: 'GeoTIFF', created: '2024-03-14 08:11', modified: '2024-03-14 08:11', enc: '—', note: '年降水量栅格', spatial: { crs: 'EPSG:4326', geom: '—', feat: '—', extent: '111.2,29.4 — 114.6,31.8', res: '1 km', bands: 1 } },
+  ],
+  outputs: [
+    { name: 'tot_c_cur.tif', type: 'raster', size: '168 MB', fmt: 'GeoTIFF', created: '2024-03-15 15:42', modified: '2024-03-15 15:42', enc: '—', note: 'Carbon Storage 总碳储量输出', spatial: { crs: 'EPSG:4326', geom: '—', feat: '—', extent: '111.2,29.4 — 114.6,31.8', res: '30 m', bands: 1 } },
+    { name: 'carbon_summary.csv', type: 'table', size: '3 KB', fmt: 'CSV', created: '2024-03-15 15:42', modified: '2024-03-15 15:42', enc: 'UTF-8', note: '碳储量分区汇总' },
+  ],
+  documents: [
+    { name: '研究区说明.md', type: 'text', size: '12 KB', fmt: 'Markdown', created: '2024-02-20 09:00', modified: '2024-03-02 17:30', enc: 'UTF-8', note: '项目背景与数据来源说明' },
+  ],
+  temp: [],
+};
+const ICONS = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', folder: 'folder' };
+const TLABEL = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹' };
+
+let curDir = 'raw', curFile = null;
+
+/* tree */
+document.getElementById('tree').innerHTML = tree.map(t => `
+  <div class="tree-node ${t.name === curDir ? 'sel open' : 'open'}" data-dir="${t.name}">
+    ${icon('chevron-right', 'chev ic-sm')}${icon('folder', 'ic-sm')}<span>${t.name}</span>
+    <span class="tree-count">${t.count}</span>
+  </div>`).join('');
+document.querySelectorAll('[data-dir]').forEach(n => n.onclick = () => selectDir(n.dataset.dir));
+
+function selectDir(dir) {
+  curDir = dir; curFile = null;
+  document.querySelectorAll('[data-dir]').forEach(n => n.classList.toggle('sel', n.dataset.dir === dir));
+  document.getElementById('listTitle').textContent = dir;
+  renderList();
+  renderDetail();
+}
+
+/* list (with loading -> content/empty) */
+function renderList(filter) {
+  const host = document.getElementById('list');
+  const meta = document.getElementById('listMeta');
+  // loading flash
+  host.innerHTML = `<div class="pad">${[1,2,3].map(()=>'<div class="skeleton" style="height:40px; margin-bottom:8px"></div>').join('')}</div>`;
+  setTimeout(() => {
+    let arr = filesByDir[curDir] || [];
+    if (filter) arr = arr.filter(f => f.name.toLowerCase().includes(filter.toLowerCase()));
+    meta.textContent = arr.length ? arr.length + ' 项' : '';
+    if (!arr.length) {
+      host.innerHTML = `<div class="state-empty"><i data-ic="folder-open"></i><b>${filter ? '无匹配文件' : '该目录为空'}</b>${filter ? '换个关键词试试' : '上传数据或从其他目录移动文件到这里'}</div>`;
+      hydrateIcons(host); return;
+    }
+    host.innerHTML = arr.map((f, i) => `
+      <div class="row ${curFile === f.name ? 'sel' : ''}" data-file="${i}">
+        <span class="fchip ${f.type}">${icon(ICONS[f.type], 'ic-sm')}</span>
+        <div style="min-width:0">
+          <div class="ftitle" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.name}</div>
+          <div class="fsub">${TLABEL[f.type]} · ${f.size}</div>
+        </div>
+        <span class="actions"><button class="icon-btn sm" title="更多" aria-label="更多">${icon('more-horizontal','ic-sm')}</button></span>
+      </div>`).join('');
+    host.querySelectorAll('[data-file]').forEach(r => r.onclick = () => { curFile = arr[+r.dataset.file].name; renderList(filter); renderDetail(arr[+r.dataset.file]); });
+  }, 240);
+}
+
+/* detail */
+function renderDetail(f) {
+  const host = document.getElementById('detail');
+  if (!f) {
+    host.innerHTML = `<div class="state-empty" style="margin-top:60px"><i data-ic="file-text"></i><b>未选中文件</b>从中间列表选择一个文件查看其元数据。</div>`;
+    hydrateIcons(host); return;
+  }
+  let spatial = '';
+  if (f.spatial) {
+    spatial = `
+      <div class="sec-divider"></div>
+      <div class="pad">
+        <div class="glabel" style="margin-bottom:11px">空间信息</div>
+        <dl class="kv">
+          <dt>CRS</dt><dd class="mono">${f.spatial.crs}</dd>
+          <dt>几何类型</dt><dd>${f.spatial.geom}</dd>
+          <dt>要素数量</dt><dd class="mono">${f.spatial.feat}</dd>
+          <dt>空间范围</dt><dd class="mono">${f.spatial.extent}</dd>
+          <dt>分辨率</dt><dd class="mono">${f.spatial.res}</dd>
+          <dt>波段数量</dt><dd class="mono">${f.spatial.bands}</dd>
+        </dl>
+      </div>`;
+  }
+  host.innerHTML = `
+    <div class="pad" style="display:flex; align-items:center; gap:12px">
+      <span class="fchip ${f.type}" style="width:40px; height:40px">${icon(ICONS[f.type])}</span>
+      <div style="min-width:0">
+        <div style="font-size:15px; font-weight:650; color:var(--fg-strong); word-break:break-all">${f.name}</div>
+        <div class="meta" style="margin-top:2px">${TLABEL[f.type]} · ${f.fmt} · ${f.size}</div>
+      </div>
+    </div>
+    <div class="sec-divider"></div>
+    <div class="pad">
+      <div class="glabel" style="margin-bottom:11px">基本信息</div>
+      <dl class="kv">
+        <dt>类型</dt><dd>${TLABEL[f.type]}</dd>
+        <dt>格式</dt><dd>${f.fmt}</dd>
+        <dt>大小</dt><dd class="mono">${f.size}</dd>
+        <dt>创建时间</dt><dd class="mono">${f.created}</dd>
+        <dt>修改时间</dt><dd class="mono">${f.modified}</dd>
+        <dt>路径</dt><dd class="mono" style="font-size:11.5px">data/${curDir}/${f.name}</dd>
+        <dt>所属目录</dt><dd>${curDir}</dd>
+        <dt>编码</dt><dd>${f.enc}</dd>
+        <dt>备注</dt><dd>${f.note}</dd>
+      </dl>
+    </div>
+    ${spatial}`;
+  hydrateIcons(host);
+}
+
+/* search */
+let st;
+document.getElementById('search').oninput = e => { clearTimeout(st); st = setTimeout(() => renderList(e.target.value.trim()), 180); };
+
+/* init */
+renderList();
+renderDetail();
+</script>
+</body>
+</html>

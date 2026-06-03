@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 · GSMS</title>
+<link rel="stylesheet" href="assets/app.css">
+<style>
+  .app { overflow-x: auto; }
+  .work { min-width: 980px; }
+  .c-menu { width: 220px; flex: none; border-right: 1px solid var(--border); }
+  .c-content { flex: 1; min-width: 540px; background: var(--bg); }
+  .menu-item { display: flex; align-items: center; gap: 9px; padding: 9px 14px; font-size: 13px; color: var(--fg); cursor: pointer; transition: background .1s; }
+  .menu-item:hover { background: var(--surface-2); }
+  .menu-item.sel { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+  .content-pad { max-width: 680px; padding: 26px 30px; }
+  .content-pad h1 { font-size: 18px; font-weight: 700; color: var(--fg-strong); margin: 0 0 3px; }
+  .content-pad .lead { font-size: 13px; color: var(--muted); margin: 0 0 22px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 20px 22px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .pwd-wrap { position: relative; }
+  .pwd-wrap .icon-btn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
+  /* model list */
+  .mrow { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--border); }
+  .mrow:last-child { border-bottom: 0; }
+  .mrow .mi { width: 34px; height: 34px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
+  .mrow .acts { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+  .mrow:hover .acts, .mrow:focus-within .acts { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topnav" data-topnav></header>
+
+  <div class="work">
+    <aside class="col c-menu">
+      <div class="col-head"><h2>设置</h2></div>
+      <div class="col-body">
+        <div class="menu-item" data-menu="user"><i data-ic="user" data-cls="ic-sm"></i><span>用户信息</span></div>
+        <div class="menu-item sel" data-menu="model"><i data-ic="sparkles" data-cls="ic-sm"></i><span>模型配置</span></div>
+      </div>
+    </aside>
+
+    <section class="col c-content">
+      <div class="col-body">
+        <!-- model config -->
+        <div data-content="model">
+          <div class="content-pad">
+            <h1>模型配置</h1>
+            <p class="lead">管理工作台 Agent 使用的<strong>对话大模型</strong>（非 InVEST 模型）。可设置一个默认模型，供 Agent 输入框默认选中。</p>
+            <div class="panel">
+              <div style="display:flex; align-items:center; margin-bottom:6px">
+                <span class="glabel">已配置模型</span>
+                <button class="btn btn-primary btn-sm" id="addModelBtn" style="margin-left:auto"><i data-ic="plus" data-cls="ic-sm"></i>添加模型</button>
+              </div>
+              <div id="modelList"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- user info -->
+        <div data-content="user" hidden>
+          <div class="content-pad">
+            <h1>用户信息</h1>
+            <p class="lead">这些信息用于标识与署名，不影响模型运行。</p>
+            <div class="panel">
+              <div class="form-grid">
+                <div class="field"><label>用户名</label><input class="input" value="李泽"></div>
+                <div class="field"><label>邮箱</label><input class="input" value="lize@geosci.edu.cn"></div>
+                <div class="field"><label>机构</label><input class="input" value="地理科学与生态研究院"></div>
+                <div class="field"><label>研究方向</label><input class="input" value="湿地碳汇与生态系统服务"></div>
+              </div>
+              <div style="display:flex; align-items:center; gap:12px; margin-top:6px">
+                <button class="btn btn-primary" id="saveUser"><i data-ic="check" data-cls="ic-sm"></i>保存</button>
+                <span class="meta">最近保存：2024-03-15 16:02</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- model add/edit modal -->
+<div class="modal-scrim" id="modelModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mmTitle">
+    <div class="modal-head">
+      <h3 id="mmTitle">添加对话模型</h3>
+      <button class="icon-btn" style="margin-left:auto" data-close aria-label="关闭"><i data-ic="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field"><label>模型名称</label><input class="input" id="mName" placeholder="如：GPT-4o"></div>
+        <div class="field"><label>供应商</label>
+          <select class="select" id="mProvider">
+            <option>OpenAI</option><option>Anthropic</option><option>DeepSeek</option><option>Qwen</option><option>Local</option><option>Custom</option>
+          </select>
+        </div>
+        <div class="field full"><label>API Key</label>
+          <div class="pwd-wrap">
+            <input class="input" id="mKey" type="password" value="sk-xxxxxxxxxxxxxxxxxxxx" placeholder="••••••••">
+            <button class="icon-btn sm" id="togKey" title="显示/隐藏" aria-label="显示或隐藏"><i data-ic="eye" data-cls="ic-sm"></i></button>
+          </div>
+        </div>
+        <div class="field full"><label>Base URL</label><input class="input" id="mUrl" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1"></div>
+        <div class="field full"><label>模型 ID</label><input class="input" id="mId" placeholder="gpt-4o" value="gpt-4o"></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; padding:4px 0 2px">
+        <label class="switch"><input type="checkbox" id="mDefault"><span class="track"></span></label>
+        <span style="font-size:13px; color:var(--fg)">设为默认模型</span>
+      </div>
+      <div id="mTestResult" style="margin-top:14px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sm" id="testBtn"><i data-ic="link" data-cls="ic-sm"></i>测试连接</button>
+      <span class="grow"></span>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="saveModel">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+renderTopnav('settings');
+hydrateIcons();
+
+const STATUS = {
+  connected: { badge: 'badge-ok', label: '已连接', dot: true },
+  untested:  { badge: 'badge-muted', label: '未测试', dot: false },
+  failed:    { badge: 'badge-danger', label: '连接失败', dot: true },
+};
+let modelsCfg = [
+  { name: 'GPT-4o', provider: 'OpenAI', id: 'gpt-4o', status: 'connected', def: true },
+  { name: 'Claude 3.5 Sonnet', provider: 'Anthropic', id: 'claude-3-5-sonnet', status: 'connected', def: false },
+  { name: 'DeepSeek-V2', provider: 'DeepSeek', id: 'deepseek-chat', status: 'untested', def: false },
+  { name: '本地 Qwen2-72B', provider: 'Local', id: 'qwen2-72b', status: 'failed', def: false },
+];
+
+function renderModels() {
+  const host = document.getElementById('modelList');
+  if (!modelsCfg.length) {
+    host.innerHTML = `<div class="state-empty"><i data-ic="sparkles"></i><b>还没有配置对话模型</b>添加一个模型后，工作台 Agent 才能发送消息。</div>`;
+    hydrateIcons(host); return;
+  }
+  host.innerHTML = modelsCfg.map((m, i) => {
+    const s = STATUS[m.status];
+    return `<div class="mrow">
+      <span class="mi">${icon('sparkles', 'ic-sm')}</span>
+      <div style="min-width:0">
+        <div style="font-size:13.5px; font-weight:600; color:var(--fg-strong); display:flex; align-items:center; gap:8px">
+          ${m.name} ${m.def ? '<span class="badge badge-accent"><span class="bdot"></span>默认</span>' : ''}
+        </div>
+        <div class="meta">${m.provider} · ${m.id}</div>
+      </div>
+      <span class="badge ${s.badge}" style="margin-left:14px">${s.dot ? '<span class="bdot"></span>' : ''}${s.label}</span>
+      <span class="acts">
+        ${m.def ? '' : `<button class="btn btn-sm" data-def="${i}">设为默认</button>`}
+        <button class="icon-btn sm" title="编辑" data-edit="${i}" aria-label="编辑">${icon('settings','ic-sm')}</button>
+        <button class="icon-btn sm" title="删除" data-del="${i}" aria-label="删除">${icon('trash','ic-sm')}</button>
+      </span>
+    </div>`;
+  }).join('');
+  host.querySelectorAll('[data-def]').forEach(b => b.onclick = () => { modelsCfg.forEach((m,j) => m.def = j === +b.dataset.def); renderModels(); toast('已设为默认模型'); });
+  host.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { modelsCfg.splice(+b.dataset.del,1); renderModels(); toast('已删除模型'); });
+  host.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openModel(modelsCfg[+b.dataset.edit]));
+}
+renderModels();
+
+/* menu switch */
+document.querySelectorAll('[data-menu]').forEach(m => m.onclick = () => {
+  document.querySelectorAll('[data-menu]').forEach(x => x.classList.toggle('sel', x === m));
+  document.querySelectorAll('[data-content]').forEach(c => c.hidden = c.dataset.content !== m.dataset.menu);
+});
+document.getElementById('saveUser').onclick = () => toast('设置已保存');
+
+/* modal */
+const modal = document.getElementById('modelModal');
+function openModel(m) {
+  document.getElementById('mmTitle').textContent = m ? '编辑对话模型' : '添加对话模型';
+  document.getElementById('mName').value = m ? m.name : '';
+  document.getElementById('mProvider').value = m ? m.provider : 'OpenAI';
+  document.getElementById('mId').value = m ? m.id : 'gpt-4o';
+  document.getElementById('mDefault').checked = m ? m.def : false;
+  document.getElementById('mTestResult').innerHTML = '';
+  modal.classList.add('open');
+}
+document.getElementById('addModelBtn').onclick = () => openModel(null);
+modal.querySelectorAll('[data-close]').forEach(b => b.onclick = () => modal.classList.remove('open'));
+modal.onclick = e => { if (e.target === modal) modal.classList.remove('open'); };
+document.getElementById('saveModel').onclick = () => { modal.classList.remove('open'); toast('模型已保存'); };
+
+/* show/hide key */
+const keyInput = document.getElementById('mKey');
+document.getElementById('togKey').onclick = () => {
+  const show = keyInput.type === 'password';
+  keyInput.type = show ? 'text' : 'password';
+  document.getElementById('togKey').innerHTML = icon(show ? 'eye-off' : 'eye', 'ic-sm');
+};
+
+/* test connection -> success / failure */
+document.getElementById('testBtn').onclick = () => {
+  const box = document.getElementById('mTestResult');
+  box.innerHTML = `<div class="notice notice-info">${icon('refresh-cw','ic-sm')}<div>正在测试连接…</div></div>`;
+  const btn = document.getElementById('testBtn'); btn.disabled = true;
+  setTimeout(() => {
+    btn.disabled = false;
+    // simple deterministic outcome based on Base URL presence
+    const ok = document.getElementById('mUrl').value.trim().length > 0 && document.getElementById('mId').value.trim().length > 0;
+    box.innerHTML = ok
+      ? `<div class="notice notice-ok">${icon('check-circle','ic-sm')}<div>连接成功</div></div>`
+      : `<div class="notice notice-error">${icon('alert-circle','ic-sm')}<div>连接失败，请检查 API Key、Base URL 或模型 ID</div></div>`;
+  }, 900);
+};
+</script>
+</body>
+</html>

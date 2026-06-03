@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skills · GSMS</title>
+<link rel="stylesheet" href="assets/app.css">
+<style>
+  .app { overflow-x: auto; }
+  .page-head { height: 56px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .page-head h1 { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+  .search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); width: 240px; color: var(--faint); }
+  .search input { border: 0; outline: none; font-family: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
+  .breadcrumb { display: flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--muted); }
+  .breadcrumb a { color: var(--accent-ink); font-weight: 500; cursor: pointer; }
+  .breadcrumb b { color: var(--fg-strong); font-weight: 650; }
+
+  /* list page */
+  .skill-grid { padding: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-content: start; }
+  .skill-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); cursor: pointer; display: flex; gap: 13px; transition: background .1s, border-color .12s, box-shadow .14s, transform .14s; }
+  .skill-card:hover { border-color: var(--accent-line); box-shadow: var(--shadow-float); transform: translateY(-1px); }
+  .skill-ico { width: 38px; height: 38px; border-radius: 9px; flex: none; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); }
+  .skill-card h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; color: var(--fg-strong); }
+  .skill-card p { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .skill-card .acts { align-self: flex-start; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; flex: none; }
+  .skill-card:hover .acts, .skill-card:focus-within .acts { opacity: 1; }
+
+  /* modal form */
+  .form-grid { display: grid; grid-template-columns: 1fr; gap: 0; }
+  .confirm-text { font-size: 13.5px; line-height: 1.65; color: var(--fg); margin: 0; }
+  .confirm-text b { color: var(--fg-strong); }
+
+  /* detail */
+  .work { min-width: 1080px; }
+  .c-files { width: 280px; flex: none; border-right: 1px solid var(--border); }
+  .c-fdetail { flex: 1; min-width: 460px; }
+  .fnode { display: flex; align-items: center; gap: 7px; padding: 6px 12px; font-size: 12.5px; color: var(--fg); cursor: pointer; transition: background .1s; }
+  .fnode:hover { background: var(--surface-2); }
+  .fnode.sel { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+  .fnode.dir { font-weight: 500; }
+  .fnode.indent { padding-left: 30px; }
+  .fnode .chev { color: var(--faint); }
+
+  /* content render */
+  .doc { padding: 22px 26px; max-width: 760px; }
+  .doc h1 { font-size: 22px; margin: 0 0 4px; color: var(--fg-strong); font-weight: 700; }
+  .doc h2 { font-size: 15px; margin: 22px 0 8px; color: var(--fg-strong); font-weight: 650; }
+  .doc p { font-size: 13.5px; line-height: 1.7; color: var(--fg); margin: 0 0 10px; }
+  .doc ul { margin: 0 0 12px; padding-left: 20px; }
+  .doc li { font-size: 13.5px; line-height: 1.7; color: var(--fg); margin-bottom: 3px; }
+  .doc code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
+  .codeblock { background: oklch(26% 0.02 255); color: oklch(86% 0.02 230); font-family: var(--mono); font-size: 12px; line-height: 1.7; padding: 14px 16px; border-radius: var(--r); overflow-x: auto; margin: 0; }
+  .codeblock .k { color: oklch(72% 0.13 290); } .codeblock .s { color: oklch(74% 0.12 145); } .codeblock .c { color: oklch(58% 0.02 230); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topnav" data-topnav></header>
+
+  <!-- ===== list view ===== -->
+  <div id="listView" style="flex:1; min-height:0; display:flex; flex-direction:column">
+    <div class="page-head">
+      <h1>Skills</h1>
+      <span style="flex:1"></span>
+      <div class="search"><i data-ic="search" data-cls="ic-sm"></i><input placeholder="搜索名称或描述…" id="skillSearch"></div>
+      <button class="btn" id="importBtn"><i data-ic="download" data-cls="ic-sm"></i>导入</button>
+      <button class="btn btn-primary" id="newSkillBtn"><i data-ic="plus" data-cls="ic-sm"></i>新建 Skill</button>
+    </div>
+    <div class="scroll" style="flex:1; overflow-y:auto"><div class="skill-grid" id="skillGrid"></div></div>
+    <div class="pager" id="skillPager" hidden></div>
+  </div>
+
+  <!-- ===== detail view ===== -->
+  <div id="detailView" style="flex:1; min-height:0; display:none; flex-direction:column">
+    <div class="page-head">
+      <div class="breadcrumb"><a id="backLink">Skills</a><i data-ic="chevron-right" data-cls="ic-sm"></i><b id="crName">carbon-storage-skill</b></div>
+    </div>
+    <div class="work" style="flex:1; min-height:0">
+      <aside class="col c-files">
+        <div class="col-head"><h2>文件结构</h2></div>
+        <div class="col-body" id="fileTree"></div>
+      </aside>
+      <section class="col c-fdetail">
+        <div class="col-head"><h2 id="fdName">SKILL.md</h2><span class="right meta" id="fdMeta"></span></div>
+        <div class="col-body" id="fdBody"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- create / edit skill modal -->
+<div class="modal-scrim" id="skillModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="smTitle">
+    <div class="modal-head">
+      <div><h3 id="smTitle">新建 Skill</h3><div class="sub" id="smSub">创建后会生成一个含 SKILL.md 的资源包。</div></div>
+      <button class="icon-btn" style="margin-left:auto" data-close aria-label="关闭"><i data-ic="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field"><label>名称</label><input class="input" id="smName" placeholder="如：carbon-storage-skill" autocomplete="off">
+          <span class="hint">建议使用小写连字符命名，作为资源包目录名。</span></div>
+        <div class="field"><label>描述</label><textarea class="input" id="smDesc" rows="3" placeholder="一句话说明该 Skill 的用途与适用模型。"></textarea></div>
+      </div>
+      <div id="smError" style="margin-top:4px"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="smSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- delete confirm modal -->
+<div class="modal-scrim" id="delModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dmTitle" style="max-width:380px">
+    <div class="modal-head">
+      <h3 id="dmTitle">删除 Skill</h3>
+      <button class="icon-btn" style="margin-left:auto" data-close aria-label="关闭"><i data-ic="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <p class="confirm-text" id="dmText"></p>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="dmConfirm" style="background:var(--danger); border-color:var(--danger)">删除</button>
+    </div>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+renderTopnav('skills');
+hydrateIcons();
+
+const skills = [
+  { id: 'carbon', name: 'carbon-storage-skill', desc: '封装 InVEST 碳储量模型的输入准备、运行与结果汇总流程。', updated: '2024-03-15' },
+  { id: 'habitat', name: 'habitat-quality-skill', desc: '生境质量评估：威胁因子配置、敏感度表校验与质量制图。', updated: '2024-03-09' },
+  { id: 'wateryield', name: 'water-yield-skill', desc: '流域产水量分析，含降水/蒸散输入对齐与子流域汇总。', updated: '2024-02-27' },
+  { id: 'raster', name: 'raster-align-skill', desc: '通用栅格预处理：重投影、对齐、重采样与裁剪到研究区。', updated: '2024-02-18' },
+  { id: 'sdr', name: 'sediment-delivery-skill', desc: 'SDR 土壤保持模型：坡度与植被覆盖输入准备、泥沙输移比计算。', updated: '2024-02-10' },
+  { id: 'ndr', name: 'nutrient-delivery-skill', desc: 'NDR 营养盐输移模型：面源氮磷负荷估算与入河贡献分析。', updated: '2024-02-03' },
+  { id: 'pollination', name: 'pollination-skill', desc: '传粉服务评估：蜂群觅食与筑巢适宜性建模及作物产量贡献。', updated: '2024-01-26' },
+  { id: 'vector', name: 'vector-prep-skill', desc: '矢量预处理：拓扑修复、字段标准化与研究区裁剪。', updated: '2024-01-18' },
+  { id: 'report', name: 'report-export-skill', desc: '结果汇总导出：分区统计、图表生成与 PDF/CSV 报告打包。', updated: '2024-01-10' },
+];
+
+const tree = {
+  carbon: [
+    { name: 'SKILL.md', type: 'file', kind: 'md', size: '4.2 KB', modified: '2024-03-15 15:40' },
+    { name: 'README.md', type: 'file', kind: 'md', size: '1.1 KB', modified: '2024-03-10 11:02' },
+    { name: 'scripts', type: 'dir', children: [
+      { name: 'run_carbon.py', type: 'file', kind: 'code', size: '3.8 KB', modified: '2024-03-15 15:38' },
+      { name: 'check_inputs.py', type: 'file', kind: 'code', size: '2.1 KB', modified: '2024-03-14 09:20' },
+    ]},
+    { name: 'config.json', type: 'file', kind: 'json', size: '820 B', modified: '2024-03-15 15:40' },
+    { name: 'preview.png', type: 'file', kind: 'bin', size: '64 KB', modified: '2024-03-12 10:00' },
+  ],
+};
+// other skills reuse a small default tree
+['habitat','wateryield','raster','sdr','ndr','pollination','vector','report'].forEach(id => tree[id] = [
+  { name: 'SKILL.md', type: 'file', kind: 'md', size: '3.0 KB', modified: '2024-03-09 10:00' },
+  { name: 'scripts', type: 'dir', children: [{ name: 'run.py', type: 'file', kind: 'code', size: '2.4 KB', modified: '2024-03-09 10:00' }] },
+]);
+
+const CONTENT = {
+  'SKILL.md': { kind: 'md', html: `
+    <h1>carbon-storage-skill</h1>
+    <p>封装 InVEST <code>Carbon Storage</code> 模型的标准作业流程：从项目资产中选取输入、校验、运行并汇总结果。该 Skill 供工作台 Agent 在用户手动触发时调用。</p>
+    <h2>必需输入</h2>
+    <ul>
+      <li><code>landuse</code> — 土地利用栅格（GeoTIFF）</li>
+      <li><code>carbon_pools</code> — 各地类碳密度表（CSV，t/ha）</li>
+      <li><code>aoi</code> — 研究区边界（矢量）</li>
+    </ul>
+    <h2>输出</h2>
+    <ul>
+      <li><code>tot_c_cur.tif</code> — 总碳储量栅格</li>
+      <li><code>carbon_summary.csv</code> — 分区汇总表</li>
+    </ul>
+    <h2>使用约定</h2>
+    <p>运行前应执行 <code>check_inputs</code> 校验栅格对齐与碳密度表完整性；缺失类别将以警告形式提示，不阻断运行。</p>` },
+  'README.md': { kind: 'md', html: `<h1>README</h1><p>本目录为 carbon-storage-skill 的资源包。入口说明见 <code>SKILL.md</code>。</p><h2>目录</h2><ul><li><code>scripts/</code> — 运行与校验脚本</li><li><code>config.json</code> — 默认参数</li></ul>` },
+  'run_carbon.py': { kind: 'code', code: `<span class="c"># 运行 InVEST 碳储量模型</span>\n<span class="k">from</span> natcap.invest <span class="k">import</span> carbon\n\n<span class="k">def</span> run(args):\n    carbon.execute({\n        <span class="s">"lulc_cur_path"</span>: args[<span class="s">"landuse"</span>],\n        <span class="s">"carbon_pools_path"</span>: args[<span class="s">"carbon_pools"</span>],\n        <span class="s">"workspace_dir"</span>: args[<span class="s">"output_dir"</span>],\n    })\n    <span class="k">return</span> <span class="s">"tot_c_cur.tif"</span>` },
+  'check_inputs.py': { kind: 'code', code: `<span class="c"># 校验输入完整性与栅格对齐</span>\n<span class="k">def</span> check(args):\n    issues = []\n    <span class="k">if</span> <span class="k">not</span> aligned(args[<span class="s">"landuse"</span>], args[<span class="s">"aoi"</span>]):\n        issues.append(<span class="s">"研究区与土地利用未对齐"</span>)\n    <span class="k">return</span> issues` },
+  'config.json': { kind: 'json', code: `{\n  <span class="s">"model"</span>: <span class="s">"carbon_storage"</span>,\n  <span class="s">"default_output"</span>: <span class="s">"outputs/carbon_storage/"</span>,\n  <span class="s">"fill_missing"</span>: <span class="k">true</span>\n}` },
+  'preview.png': { kind: 'bin', size: '64 KB' },
+  'run.py': { kind: 'code', code: `<span class="c"># 模型运行入口</span>\n<span class="k">def</span> run(args):\n    <span class="k">pass</span>` },
+};
+
+/* ---- pagination state + pager builder ---- */
+const PAGE_SIZE = 6;
+let curFilter = '', curPage = 1;
+const pagerEl = document.getElementById('skillPager');
+
+function renderPager(total, page, pages, unit) {
+  if (pages <= 1) { pagerEl.hidden = true; pagerEl.innerHTML = ''; return; }
+  pagerEl.hidden = false;
+  const nums = [];
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || Math.abs(i - page) <= 1) nums.push(i);
+    else if (nums[nums.length - 1] !== '…') nums.push('…');
+  }
+  pagerEl.innerHTML =
+    `<div class="pager-info">共 <b>${total}</b> 个${unit} · 第 <b>${page}</b>/<b>${pages}</b> 页</div>` +
+    `<div class="pager-ctrl">
+      <button class="pg-btn" data-pg="prev" ${page === 1 ? 'disabled' : ''} aria-label="上一页">${icon('chevron-right','ic-sm')}</button>
+      ${nums.map(n => n === '…'
+        ? `<span class="pg-ellipsis">…</span>`
+        : `<button class="pg-num ${n === page ? 'active' : ''}" data-pg="${n}">${n}</button>`).join('')}
+      <button class="pg-btn" data-pg="next" ${page === pages ? 'disabled' : ''} aria-label="下一页">${icon('chevron-right','ic-sm')}</button>
+    </div>`;
+  pagerEl.querySelector('[data-pg="prev"] .ic').style.transform = 'rotate(180deg)';
+  pagerEl.querySelectorAll('[data-pg]').forEach(b => b.onclick = () => {
+    const v = b.dataset.pg;
+    const next = v === 'prev' ? page - 1 : v === 'next' ? page + 1 : +v;
+    curPage = Math.min(Math.max(1, next), pages);
+    renderGrid(curFilter, curPage);
+    document.querySelector('#listView .scroll').scrollTop = 0;
+  });
+}
+
+/* ---- list ---- */
+function renderGrid(filter, page) {
+  curFilter = filter || ''; curPage = page || 1;
+  const arr = skills.filter(s => !curFilter || s.name.includes(curFilter) || s.desc.includes(curFilter));
+  const host = document.getElementById('skillGrid');
+  if (!arr.length) { pagerEl.hidden = true; host.innerHTML = `<div class="state-empty"><i data-ic="search"></i><b>无匹配 Skill</b>换个关键词，或导入新的 Skill。</div>`; hydrateIcons(host); return; }
+  const pages = Math.ceil(arr.length / PAGE_SIZE);
+  if (curPage > pages) curPage = pages;
+  const slice = arr.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+  host.innerHTML = slice.map(s => `
+    <div class="skill-card" data-skill="${s.id}">
+      <span class="skill-ico">${icon('box')}</span>
+      <div style="min-width:0; flex:1">
+        <h3>${s.name}</h3>
+        <p>${s.desc}</p>
+        <span class="meta">更新于 ${s.updated}</span>
+      </div>
+      <span class="acts">
+        <button class="icon-btn sm" title="编辑源信息" data-edit="${s.id}" aria-label="编辑">${icon('settings','ic-sm')}</button>
+        <button class="icon-btn sm" title="删除" data-del="${s.id}" aria-label="删除">${icon('trash','ic-sm')}</button>
+      </span>
+    </div>`).join('');
+  host.querySelectorAll('.skill-card').forEach(c => c.onclick = e => {
+    if (e.target.closest('[data-edit],[data-del]')) return;
+    openSkill(c.dataset.skill);
+  });
+  host.querySelectorAll('[data-edit]').forEach(b => b.onclick = e => { e.stopPropagation(); openSkillModal(b.dataset.edit); });
+  host.querySelectorAll('[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); askDelete(b.dataset.del); });
+  renderPager(arr.length, curPage, pages, ' Skill');
+}
+let gt;
+document.getElementById('skillSearch').oninput = e => { clearTimeout(gt); gt = setTimeout(() => renderGrid(e.target.value.trim(), 1), 150); };
+renderGrid();
+
+/* ---- detail ---- */
+let curSkill = null, curFileName = null;
+function openSkill(id) {
+  curSkill = id;
+  const s = skills.find(x => x.id === id);
+  document.getElementById('crName').textContent = s.name;
+  document.getElementById('listView').style.display = 'none';
+  document.getElementById('detailView').style.display = 'flex';
+  renderTree();
+  // default select SKILL.md -> else README.md -> else empty
+  const flat = flatten(tree[id]);
+  const pick = flat.find(f => f.name === 'SKILL.md') || flat.find(f => f.name === 'README.md');
+  if (pick) selectFile(pick.name); else renderFileDetail(null);
+}
+document.getElementById('backLink').onclick = () => {
+  document.getElementById('detailView').style.display = 'none';
+  document.getElementById('listView').style.display = 'flex';
+};
+function flatten(nodes){ let r=[]; nodes.forEach(n => { if (n.type==='dir') r=r.concat(flatten(n.children)); else r.push(n); }); return r; }
+
+function renderTree() {
+  const nodes = tree[curSkill];
+  let html = '';
+  nodes.forEach(n => {
+    if (n.type === 'dir') {
+      html += `<div class="fnode dir">${icon('chevron-down','chev ic-sm')}${icon('folder-open','ic-sm')}<span>${n.name}</span></div>`;
+      n.children.forEach(c => html += fileNode(c, true));
+    } else html += fileNode(n, false);
+  });
+  document.getElementById('fileTree').innerHTML = html;
+  document.querySelectorAll('#fileTree [data-fn]').forEach(el => el.onclick = () => selectFile(el.dataset.fn));
+}
+function fileNode(f, indent) {
+  const ic = f.kind === 'md' ? 'file-text' : f.kind === 'code' ? 'code' : f.kind === 'json' ? 'hash' : f.kind === 'bin' ? 'image' : 'file';
+  return `<div class="fnode ${indent ? 'indent' : ''} ${curFileName === f.name ? 'sel' : ''}" data-fn="${f.name}">${icon(ic,'ic-sm')}<span>${f.name}</span></div>`;
+}
+function selectFile(name) {
+  curFileName = name; renderTree();
+  const meta = flatten(tree[curSkill]).find(f => f.name === name);
+  document.getElementById('fdName').textContent = name;
+  document.getElementById('fdMeta').textContent = meta ? `${meta.size} · ${meta.modified}` : '';
+  renderFileDetail(name);
+}
+function renderFileDetail(name) {
+  const host = document.getElementById('fdBody');
+  if (!name) { host.innerHTML = `<div class="state-empty" style="margin-top:60px"><i data-ic="file-text"></i><b>请选择一个文件查看详情</b>从左侧文件结构中选择文件。</div>`; hydrateIcons(host); return; }
+  // per-skill SKILL.md (created/edited skills carry their own front-matter)
+  if (name === 'SKILL.md' && skillDocs[curSkill]) { host.innerHTML = `<div class="doc">${skillDocs[curSkill]}</div>`; hydrateIcons(host); return; }
+  const c = CONTENT[name];
+  if (!c) { host.innerHTML = `<div class="doc"><p class="meta">（无内容）</p></div>`; return; }
+  if (c.kind === 'md') host.innerHTML = `<div class="doc">${c.html}</div>`;
+  else if (c.kind === 'code' || c.kind === 'json') host.innerHTML = `<div style="padding:16px"><pre class="codeblock">${c.code}</pre></div>`;
+  else if (c.kind === 'bin') host.innerHTML = `<div class="state-empty" style="margin-top:60px"><i data-ic="image"></i><b>${name}</b>二进制文件（${c.size}）· 该文件暂不支持内容预览</div>`;
+  hydrateIcons(host);
+}
+
+/* ---- create / edit / delete ---- */
+const skillDocs = {};            // id -> generated SKILL.md html (created/edited skills)
+function esc(s){ return (s||'').replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+function today(){ const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function slugId(name){ return 'sk_' + name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40) + '_' + Math.random().toString(36).slice(2,6); }
+function makeDoc(s){
+  return `<h1>${esc(s.name)}</h1><p>${esc(s.desc) || '（暂无描述）'}</p>
+    <h2>资源结构</h2><ul><li><code>SKILL.md</code> — 入口说明（本文件）</li><li><code>scripts/run.py</code> — 运行入口</li></ul>
+    <h2>使用约定</h2><p>由工作台 Agent 在用户手动触发时调用；运行前请确认输入数据已对齐研究区。</p>`;
+}
+function ensureTree(id){
+  if (!tree[id]) tree[id] = [
+    { name: 'SKILL.md', type: 'file', kind: 'md', size: '0.4 KB', modified: today() + ' 00:00' },
+    { name: 'scripts', type: 'dir', children: [{ name: 'run.py', type: 'file', kind: 'code', size: '0.2 KB', modified: today() + ' 00:00' }] },
+  ];
+}
+
+const sModal = document.getElementById('skillModal');
+let editingId = null;
+function openSkillModal(id) {
+  editingId = id || null;
+  const s = id ? skills.find(x => x.id === id) : null;
+  document.getElementById('smTitle').textContent = s ? '编辑源信息' : '新建 Skill';
+  document.getElementById('smSub').textContent = s ? '修改名称与描述，文件内容不受影响。' : '创建后会生成一个含 SKILL.md 的资源包。';
+  document.getElementById('smName').value = s ? s.name : '';
+  document.getElementById('smDesc').value = s ? s.desc : '';
+  document.getElementById('smError').innerHTML = '';
+  sModal.classList.add('open');
+  setTimeout(() => document.getElementById('smName').focus(), 30);
+}
+function saveSkill() {
+  const name = document.getElementById('smName').value.trim();
+  const desc = document.getElementById('smDesc').value.trim();
+  const errBox = document.getElementById('smError');
+  if (!name) { errBox.innerHTML = `<div class="notice notice-error">请填写名称。</div>`; return; }
+  const dup = skills.find(x => x.name.toLowerCase() === name.toLowerCase() && x.id !== editingId);
+  if (dup) { errBox.innerHTML = `<div class="notice notice-error">已存在同名 Skill，请换一个名称。</div>`; return; }
+
+  if (editingId) {
+    const s = skills.find(x => x.id === editingId);
+    s.name = name; s.desc = desc; s.updated = today();
+    skillDocs[s.id] = makeDoc(s);                       // keep SKILL.md in sync with edited meta
+    if (curSkill === s.id) document.getElementById('crName').textContent = name;
+    toast('源信息已更新');
+  } else {
+    const s = { id: slugId(name), name, desc, updated: today() };
+    skills.unshift(s);
+    ensureTree(s.id);
+    skillDocs[s.id] = makeDoc(s);
+    toast('已创建 Skill');
+  }
+  sModal.classList.remove('open');
+  renderGrid(document.getElementById('skillSearch').value.trim());
+}
+document.getElementById('smSave').onclick = saveSkill;
+document.getElementById('smName').addEventListener('keydown', e => { if (e.key === 'Enter') saveSkill(); });
+
+/* delete */
+const dModal = document.getElementById('delModal');
+let pendingDel = null;
+function askDelete(id) {
+  pendingDel = id;
+  const s = skills.find(x => x.id === id);
+  document.getElementById('dmText').innerHTML = `确定删除 <b>${esc(s.name)}</b> 吗？该 Skill 的所有文件将一并移除，此操作不可撤销。`;
+  dModal.classList.add('open');
+}
+document.getElementById('dmConfirm').onclick = () => {
+  const i = skills.findIndex(x => x.id === pendingDel);
+  if (i >= 0) {
+    const removed = skills.splice(i, 1)[0];
+    delete tree[removed.id]; delete skillDocs[removed.id];
+    if (curSkill === removed.id) {                       // if viewing the deleted skill, return to list
+      document.getElementById('detailView').style.display = 'none';
+      document.getElementById('listView').style.display = 'flex';
+      curSkill = null;
+    }
+    toast('已删除 Skill');
+  }
+  dModal.classList.remove('open');
+  renderGrid(document.getElementById('skillSearch').value.trim());
+};
+
+/* wire buttons + scrim close */
+document.getElementById('newSkillBtn').onclick = () => openSkillModal(null);
+document.getElementById('importBtn').onclick = () => toast('导入功能开发中');
+[sModal, dModal].forEach(m => {
+  m.querySelectorAll('[data-close]').forEach(b => b.onclick = () => m.classList.remove('open'));
+  m.onclick = e => { if (e.target === m) m.classList.remove('open'); };
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { sModal.classList.remove('open'); dModal.classList.remove('open'); } });
+</script>
+</body>
+</html>

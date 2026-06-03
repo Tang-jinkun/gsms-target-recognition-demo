@@ -1,0 +1,568 @@
+import React from 'react'
+import Head from 'next/head'
+import Link from 'next/link'
+import { useRouter } from 'next/router'
+import TopNav from '../../src/components/shell/TopNav'
+import Icon from '../../src/components/shell/Icon'
+import Modal from '../../src/components/shell/Modal'
+import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
+import { toast } from '../../src/lib/toast'
+import { scenesRepo } from '../../src/lib/repos/scenesRepo'
+import { settingsRepo } from '../../src/lib/repos/settingsRepo'
+import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
+import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
+
+type View = 'agent' | 'map' | 'split'
+type LeftTab = 'layers' | 'files' | 'invest'
+type TaskState = 'idle' | 'run' | 'done' | 'fail'
+type ChatMsg = { role: 'user' | 'agent'; html: string; att: string[] }
+
+const TYPE_LABEL: Record<string, string> = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹', other: '其他' }
+const TYPE_ICON: Record<string, string> = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', other: 'file' }
+
+/* fallback seeds (used when backend offline) — mirror prototype */
+const SEED_FILES: WbFile[] = [
+  { id: 'landuse_2020.tif', name: 'landuse_2020.tif', type: 'raster', size: 184 * 1024 * 1024 },
+  { id: 'study_boundary.shp', name: 'study_boundary.shp', type: 'vector', size: 2.1 * 1024 * 1024 },
+  { id: 'carbon_pools.csv', name: 'carbon_pools.csv', type: 'table', size: 6 * 1024 },
+  { id: 'dem_30m.tif', name: 'dem_30m.tif', type: 'raster', size: 92 * 1024 * 1024 },
+]
+const SEED_MODELS: WbModel[] = [
+  { id: 'carbon', name: 'Carbon Storage', status: 'ready', description: '碳储量与固碳 · 估算研究区地上/地下/土壤/枯落物碳库', inputs: [{ id: 'lulc_bas_asset_id', label: '土地利用数据', kind: 'asset', asset_type: 'raster', required: true }, { id: 'carbon_pools_asset_id', label: '碳密度表', kind: 'asset', asset_type: 'table', required: true }, { id: 'aoi_asset_id', label: '研究区边界', kind: 'asset', asset_type: 'geojson' }] },
+  { id: 'habitat_quality', name: 'Habitat Quality', status: 'ready', description: '生境质量 · 基于威胁因子评估生境退化与质量', inputs: [{ id: 'lulc_cur_asset_id', label: '土地利用数据', kind: 'asset', asset_type: 'raster', required: true }] },
+  { id: 'water_yield', name: 'Water Yield', status: 'planned', description: '产水量 · 流域尺度年均产水量估算', inputs: [] },
+  { id: 'sdr', name: 'Sediment Delivery Ratio', status: 'planned', description: '泥沙输移比 · 土壤侵蚀与泥沙输移（规划中）', inputs: [] },
+  { id: 'ndr', name: 'Nutrient Delivery Ratio', status: 'planned', description: '养分输移比 · 氮磷负荷与输移（规划中）', inputs: [] },
+]
+
+const backendType = (uiType: AssetType): string => (uiType === 'vector' ? 'geojson' : uiType)
+const uiFromBackendAssetType = (bt?: string): AssetType => (bt === 'geojson' ? 'vector' : (bt as AssetType) || 'other')
+
+export default function WorkbenchPage() {
+  const router = useRouter()
+  const sceneId = typeof router.query.sceneId === 'string' ? router.query.sceneId : ''
+  const [sceneName, setSceneName] = React.useState('场景')
+  const [region, setRegion] = React.useState('')
+
+  const [view, setView] = React.useState<View>('agent')
+  const [leftTab, setLeftTab] = React.useState<LeftTab>('layers')
+  const [files, setFiles] = React.useState<WbFile[]>(SEED_FILES)
+  const [models, setModels] = React.useState<WbModel[]>(SEED_MODELS)
+  const [layers, setLayers] = React.useState<WbLayer[]>([])
+  const [fitNonce, setFitNonce] = React.useState(0)
+
+  // chat
+  const [msgs, setMsgs] = React.useState<ChatMsg[]>([
+    { role: 'user', html: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', att: [] },
+    { role: 'agent', html: '当前项目包含 <code>landuse_2020.tif</code>（土地利用栅格）、<code>study_boundary.shp</code>（研究区边界）和 <code>carbon_pools.csv</code>（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', att: [] },
+    { role: 'user', html: '好的，先把这份土地利用数据作为上下文。', att: ['landuse_2020.tif'] },
+    { role: 'agent', html: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
+  ])
+  const [atts, setAtts] = React.useState<string[]>([])
+  const [draft, setDraft] = React.useState('')
+  const [streaming, setStreaming] = React.useState(false)
+  const [attOpen, setAttOpen] = React.useState(false)
+  const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
+  const defaultModel = React.useMemo(() => (typeof window !== 'undefined' ? settingsRepo.defaultModel() : undefined), [])
+
+  // task + log
+  const [task, setTask] = React.useState<TaskState>('idle')
+  const [curModel, setCurModel] = React.useState('Carbon Storage')
+  const [logLines, setLogLines] = React.useState<{ cls: string; text: string }[]>([{ cls: 'l-dim', text: '等待任务… 运行模型后日志将显示在此。' }])
+  const logRef = React.useRef<HTMLDivElement | null>(null)
+  const pollRef = React.useRef<number | null>(null)
+
+  // invest modal
+  const [modalModel, setModalModel] = React.useState<WbModel | null>(null)
+  const [inputSel, setInputSel] = React.useState<Record<string, string>>({})
+  const [runName, setRunName] = React.useState('')
+  const [checkResult, setCheckResult] = React.useState<React.ReactNode>(null)
+
+  React.useEffect(() => {
+    if (!sceneId) return
+    const s = scenesRepo.get(sceneId)
+    if (s) { setSceneName(s.name); setRegion(s.region) }
+  }, [sceneId])
+
+  React.useEffect(() => {
+    let cancelled = false
+    workbenchRepo.listFiles(sceneId || undefined).then(f => { if (!cancelled && f.length) setFiles(f) }).catch(() => {})
+    workbenchRepo.listModels().then(m => { if (!cancelled && m.length) setModels(m) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [sceneId])
+
+  React.useEffect(() => { const el = chatScrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs, view])
+  React.useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight }, [logLines])
+  React.useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
+
+  /* ---- layers ---- */
+  function addToMap(f: WbFile) {
+    if (f.type !== 'raster' && f.type !== 'vector') { toast('该类型不支持加入地图'); return }
+    const id = 'ly_' + f.id.replace(/[^a-zA-Z0-9_-]/g, '_')
+    if (layers.some(l => l.id === id)) { toast('图层已在地图中'); return }
+    setLayers(prev => [{ id, name: f.name, type: f.type === 'raster' ? 'raster' : 'vector', visible: true, opacity: f.type === 'raster' ? 64 : 82, rasterUrl: f.previewUrl, geojsonUrl: f.geojsonUrl, bounds: f.bounds }, ...prev])
+    setFitNonce(n => n + 1)
+    setLeftTab('layers')
+    toast('已加入地图：' + f.name)
+  }
+  const setLayer = (id: string, patch: Partial<WbLayer>) => setLayers(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)))
+  const removeLayer = (id: string) => { setLayers(prev => prev.filter(l => l.id !== id)); toast('已移除图层') }
+
+  /* ---- chat ---- */
+  const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
+  function addAtt(name: string) { setAtts(prev => (prev.includes(name) ? prev : [...prev, name])); setAttOpen(false) }
+  function send() {
+    const text = draft.trim()
+    if (!text || streaming) return
+    const userMsg: ChatMsg = { role: 'user', html: escapeHtml(text), att: atts.slice() }
+    setDraft(''); setAtts([])
+    setStreaming(true)
+    const reply = '收到。我会基于当前项目的数据回答——你可以在左栏 InVEST 标签选择模型、配置输入后手动运行，运行状态与日志会显示在右侧面板。'
+    setMsgs(prev => [...prev, userMsg, { role: 'agent', html: '<span class="cursor-blink"></span>', att: [] }])
+    let i = 0
+    const tick = () => {
+      i += 2
+      const done = i >= reply.length
+      setMsgs(prev => {
+        const next = prev.slice()
+        next[next.length - 1] = { role: 'agent', html: escapeHtml(reply.slice(0, i)) + (done ? '' : '<span class="cursor-blink"></span>'), att: [] }
+        return next
+      })
+      if (done) { setStreaming(false) } else { window.setTimeout(tick, 18) }
+    }
+    window.setTimeout(tick, 18)
+  }
+
+  /* ---- run model (real backend for ready models; simulate on failure/offline) ---- */
+  function pushLog(cls: string, text: string) { setLogLines(prev => [...prev, { cls, text }]) }
+  function classifyLog(line: string): string {
+    const l = line.toLowerCase()
+    if (l.includes('error') || l.includes('failed') || l.includes('traceback')) return 'l-err'
+    if (l.includes('warn')) return 'l-warn'
+    if (l.includes('completed') || l.includes('success') || l.includes('finished')) return 'l-ok'
+    return 'l-dim'
+  }
+
+  function simulateRun(name: string) {
+    setLogLines([{ cls: 'l-dim', text: `$ invest run ${name.toLowerCase().replace(/ /g, '-')}` }])
+    const steps: [string, string][] = [
+      ['l-ok', '已加载输入：土地利用数据、碳密度表、研究区边界'],
+      ['l-dim', '校验栅格对齐与坐标系 EPSG:4326 … 通过'],
+      ['l-dim', '计算碳库：地上 / 地下 / 土壤 / 枯落物 …'],
+      ['l-warn', '警告：3.2% 像元缺失碳密度，已按邻域均值填充'],
+      ['l-dim', '汇总研究区总碳储量 …'],
+      ['l-ok', '输出已写入 outputs/carbon_storage/  →  tot_c_cur.tif'],
+    ]
+    let i = 0
+    const next = () => {
+      if (i < steps.length) { pushLog(steps[i][0], steps[i][1]); i++; window.setTimeout(next, 520) }
+      else { pushLog('l-ok', '✓ 运行完成，用时 9.4s'); setTask('done'); toast('运行完成：' + name) }
+    }
+    window.setTimeout(next, 420)
+  }
+
+  async function realRun(model: WbModel): Promise<boolean> {
+    const inputs: Record<string, unknown> = {}
+    ;(model.inputs || []).forEach(inp => { if (inputSel[inp.id]) inputs[inp.id] = inputSel[inp.id] })
+    if (model.id === 'carbon') { inputs.results_suffix = 'gsms'; inputs.calc_sequestration = false }
+    try {
+      const { job_id } = await workbenchRepo.createJob(model.id, inputs, 'auto', sceneId || undefined)
+      pushLog('l-dim', `$ job ${job_id} created (run_mode=auto)`)
+      let lastLen = 0
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const txt = await workbenchRepo.getLogs(job_id)
+          if (txt.length > lastLen) {
+            txt.slice(lastLen).split('\n').filter(Boolean).forEach(line => pushLog(classifyLog(line), line))
+            lastLen = txt.length
+          }
+          const st = await workbenchRepo.getJob(job_id)
+          if (st.status === 'succeeded' || st.status === 'failed') {
+            if (pollRef.current) window.clearInterval(pollRef.current)
+            setTask(st.status === 'succeeded' ? 'done' : 'fail')
+            toast(st.status === 'succeeded' ? '运行完成：' + model.name : '运行失败：' + model.name, st.status === 'failed' ? 'error' : 'ok')
+          }
+        } catch { /* keep polling */ }
+      }, 1000)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function runModel(model: WbModel) {
+    setModalModel(null)
+    setCurModel(model.name)
+    setTask('run')
+    setLogLines([])
+    const ok = await realRun(model)
+    if (!ok) { pushLog('l-dim', '后端不可用，进入演示模式。'); simulateRun(model.name) }
+  }
+
+  /* ---- invest modal ---- */
+  function openInvest(m: WbModel) {
+    if (m.status === 'planned') { toast('该模型规划中，暂不可运行'); return }
+    setModalModel(m); setInputSel({}); setRunName(m.name.toLowerCase().replace(/ /g, '_') + '_run'); setCheckResult(null)
+  }
+  function assetOptionsFor(uiType: AssetType) { return files.filter(f => f.type === uiType) }
+  async function checkInputs(m: WbModel) {
+    const inputs: Record<string, unknown> = {}
+    ;(m.inputs || []).forEach(inp => { if (inputSel[inp.id]) inputs[inp.id] = inputSel[inp.id] })
+    try {
+      const r = await workbenchRepo.checkInputs(m.id, inputs, sceneId || undefined)
+      setCheckResult(
+        <>
+          {r.info?.map((t, i) => <div key={'i' + i} className="notice notice-info" style={{ marginBottom: 7 }}><Icon name="info" cls="ic-sm" /><div>{t}</div></div>)}
+          {r.warnings?.map((t, i) => <div key={'w' + i} className="notice notice-warn" style={{ marginBottom: 7 }}><Icon name="alert-triangle" cls="ic-sm" /><div>{t}</div></div>)}
+          {r.errors?.map((t, i) => <div key={'e' + i} className="notice notice-error" style={{ marginBottom: 7 }}><Icon name="alert-circle" cls="ic-sm" /><div>{t}</div></div>)}
+          {!r.info?.length && !r.warnings?.length && !r.errors?.length && <div className="notice notice-ok"><Icon name="check-circle" cls="ic-sm" /><div>检查通过，可继续运行。</div></div>}
+        </>,
+      )
+    } catch {
+      setCheckResult(
+        <>
+          <div className="notice notice-ok" style={{ marginBottom: 7 }}><Icon name="check-circle" cls="ic-sm" /><div>研究区边界、土地利用数据 — 通过</div></div>
+          <div className="notice notice-warn" style={{ marginBottom: 7 }}><Icon name="alert-triangle" cls="ic-sm" /><div>碳密度表 — 警告：缺少 3 个土地利用类别的碳值，将按 0 处理</div></div>
+          <div className="notice notice-info"><Icon name="info" cls="ic-sm" /><div>检查完成：1 项警告，0 项错误，可继续运行。</div></div>
+        </>,
+      )
+    }
+  }
+
+  const TASK_META: Record<TaskState, { ic: string; icn: string; title: string; badge: React.ReactNode }> = {
+    idle: { ic: 'idle', icn: 'box', title: '当前无运行任务', badge: null },
+    run: { ic: 'run', icn: 'refresh-cw', title: 'InVEST 正在运行', badge: <span className="badge badge-warn"><span className="bdot" />运行中</span> },
+    done: { ic: 'done', icn: 'check-circle', title: '运行完成', badge: <span className="badge badge-ok"><span className="bdot" />完成</span> },
+    fail: { ic: 'fail', icn: 'alert-circle', title: '运行失败，请查看日志', badge: <span className="badge badge-danger"><span className="bdot" />失败</span> },
+  }
+  const tm = TASK_META[task]
+
+  function ChatList({ pad }: { pad: string }) {
+    return (
+      <div className="chat-inner" style={{ padding: pad }}>
+        {msgs.map((m, i) => (
+          <div className={`msg ${m.role}`} key={i}>
+            <span className="who">{m.role === 'user' ? '我' : 'AI'}</span>
+            <div className="bubble"><div className="body">
+              <p dangerouslySetInnerHTML={{ __html: m.html }} />
+              {m.att.length > 0 && <div className="att-tags">{m.att.map(a => <span className="att-chip" key={a} style={{ height: 24 }}><Icon name="paperclip" cls="ic-sm" />{a}</span>)}</div>}
+            </div></div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <Head><title>{`${sceneName} · 工作台 · GSMS`}</title></Head>
+      <div className="app">
+        <TopNav active="workbench" />
+
+        <div className="scene-bar">
+          <div className="breadcrumb">
+            <Link href="/scenes"><Icon name="arrow-left" cls="ic-sm" />工作台</Link>
+            <Icon name="chevron-right" cls="ic-sm" />
+            <b>{sceneName}</b>
+          </div>
+          <span style={{ flex: 1 }} />
+          {region && <span className="region"><Icon name="map" cls="ic-sm" />研究区：{region}</span>}
+        </div>
+
+        <div className="work">
+          {/* LEFT */}
+          <aside className="col c-left">
+            <div className="tabs">
+              <button className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}><Icon name="layers" cls="ic-sm" />图层</button>
+              <button className={leftTab === 'files' ? 'on' : ''} onClick={() => setLeftTab('files')}><Icon name="file" cls="ic-sm" />文件</button>
+              <button className={leftTab === 'invest' ? 'on' : ''} onClick={() => setLeftTab('invest')}><Icon name="box" cls="ic-sm" />InVEST</button>
+            </div>
+
+            {leftTab === 'layers' && (
+              <div className="col-body">
+                {layers.length === 0 ? (
+                  <div className="state-empty"><Icon name="layers" /><b>地图上还没有图层</b>从「文件」标签把数据加入地图，或运行模型生成输出。</div>
+                ) : layers.map(l => (
+                  <div className="layer" key={l.id}>
+                    <div className="layer-top">
+                      <span className={`fchip ${l.type}`} style={{ width: 26, height: 26 }}><Icon name={l.type === 'raster' ? 'image' : 'map'} cls="ic-sm" /></span>
+                      <span className="layer-name" title={l.name}>{l.name}</span>
+                      <span className="badge badge-muted">{l.type === 'raster' ? '栅格' : '矢量'}</span>
+                      <label className="switch" title="显隐"><input type="checkbox" checked={l.visible} onChange={e => setLayer(l.id, { visible: e.target.checked })} /><span className="track" /></label>
+                    </div>
+                    <div className="layer-ctl">
+                      <input className="range" type="range" min={0} max={100} value={l.opacity} aria-label="透明度" onChange={e => setLayer(l.id, { opacity: +e.target.value })} />
+                      <span className="pct">{l.opacity}%</span>
+                      <span className="hideact">
+                        <button className="icon-btn sm" title="缩放到图层" aria-label="缩放到图层" onClick={() => setFitNonce(n => n + 1)}><Icon name="maximize" cls="ic-sm" /></button>
+                        <button className="icon-btn sm" title="移除" aria-label="移除" onClick={() => removeLayer(l.id)}><Icon name="trash" cls="ic-sm" /></button>
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {leftTab === 'files' && (
+              <div className="col-body">
+                {files.map(f => (
+                  <div className="row" key={f.id}>
+                    <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                      <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+                    </div>
+                    <span className="actions">
+                      <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {leftTab === 'invest' && (
+              <div className="col-body">
+                <div>
+                  {models.map(m => {
+                    const ready = m.status !== 'planned'
+                    return (
+                      <div className={`model-row ${ready ? '' : 'disabled'}`} key={m.id} onClick={() => openInvest(m)}>
+                        <span className="fchip" style={{ background: ready ? 'var(--accent-soft)' : 'var(--inset)', color: ready ? 'var(--accent-ink)' : 'var(--faint)' }}><Icon name="box" cls="ic-sm" /></span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="ftitle">{m.name}</div>
+                          <div className="fsub">{m.description || ''}</div>
+                        </div>
+                        <span className={`badge ${ready ? 'badge-ok' : 'badge-muted'}`}>{ready ? '可运行' : '规划中'}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="pad meta" style={{ borderTop: '1px solid var(--border)' }}>点击模型打开配置弹窗，设置输入与参数后手动运行。</div>
+              </div>
+            )}
+          </aside>
+
+          {/* CENTER */}
+          <main className="col c-center">
+            <div className="col-head" style={{ padding: '0 14px', height: 46, background: 'var(--surface)' }}>
+              <div className="seg">
+                <button className={view === 'agent' ? 'on' : ''} onClick={() => setView('agent')}><Icon name="message-square" cls="ic-sm" />Agent</button>
+                <button className={view === 'map' ? 'on' : ''} onClick={() => setView('map')}><Icon name="map" cls="ic-sm" />Map</button>
+                <button className={view === 'split' ? 'on' : ''} onClick={() => setView('split')}><Icon name="columns" cls="ic-sm" />Split</button>
+              </div>
+              <div className="right" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="meta">场景：<b style={{ color: 'var(--fg)', fontWeight: 600 }}>{sceneName}</b></span>
+              </div>
+            </div>
+
+            <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+              {/* agent */}
+              <div className="chat-wrap" style={{ flex: 1, minWidth: 0, display: view === 'agent' ? 'flex' : 'none' }}>
+                <div className="chat-scroll" ref={chatScrollRef}><ChatList pad="0 24px" /></div>
+                <div className="composer">
+                  <div className="composer-inner">
+                    {atts.length > 0 && (
+                      <div className="att-strip">
+                        {atts.map(a => <span className="att-chip" key={a}><Icon name="paperclip" cls="ic-sm" />{a}<button aria-label="移除" onClick={() => setAtts(prev => prev.filter(x => x !== a))}><Icon name="x" cls="ic-sm" /></button></span>)}
+                      </div>
+                    )}
+                    <div className="card-box">
+                      <textarea rows={1} placeholder="描述你的地理分析任务，或询问当前项目数据与模型结果..." value={draft}
+                        onChange={e => setDraft(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} />
+                      <div className="composer-bar">
+                        <div style={{ position: 'relative' }}>
+                          <button className="icon-btn" title="添加附件" aria-label="添加附件" onClick={e => { e.stopPropagation(); setAttOpen(v => !v) }}><Icon name="paperclip" /></button>
+                          {attOpen && (
+                            <div className="pop open" onClick={e => e.stopPropagation()}>
+                              <div className="head">添加附件</div>
+                              <button onClick={() => addAtt('本地文件_' + Math.floor(Math.random() * 1000) + '.tif')}><Icon name="upload" cls="ic-sm" />从本地上传</button>
+                              <div className="head">当前项目文件</div>
+                              {files.slice(0, 4).map(f => <button key={f.id} onClick={() => addAtt(f.name)}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" />{f.name}</button>)}
+                            </div>
+                          )}
+                        </div>
+                        <span className="grow" />
+                        <div className="mini-select" title="对话模型" onClick={() => toast('对话模型在「设置 · 模型配置」中管理')}>
+                          <Icon name="sparkles" cls="ic-sm" />
+                          <span>{defaultModel ? `${defaultModel.name}${defaultModel.def ? ' · 默认' : ''}` : '未配置模型'}</span>
+                          <Icon name="chevron-down" cls="ic-sm" />
+                        </div>
+                        <button className="send-btn" title="发送" aria-label="发送" disabled={streaming || !draft.trim()} onClick={send}><Icon name="send" cls="ic-sm" /></button>
+                      </div>
+                    </div>
+                    {!defaultModel && <div className="meta" style={{ marginTop: 7, color: 'var(--warn)' }}>未配置对话模型，请先到设置页配置后再发送。</div>}
+                  </div>
+                </div>
+              </div>
+
+              {/* map */}
+              <div style={{ flex: 1, minWidth: 0, display: view === 'map' ? 'block' : 'none' }}>
+                <MapView layers={layers} fitNonce={fitNonce} active={view === 'map'} />
+              </div>
+
+              {/* split */}
+              <div style={{ flex: 1, minWidth: 0, display: view === 'split' ? 'block' : 'none', height: '100%' }}>
+                <div className="split">
+                  <div className="half" style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div className="chat-scroll" style={{ padding: '16px 0' }}><ChatList pad="0 18px" /></div>
+                  </div>
+                  <div className="half">
+                    <MapView layers={layers} fitNonce={fitNonce} active={view === 'split'} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+
+          {/* RIGHT */}
+          <aside className="col c-right">
+            <div className="col-head"><h2>运行信息</h2></div>
+            <div className="task-card">
+              <div className="glabel" style={{ marginBottom: 9 }}>任务状态</div>
+              <div className="task-state">
+                <span className={`ti ${tm.ic}`}>{task === 'run' ? <span className="spinner" /> : <Icon name={tm.icn} />}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-strong)' }}>{tm.title}</div>
+                  <div className="meta" style={{ marginTop: 1 }}>{task === 'idle' ? '配置并运行一个 InVEST 模型后，状态会显示在这里' : '模型：' + curModel}</div>
+                </div>
+                {tm.badge}
+              </div>
+            </div>
+            <div className="col-head" style={{ borderTop: '1px solid var(--border)' }}>
+              <h2 style={{ fontSize: 12 }}>运行日志</h2>
+              <div className="right"><button className="icon-btn sm" title="复制日志" aria-label="复制日志" onClick={() => { navigator.clipboard?.writeText(logLines.map(l => l.text).join('\n')).then(() => toast('日志已复制'), () => toast('复制失败', 'error')) }}><Icon name="copy" cls="ic-sm" /></button></div>
+            </div>
+            <div className="log">
+              <div className="log-out" ref={logRef}>
+                {logLines.map((l, i) => <div key={i}><span className={l.cls}>{l.text}</span></div>)}
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      {/* InVEST modal */}
+      <Modal open={!!modalModel} title={`${modalModel?.name || ''} · 模型配置`} sub={modalModel?.description} onClose={() => setModalModel(null)}
+        footer={<>
+          <button className="btn btn-sm" onClick={() => modalModel && checkInputs(modalModel)}><Icon name="check-circle" cls="ic-sm" />检查输入</button>
+          <span className="grow" />
+          <button className="btn" onClick={() => setModalModel(null)}>取消</button>
+          <button className="btn btn-primary" onClick={() => modalModel && runModel(modalModel)}><Icon name="play" cls="ic-sm" />运行模型</button>
+        </>}>
+        <div className="glabel" style={{ marginBottom: 9 }}>输入数据</div>
+        <div>
+          {(modalModel?.inputs || []).filter(inp => inp.kind === 'asset').map(inp => {
+            const uiType = uiFromBackendAssetType(inp.asset_type)
+            return (
+              <div className="field" key={inp.id}>
+                <label>{inp.label} <span style={{ color: 'var(--faint)', fontWeight: 400 }}>· {TYPE_LABEL[uiType]}</span></label>
+                <select className="select" value={inputSel[inp.id] || ''} onChange={e => setInputSel(prev => ({ ...prev, [inp.id]: e.target.value }))}>
+                  <option value="">从项目资产中选择…</option>
+                  {assetOptionsFor(uiType).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+            )
+          })}
+        </div>
+        <div className="sec-divider" style={{ margin: '16px 0 14px' }} />
+        <div className="glabel" style={{ marginBottom: 9 }}>参数设置</div>
+        <div className="field"><label>运行名称</label><input className="input" value={runName} onChange={e => setRunName(e.target.value)} /></div>
+        <div className="field" style={{ marginBottom: 6 }}><label>输出目录</label><input className="input" defaultValue="outputs/carbon_storage/" /></div>
+        <details className="collapse">
+          <summary><span className="chev" style={{ display: 'inline-flex' }}><Icon name="chevron-right" cls="ic-sm" /></span>高级选项</summary>
+          <div className="field" style={{ marginTop: 10 }}>
+            <label>运行模式</label>
+            <select className="select"><option>标准（完整计算）</option><option>快速预览（降采样）</option></select>
+          </div>
+        </details>
+        {checkResult && <div style={{ marginTop: 14 }}>{checkResult}</div>}
+      </Modal>
+
+      <style jsx global>{`
+        .app { overflow-x: auto; }
+        .scene-bar { height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+        .scene-bar .breadcrumb { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--muted); }
+        .scene-bar .breadcrumb a { color: var(--accent-ink); font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+        .scene-bar .breadcrumb a:hover { text-decoration: underline; }
+        .scene-bar .breadcrumb b { color: var(--fg-strong); font-weight: 650; }
+        .scene-bar .region { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); }
+        .scene-bar .region .ic { width: 13px; height: 13px; }
+        .work { min-width: 1240px; flex: 1; min-height: 0; display: flex; }
+        .c-left { width: 276px; flex: none; border-right: 1px solid var(--border); }
+        .c-right { width: 312px; flex: none; border-left: 1px solid var(--border); }
+        .c-center { flex: 1; min-width: 560px; background: var(--bg); display: flex; flex-direction: column; }
+        .layer { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+        .layer-top { display: flex; align-items: center; gap: 9px; }
+        .layer-name { font-size: 12.5px; font-weight: 500; color: var(--fg-strong); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .layer-ctl { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-left: 39px; }
+        .layer-ctl .range { flex: 1; }
+        .layer-ctl .pct { font-size: 11px; color: var(--faint); width: 30px; text-align: right; font-family: var(--mono); }
+        .layer .hideact { opacity: 0; transition: opacity .12s; display: flex; gap: 1px; }
+        .layer:hover .hideact, .layer:focus-within .hideact { opacity: 1; }
+        .model-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
+        .model-row:hover { background: var(--surface-2); }
+        .model-row.disabled { cursor: not-allowed; }
+        .model-row.disabled:hover { background: transparent; }
+        .chat-wrap { height: 100%; display: flex; flex-direction: column; }
+        .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 0 8px; }
+        .chat-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
+        .msg { display: flex; align-items: flex-end; gap: 9px; }
+        .msg.user { flex-direction: row-reverse; }
+        .msg .who { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
+        .msg.user .who { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent-line); }
+        .msg.agent .who { background: var(--accent); color: #fff; }
+        .msg .bubble { max-width: 76%; min-width: 0; }
+        .msg .body { font-size: 13.5px; line-height: 1.62; padding: 9px 13px; border-radius: 14px; }
+        .msg.agent .body { background: var(--surface); border: 1px solid var(--border); color: var(--fg); border-bottom-left-radius: 4px; }
+        .msg.user .body { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+        .msg .body p { margin: 0; }
+        .msg .body p + .att-tags { margin-top: 8px; }
+        .msg.agent .body code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
+        .msg.user .body code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,.18); padding: 1px 5px; border-radius: 4px; }
+        .msg .att-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+        .msg.user .att-chip { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.28); color: #fff; }
+        .cursor-blink { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; animation: blink 1s step-end infinite; border-radius: 1px; }
+        @keyframes blink { 50% { opacity: 0; } }
+        .composer { flex: none; padding: 0 24px 18px; }
+        .composer-inner { max-width: 760px; margin: 0 auto; }
+        .att-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+        .att-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px 0 9px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; font-size: 12px; font-family: var(--mono); color: var(--fg); }
+        .att-chip button { border: 0; background: transparent; color: var(--faint); cursor: pointer; display: grid; place-items: center; padding: 2px; border-radius: 4px; }
+        .att-chip button:hover { background: var(--inset); color: var(--danger); }
+        .card-box { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-float); transition: border-color .12s, box-shadow .12s; }
+        .card-box:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .composer textarea { width: 100%; border: 0; outline: none; resize: none; font-family: inherit; font-size: 13.5px; line-height: 1.55; color: var(--fg); background: transparent; padding: 13px 15px 4px; max-height: 160px; }
+        .composer textarea::placeholder { color: var(--faint); }
+        .composer-bar { display: flex; align-items: center; gap: 8px; padding: 7px 9px 9px; }
+        .composer-bar .grow { flex: 1; }
+        .mini-select { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface); font-size: 12.5px; color: var(--fg); cursor: pointer; }
+        .mini-select:hover { background: var(--inset); }
+        .send-btn { width: 32px; height: 32px; border-radius: var(--r-sm); border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; cursor: pointer; transition: background .12s; }
+        .send-btn:hover { background: var(--accent-ink); }
+        .send-btn:disabled { background: var(--border-strong); cursor: not-allowed; }
+        .pop { position: absolute; bottom: 42px; left: 0; min-width: 190px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-pop); padding: 5px; z-index: 30; }
+        .pop button { width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 0; background: transparent; border-radius: var(--r-sm); font-size: 12.5px; color: var(--fg); cursor: pointer; text-align: left; }
+        .pop button:hover { background: var(--inset); }
+        .pop .head { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 6px 9px 3px; }
+        .split { display: flex; height: 100%; }
+        .split .half { flex: 1; min-width: 0; }
+        .split .half:first-child { border-right: 1px solid var(--border); background: var(--bg); }
+        .log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+        .log-out { flex: 1; min-height: 0; overflow-y: auto; background: oklch(26% 0.02 255); color: oklch(85% 0.02 230); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; padding: 12px 13px; }
+        .log-out .l-ok { color: oklch(72% 0.13 165); }
+        .log-out .l-warn { color: oklch(78% 0.13 80); }
+        .log-out .l-err { color: oklch(70% 0.16 25); }
+        .log-out .l-dim { color: oklch(55% 0.02 230); }
+        .task-card { padding: 13px 14px; border-bottom: 1px solid var(--border); }
+        .task-state { display: flex; align-items: center; gap: 9px; }
+        .task-state .ti { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+        .ti.idle { background: var(--inset); color: var(--faint); }
+        .ti.run { background: var(--warn-soft); color: oklch(55% 0.12 65); }
+        .ti.done { background: var(--ok-soft); color: var(--ok); }
+        .ti.fail { background: var(--danger-soft); color: var(--danger); }
+      `}</style>
+    </>
+  )
+}

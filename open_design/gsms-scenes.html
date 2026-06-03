@@ -1,0 +1,238 @@
+
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工作台 · 场景 · GSMS</title>
+<link rel="stylesheet" href="assets/app.css">
+<style>
+  .app { overflow-x: auto; }
+  .page-head { height: 56px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .page-head .crumb { display: flex; align-items: baseline; gap: 8px; }
+  .page-head h1 { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+  .page-head .crumb .sub { font-size: 12px; color: var(--faint); }
+  .search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); width: 240px; color: var(--faint); }
+  .search input { border: 0; outline: none; font-family: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
+
+  .scroll { flex: 1; overflow-y: auto; }
+  .scene-list { padding: 14px 18px 30px; max-width: 1080px; }
+
+  .scene-card { display: flex; gap: 14px; align-items: flex-start; padding: 16px 14px; border-bottom: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: background .1s; }
+  .scene-card:hover { background: var(--surface-2); }
+  .scene-card.sel { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .scene-ico { width: 40px; height: 40px; border-radius: 10px; flex: none; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); }
+  .scene-main { min-width: 0; flex: 1; }
+  .scene-main h3 { margin: 0 0 4px; font-size: 14.5px; font-weight: 650; color: var(--fg-strong); }
+  .scene-main p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+  .scene-meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .scene-meta .m { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); }
+  .scene-meta .m .ic { width: 13px; height: 13px; }
+  .scene-meta .m b { color: var(--muted); font-weight: 600; }
+  .scene-card .acts { align-self: center; display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity .12s; flex: none; }
+  .scene-card:hover .acts, .scene-card:focus-within .acts { opacity: 1; }
+
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .confirm-text { font-size: 13.5px; line-height: 1.65; color: var(--fg); margin: 0; }
+  .confirm-text b { color: var(--fg-strong); }
+  .confirm-note { font-size: 12px; color: var(--faint); margin: 10px 0 0; line-height: 1.6; }
+
+  .loading-row { display: flex; align-items: center; gap: 10px; padding: 18px 14px; color: var(--muted); font-size: 12.5px; }
+  .spin { width: 16px; height: 16px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topnav" data-topnav></header>
+
+  <div style="flex:1; min-height:0; display:flex; flex-direction:column">
+    <div class="page-head">
+      <div class="crumb"><h1>工作台</h1><span class="sub">/ 场景</span></div>
+      <span style="flex:1"></span>
+      <div class="search"><i data-ic="search" data-cls="ic-sm"></i><input placeholder="搜索场景名称或描述…" id="sceneSearch"></div>
+      <button class="btn btn-primary" id="newSceneBtn"><i data-ic="plus" data-cls="ic-sm"></i>新建场景</button>
+    </div>
+    <div class="scroll"><div class="scene-list" id="sceneList"></div></div>
+  </div>
+</div>
+
+<!-- create / edit scene modal -->
+<div class="modal-scrim" id="sceneModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cmTitle">
+    <div class="modal-head">
+      <div><h3 id="cmTitle">新建场景</h3><div class="sub" id="cmSub">场景用于组织一次具体的地理分析：研究区、数据、图层、对话与运行上下文。</div></div>
+      <button class="icon-btn" style="margin-left:auto" data-close aria-label="关闭"><i data-ic="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field full"><label>场景名称</label><input class="input" id="cmName" placeholder="如：南京市碳储量评估" autocomplete="off"></div>
+        <div class="field full"><label>场景描述</label><textarea class="input" id="cmDesc" rows="2" placeholder="一句话说明这次分析的目标与方法。"></textarea></div>
+        <div class="field"><label>研究区名称</label><input class="input" id="cmRegion" placeholder="如：南京市" autocomplete="off"></div>
+        <div class="field"><label>备注</label><input class="input" id="cmNote" placeholder="可选" autocomplete="off"></div>
+      </div>
+      <div id="cmError" style="margin-top:4px"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="cmSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- delete confirm modal -->
+<div class="modal-scrim" id="delModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dmTitle" style="max-width:400px">
+    <div class="modal-head">
+      <h3 id="dmTitle">删除场景</h3>
+      <button class="icon-btn" style="margin-left:auto" data-close aria-label="关闭"><i data-ic="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <p class="confirm-text" id="dmText"></p>
+      <p class="confirm-note">删除后该场景的工作台上下文（图层、对话、运行日志）将不再显示。是否连带删除已生成的输出文件，留作后续策略。</p>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button class="btn" data-close>取消</button>
+      <button class="btn btn-primary" id="dmConfirm" style="background:var(--danger); border-color:var(--danger)">删除</button>
+    </div>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+renderTopnav('workbench');
+hydrateIcons();
+
+/* ---- seed scenes ---- */
+let scenes = [
+  { id: 'sc_nanjing', name: '南京市碳储量评估', desc: '基于土地利用与 InVEST Carbon Storage 模型评估研究区碳储量与固碳分布。', region: '南京市', note: '2020 基准年', updated: '2024-05-20' },
+  { id: 'sc_yangtze', name: '长江中游湿地碳汇评估', desc: '湿地土地利用变化下的碳汇能力分析，含多情景对比。', region: '长江中游', note: '', updated: '2024-05-12' },
+  { id: 'sc_changsanjiao', name: '长三角生境质量分析', desc: '基于威胁因子与敏感度表评估城市群扩张对生境质量的影响。', region: '长三角城市群', note: '', updated: '2024-04-28' },
+];
+
+/* ---- helpers ---- */
+function esc(s){ return (s||'').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+function today(){ const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function slugId(name){ return 'sc_' + Math.random().toString(36).slice(2,8); }
+
+/* ---- render list (with brief loading state) ---- */
+const host = document.getElementById('sceneList');
+function renderList(filter) {
+  const arr = scenes.filter(s => !filter || s.name.includes(filter) || s.desc.includes(filter));
+  if (!arr.length) {
+    host.innerHTML = scenes.length
+      ? `<div class="state-empty"><i data-ic="search"></i><b>无匹配场景</b>换个关键词，或新建一个场景。</div>`
+      : `<div class="state-empty"><i data-ic="compass"></i><b>还没有场景</b>点“新建场景”开始你的第一次地理分析。</div>`;
+    hydrateIcons(host); return;
+  }
+  host.innerHTML = arr.map(s => `
+    <div class="scene-card" data-scene="${s.id}" tabindex="0">
+      <span class="scene-ico">${icon('compass')}</span>
+      <div class="scene-main">
+        <h3>${esc(s.name)}</h3>
+        <p>${esc(s.desc) || '（暂无描述）'}</p>
+        <div class="scene-meta">
+          <span class="m">${icon('map','ic-sm')}研究区：<b>${esc(s.region) || '—'}</b></span>
+          <span class="m">${icon('refresh-cw','ic-sm')}更新于 ${s.updated}</span>
+          ${s.note ? `<span class="m">${icon('info','ic-sm')}${esc(s.note)}</span>` : ''}
+        </div>
+      </div>
+      <span class="acts">
+        <button class="btn btn-sm" title="进入场景" data-enter="${s.id}"><i data-ic="corner-down-right" data-cls="ic-sm"></i>进入</button>
+        <button class="icon-btn sm" title="编辑场景" data-edit="${s.id}" aria-label="编辑">${icon('settings','ic-sm')}</button>
+        <button class="icon-btn sm" title="删除场景" data-del="${s.id}" aria-label="删除">${icon('trash','ic-sm')}</button>
+      </span>
+    </div>`).join('');
+  host.querySelectorAll('.scene-card').forEach(c => {
+    c.onclick = e => { if (e.target.closest('[data-edit],[data-del]')) return; enterScene(c.dataset.scene); };
+    c.onkeydown = e => { if (e.key === 'Enter') enterScene(c.dataset.scene); };
+  });
+  host.querySelectorAll('[data-enter]').forEach(b => b.onclick = e => { e.stopPropagation(); enterScene(b.dataset.enter); });
+  host.querySelectorAll('[data-edit]').forEach(b => b.onclick = e => { e.stopPropagation(); openSceneModal(b.dataset.edit); });
+  host.querySelectorAll('[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); askDelete(b.dataset.del); });
+}
+
+/* show a short loading shimmer on first paint (loading state) */
+host.innerHTML = `<div class="loading-row"><span class="spin"></span>正在加载场景…</div>`;
+setTimeout(() => renderList(''), 260);
+
+let st;
+document.getElementById('sceneSearch').oninput = e => { clearTimeout(st); st = setTimeout(() => renderList(e.target.value.trim()), 150); };
+
+/* ---- enter scene -> scene workbench ---- */
+function enterScene(id) {
+  const s = scenes.find(x => x.id === id);
+  if (!s) return;
+  const q = `?scene=${encodeURIComponent(s.id)}&name=${encodeURIComponent(s.name)}&region=${encodeURIComponent(s.region || '')}`;
+  location.href = 'workbench.html' + q;
+}
+
+/* ---- create / edit ---- */
+const sModal = document.getElementById('sceneModal');
+let editingId = null;
+function openSceneModal(id) {
+  editingId = id || null;
+  const s = id ? scenes.find(x => x.id === id) : null;
+  document.getElementById('cmTitle').textContent = s ? '编辑场景' : '新建场景';
+  document.getElementById('cmSub').textContent = s ? '只修改场景基本信息，不影响已生成的数据、日志或模型结果。' : '场景用于组织一次具体的地理分析：研究区、数据、图层、对话与运行上下文。';
+  document.getElementById('cmName').value = s ? s.name : '';
+  document.getElementById('cmDesc').value = s ? s.desc : '';
+  document.getElementById('cmRegion').value = s ? s.region : '';
+  document.getElementById('cmNote').value = s ? (s.note || '') : '';
+  document.getElementById('cmError').innerHTML = '';
+  sModal.classList.add('open');
+  setTimeout(() => document.getElementById('cmName').focus(), 30);
+}
+function saveScene() {
+  const name = document.getElementById('cmName').value.trim();
+  const desc = document.getElementById('cmDesc').value.trim();
+  const region = document.getElementById('cmRegion').value.trim();
+  const note = document.getElementById('cmNote').value.trim();
+  const errBox = document.getElementById('cmError');
+  if (!name) { errBox.innerHTML = `<div class="notice notice-error">请填写场景名称。</div>`; return; }
+  const dup = scenes.find(x => x.name.toLowerCase() === name.toLowerCase() && x.id !== editingId);
+  if (dup) { errBox.innerHTML = `<div class="notice notice-error">已存在同名场景，请换一个名称。</div>`; return; }
+
+  if (editingId) {
+    const s = scenes.find(x => x.id === editingId);
+    Object.assign(s, { name, desc, region, note, updated: today() });
+    toast('场景信息已更新');
+  } else {
+    scenes.unshift({ id: slugId(name), name, desc, region, note, updated: today() });
+    toast('已创建场景');
+  }
+  sModal.classList.remove('open');
+  renderList(document.getElementById('sceneSearch').value.trim());
+}
+document.getElementById('cmSave').onclick = saveScene;
+document.getElementById('cmName').addEventListener('keydown', e => { if (e.key === 'Enter') saveScene(); });
+
+/* ---- delete ---- */
+const dModal = document.getElementById('delModal');
+let pendingDel = null;
+function askDelete(id) {
+  pendingDel = id;
+  const s = scenes.find(x => x.id === id);
+  document.getElementById('dmText').innerHTML = `确定删除场景 <b>${esc(s.name)}</b> 吗？`;
+  dModal.classList.add('open');
+}
+document.getElementById('dmConfirm').onclick = () => {
+  const i = scenes.findIndex(x => x.id === pendingDel);
+  if (i >= 0) { scenes.splice(i, 1); toast('已删除场景'); }
+  dModal.classList.remove('open');
+  renderList(document.getElementById('sceneSearch').value.trim());
+};
+
+/* ---- wire modals ---- */
+document.getElementById('newSceneBtn').onclick = () => openSceneModal(null);
+[sModal, dModal].forEach(m => {
+  m.querySelectorAll('[data-close]').forEach(b => b.onclick = () => m.classList.remove('open'));
+  m.onclick = e => { if (e.target === m) m.classList.remove('open'); };
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { sModal.classList.remove('open'); dModal.classList.remove('open'); } });
+</script>
+</body>
+</html>

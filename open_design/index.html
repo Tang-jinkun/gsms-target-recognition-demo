@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GSMS · 地理空间建模工作台</title>
+<link rel="stylesheet" href="assets/app.css">
+<style>
+  body { overflow-y: auto; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 34px 28px 60px; }
+  .hello { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 4px; }
+  .hello h1 { font-size: 20px; font-weight: 700; color: var(--fg-strong); margin: 0; letter-spacing: -0.01em; }
+  .sub { font-size: 13.5px; color: var(--muted); margin: 0 0 22px; }
+
+  /* current project strip */
+  .proj { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px 18px; display: flex; align-items: center; gap: 18px; margin-bottom: 26px; }
+  .proj .pico { width: 42px; height: 42px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
+  .proj .stat { text-align: center; padding: 0 6px; }
+  .proj .stat .n { font-size: 18px; font-weight: 700; color: var(--fg-strong); font-family: var(--mono); }
+  .proj .stat .l { font-size: 11px; color: var(--faint); }
+  .vline { width: 1px; align-self: stretch; background: var(--border); }
+
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { display: flex; gap: 14px; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); cursor: pointer; transition: border-color .14s, box-shadow .14s, transform .14s; }
+  .card:hover { border-color: var(--accent-line); box-shadow: var(--shadow-float); transform: translateY(-1px); }
+  .card .cico { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; flex: none; background: var(--accent-soft); color: var(--accent-ink); }
+  .card h3 { margin: 0 0 4px; font-size: 14.5px; font-weight: 650; color: var(--fg-strong); display: flex; align-items: center; gap: 7px; }
+  .card p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+  .card .arrow { margin-left: auto; align-self: center; color: var(--faint); transition: transform .14s, color .14s; }
+  .card:hover .arrow { transform: translateX(2px); color: var(--accent); }
+  .glabel.mt { margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<div class="app" style="height:auto; min-height:100vh">
+  <header class="topnav" data-topnav></header>
+
+  <div class="wrap">
+    <div class="hello"><h1>地理空间建模工作台</h1></div>
+    <p class="sub">GSMS — 面向科研工作者的 InVEST 生态系统服务建模与数据管理环境。</p>
+
+    <div class="proj">
+      <span class="pico"></span>
+      <div style="min-width:0">
+        <div class="glabel">当前项目</div>
+        <div style="font-size:15px; font-weight:650; color:var(--fg-strong); margin-top:2px">长江中游湿地碳汇评估</div>
+      </div>
+      <span style="flex:1"></span>
+      <div class="stat"><div class="n">11</div><div class="l">数据文件</div></div>
+      <div class="vline"></div>
+      <div class="stat"><div class="n">3</div><div class="l">可运行模型</div></div>
+      <div class="vline"></div>
+      <div class="stat"><div class="n">4</div><div class="l">Skills</div></div>
+    </div>
+
+    <div class="glabel mt">进入</div>
+    <div class="cards" id="cards"></div>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+renderTopnav(null);
+// fill project icon
+document.querySelector('.pico').innerHTML = icon('compass');
+
+const cards = [
+  { href: 'scenes.html', ic: 'message-square', t: '工作台 · 场景', d: '先选择或新建一个场景（研究区 / 数据 / 图层 / 对话上下文），进入后即是该场景的三栏工作台：Agent 对话、地图、手动运行 InVEST。' },
+  { href: 'data-hub.html', ic: 'database', t: '数据管理 / Data Hub', d: '按目录树浏览数据资产，查看文件与空间数据（CRS、几何、范围、分辨率）的只读元数据。' },
+  { href: 'skills.html', ic: 'box', t: 'Skills', d: '浏览已安装的分析 Skill：文件结构与文件内容只读预览，支持 Markdown 渲染与代码查看。' },
+  { href: 'settings.html', ic: 'settings', t: '设置', d: '维护用户信息，配置 Agent 的对话大模型——供应商、API Key、Base URL、默认模型与连接测试。' },
+];
+document.getElementById('cards').innerHTML = cards.map(c => `
+  <a class="card" href="${c.href}">
+    <span class="cico">${icon(c.ic)}</span>
+    <div style="min-width:0">
+      <h3>${c.t}</h3>
+      <p>${c.d}</p>
+    </div>
+    <span class="arrow">${icon('chevron-right')}</span>
+  </a>`).join('');
+</script>
+</body>
+</html>

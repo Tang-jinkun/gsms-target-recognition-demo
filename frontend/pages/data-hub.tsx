@@ -1,0 +1,140 @@
+import React from 'react'
+import Head from 'next/head'
+import TopNav from '../src/components/shell/TopNav'
+import Icon from '../src/components/shell/Icon'
+import { toast } from '../src/lib/toast'
+import { tree, filesByDir, TYPE_ICON, TYPE_LABEL, type HubFile } from '../src/lib/repos/dataHubRepo'
+
+export default function DataHubPage() {
+  const [dir, setDir] = React.useState('raw')
+  const [file, setFile] = React.useState<HubFile | null>(null)
+  const [query, setQuery] = React.useState('')
+  const [loading, setLoading] = React.useState(true)
+
+  React.useEffect(() => { setLoading(true); const t = setTimeout(() => setLoading(false), 240); return () => clearTimeout(t) }, [dir, query])
+
+  const arr = (filesByDir[dir] || []).filter(f => !query || f.name.toLowerCase().includes(query.toLowerCase()))
+
+  function selectDir(d: string) { setDir(d); setFile(null) }
+
+  return (
+    <>
+      <Head><title>数据管理 / Data Hub · GSMS</title></Head>
+      <div className="app">
+        <TopNav active="data" />
+        <div className="hub-head">
+          <h1>数据管理 / Data Hub</h1>
+          <span style={{ flex: 1 }} />
+          <div className="search"><Icon name="search" cls="ic-sm" /><input placeholder="搜索文件名…" value={query} onChange={e => setQuery(e.target.value)} /></div>
+          <button className="btn btn-primary" onClick={() => toast('上传功能开发中')}><Icon name="upload" cls="ic-sm" />上传数据</button>
+          <button className="btn" onClick={() => toast('新建文件夹开发中')}><Icon name="folder-plus" cls="ic-sm" />新建文件夹</button>
+          <button className="btn" onClick={() => toast('导入功能开发中')}><Icon name="download" cls="ic-sm" />导入</button>
+        </div>
+
+        <div className="work">
+          <aside className="col c-tree">
+            <div className="col-head"><h2>数据目录</h2></div>
+            <div className="col-body">
+              {tree.map(t => (
+                <div key={t.name} className={`tree-node open ${t.name === dir ? 'sel' : ''}`} onClick={() => selectDir(t.name)}>
+                  <span className="chev"><Icon name="chevron-right" cls="ic-sm" /></span><Icon name="folder" cls="ic-sm" /><span>{t.name}</span>
+                  <span className="tree-count">{t.count}</span>
+                </div>
+              ))}
+            </div>
+          </aside>
+
+          <section className="col c-list">
+            <div className="col-head"><h2>{dir}</h2><span className="right meta">{!loading && arr.length ? `${arr.length} 项` : ''}</span></div>
+            <div className="col-body">
+              {loading ? (
+                <div className="pad">{[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 40, marginBottom: 8 }} />)}</div>
+              ) : arr.length === 0 ? (
+                <div className="state-empty"><Icon name="folder-open" /><b>{query ? '无匹配文件' : '该目录为空'}</b>{query ? '换个关键词试试' : '上传数据或从其他目录移动文件到这里'}</div>
+              ) : (
+                arr.map((f, i) => (
+                  <div key={i} className={`row ${file?.name === f.name ? 'sel' : ''}`} onClick={() => setFile(f)}>
+                    <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type]} cls="ic-sm" /></span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                      <div className="fsub">{TYPE_LABEL[f.type]} · {f.size}</div>
+                    </div>
+                    <span className="actions"><button className="icon-btn sm" title="更多" aria-label="更多"><Icon name="more-horizontal" cls="ic-sm" /></button></span>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="col c-detail">
+            <div className="col-head"><h2>文件详情</h2></div>
+            <div className="col-body">
+              {!file ? (
+                <div className="state-empty" style={{ marginTop: 60 }}><Icon name="file-text" /><b>未选中文件</b>从中间列表选择一个文件查看其元数据。</div>
+              ) : (
+                <>
+                  <div className="pad" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span className={`fchip ${file.type}`} style={{ width: 40, height: 40 }}><Icon name={TYPE_ICON[file.type]} /></span>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 15, fontWeight: 650, color: 'var(--fg-strong)', wordBreak: 'break-all' }}>{file.name}</div>
+                      <div className="meta" style={{ marginTop: 2 }}>{TYPE_LABEL[file.type]} · {file.fmt} · {file.size}</div>
+                    </div>
+                  </div>
+                  <div className="sec-divider" />
+                  <div className="pad">
+                    <div className="glabel" style={{ marginBottom: 11 }}>基本信息</div>
+                    <dl className="kv">
+                      <dt>类型</dt><dd>{TYPE_LABEL[file.type]}</dd>
+                      <dt>格式</dt><dd>{file.fmt}</dd>
+                      <dt>大小</dt><dd className="mono">{file.size}</dd>
+                      <dt>创建时间</dt><dd className="mono">{file.created}</dd>
+                      <dt>修改时间</dt><dd className="mono">{file.modified}</dd>
+                      <dt>路径</dt><dd className="mono" style={{ fontSize: 11.5 }}>data/{dir}/{file.name}</dd>
+                      <dt>所属目录</dt><dd>{dir}</dd>
+                      <dt>编码</dt><dd>{file.enc}</dd>
+                      <dt>备注</dt><dd>{file.note}</dd>
+                    </dl>
+                  </div>
+                  {file.spatial && (
+                    <>
+                      <div className="sec-divider" />
+                      <div className="pad">
+                        <div className="glabel" style={{ marginBottom: 11 }}>空间信息</div>
+                        <dl className="kv">
+                          <dt>CRS</dt><dd className="mono">{file.spatial.crs}</dd>
+                          <dt>几何类型</dt><dd>{file.spatial.geom}</dd>
+                          <dt>要素数量</dt><dd className="mono">{file.spatial.feat}</dd>
+                          <dt>空间范围</dt><dd className="mono">{file.spatial.extent}</dd>
+                          <dt>分辨率</dt><dd className="mono">{file.spatial.res}</dd>
+                          <dt>波段数量</dt><dd className="mono">{file.spatial.bands}</dd>
+                        </dl>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <style jsx global>{`
+        .app { overflow-x: auto; }
+        .hub-head { height: 56px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
+        .hub-head h1 { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+        .search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); width: 240px; color: var(--faint); }
+        .search input { border: 0; outline: none; font-family: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
+        .work { min-width: 1180px; flex: 1; min-height: 0; display: flex; }
+        .c-tree { width: 240px; flex: none; border-right: 1px solid var(--border); }
+        .c-list { width: 360px; flex: none; border-right: 1px solid var(--border); }
+        .c-detail { flex: 1; min-width: 380px; }
+        .tree-node { display: flex; align-items: center; gap: 7px; padding: 7px 12px; cursor: pointer; font-size: 13px; color: var(--fg); transition: background .1s; }
+        .tree-node:hover { background: var(--surface-2); }
+        .tree-node.sel { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+        .tree-node .chev { color: var(--faint); display: inline-flex; transition: transform .12s; }
+        .tree-node.open .chev { transform: rotate(90deg); }
+        .tree-count { margin-left: auto; font-size: 11px; color: var(--faint); font-family: var(--mono); }
+      `}</style>
+    </>
+  )
+}
