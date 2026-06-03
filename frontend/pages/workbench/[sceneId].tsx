@@ -47,6 +47,9 @@ export default function WorkbenchPage() {
   const [view, setView] = React.useState<View>('agent')
   const [leftTab, setLeftTab] = React.useState<LeftTab>('layers')
   const [files, setFiles] = React.useState<WbFile[]>(SEED_FILES)
+  const [hubFiles, setHubFiles] = React.useState<WbFile[]>([])
+  const [importOpen, setImportOpen] = React.useState(false)
+  const [importSel, setImportSel] = React.useState<Record<string, boolean>>({})
   const [models, setModels] = React.useState<WbModel[]>(SEED_MODELS)
   const [layers, setLayers] = React.useState<WbLayer[]>([])
   const [fitNonce, setFitNonce] = React.useState(0)
@@ -101,6 +104,11 @@ export default function WorkbenchPage() {
     return () => { cancelled = true }
   }, [])
 
+  const refreshSceneFiles = React.useCallback(async () => {
+    const next = await workbenchRepo.listFiles(sceneId || undefined)
+    setFiles(sceneId ? next : (next.length ? next : SEED_FILES))
+  }, [sceneId])
+
   React.useEffect(() => {
     let cancelled = false
     workbenchRepo.listFiles(sceneId || undefined).then(f => { if (!cancelled) setFiles(sceneId ? f : (f.length ? f : SEED_FILES)) }).catch(() => { if (!cancelled && sceneId) setFiles([]) })
@@ -124,6 +132,43 @@ export default function WorkbenchPage() {
   }
   const setLayer = (id: string, patch: Partial<WbLayer>) => setLayers(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)))
   const removeLayer = (id: string) => { setLayers(prev => prev.filter(l => l.id !== id)); toast('已移除图层') }
+
+  async function openImportFiles() {
+    if (!sceneId) { toast('请先进入一个真实场景', 'error'); return }
+    try {
+      const all = await workbenchRepo.listDataHubFiles()
+      const imported = new Set(files.map(f => f.id))
+      setHubFiles(all.filter(f => !imported.has(f.id)))
+      setImportSel({})
+      setImportOpen(true)
+    } catch {
+      toast('Data Hub 文件加载失败，请检查后端服务', 'error')
+    }
+  }
+
+  async function importSelectedFiles() {
+    const fileIds = Object.keys(importSel).filter(id => importSel[id])
+    if (!sceneId || !fileIds.length) return
+    try {
+      const result = await workbenchRepo.importFiles(sceneId, fileIds)
+      toast(`已导入 ${result.imported} 个文件`)
+      setImportOpen(false)
+      await refreshSceneFiles()
+    } catch {
+      toast('导入失败，请检查后端服务', 'error')
+    }
+  }
+
+  async function removeImportedFile(fileId: string) {
+    if (!sceneId) return
+    try {
+      await workbenchRepo.removeFileImport(sceneId, fileId)
+      toast('已从场景移除文件引用')
+      await refreshSceneFiles()
+    } catch {
+      toast('移除失败，请检查后端服务', 'error')
+    }
+  }
 
   /* ---- chat ---- */
   const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
@@ -188,12 +233,12 @@ export default function WorkbenchPage() {
       let lastLen = 0
       pollRef.current = window.setInterval(async () => {
         try {
-          const txt = await workbenchRepo.getLogs(job_id)
+          const txt = await workbenchRepo.getLogs(job_id, sceneId || undefined)
           if (txt.length > lastLen) {
             txt.slice(lastLen).split('\n').filter(Boolean).forEach(line => pushLog(classifyLog(line), line))
             lastLen = txt.length
           }
-          const st = await workbenchRepo.getJob(job_id)
+          const st = await workbenchRepo.getJob(job_id, sceneId || undefined)
           if (st.status === 'succeeded' || st.status === 'failed') {
             if (pollRef.current) window.clearInterval(pollRef.current)
             setTask(st.status === 'succeeded' ? 'done' : 'fail')
@@ -322,7 +367,12 @@ export default function WorkbenchPage() {
 
             {leftTab === 'files' && (
               <div className="col-body">
-                {files.map(f => (
+                <div className="pad" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <button className="btn btn-sm" onClick={openImportFiles}><Icon name="download" cls="ic-sm" />导入 Data Hub 文件</button>
+                </div>
+                {files.length === 0 ? (
+                  <div className="state-empty"><Icon name="file" /><b>当前场景还没有文件</b>从 Data Hub 导入文件后，再配置模型输入。</div>
+                ) : files.map(f => (
                   <div className="row" key={f.id}>
                     <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
                     <div style={{ minWidth: 0 }}>
@@ -332,6 +382,7 @@ export default function WorkbenchPage() {
                     <span className="actions">
                       <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
                       <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
+                      {sceneId && <button className="icon-btn sm" title="从场景移除引用" aria-label="从场景移除引用" onClick={() => removeImportedFile(f.id)}><Icon name="trash" cls="ic-sm" /></button>}
                     </span>
                   </div>
                 ))}
@@ -459,6 +510,28 @@ export default function WorkbenchPage() {
           </aside>
         </div>
       </div>
+
+      <Modal open={importOpen} title="导入 Data Hub 文件" sub="选择全局 Data Hub 文件引用到当前场景；不会复制或删除原始文件。" onClose={() => setImportOpen(false)}
+        footer={<>
+          <span className="grow" />
+          <button className="btn" onClick={() => setImportOpen(false)}>取消</button>
+          <button className="btn btn-primary" disabled={!Object.values(importSel).some(Boolean)} onClick={importSelectedFiles}>导入</button>
+        </>}>
+        <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--r)' }}>
+          {hubFiles.length === 0 ? (
+            <div className="state-empty" style={{ margin: 20 }}><Icon name="file" /><b>没有可导入文件</b>Data Hub 为空，或所有文件都已导入当前场景。</div>
+          ) : hubFiles.map(f => (
+            <label className="row" key={f.id} style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={Boolean(importSel[f.id])} onChange={e => setImportSel(prev => ({ ...prev, [f.id]: e.target.checked }))} />
+              <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
+              <div style={{ minWidth: 0 }}>
+                <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Modal>
 
       {/* InVEST modal */}
       <Modal open={!!modalModel} title={`${modalModel?.name || ''} · 模型配置`} sub={modalModel?.description} onClose={() => setModalModel(null)}
