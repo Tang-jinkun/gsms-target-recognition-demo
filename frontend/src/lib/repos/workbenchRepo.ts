@@ -12,6 +12,7 @@ export type BackendAsset = {
   bounds?: number[] | null
   bounds_wgs84?: number[] | null
   preview_url?: string
+  geojson_url?: string
 }
 
 export type WbFile = {
@@ -54,15 +55,15 @@ function withScene(path: string, sceneId?: string) {
 
 export const workbenchRepo = {
   async listFiles(sceneId?: string): Promise<WbFile[]> {
-    const data = await api.get<BackendAsset[]>(withScene('/api/assets', sceneId))
+    const data = await api.get<BackendAsset[]>(sceneId ? `/api/scenes/${encodeURIComponent(sceneId)}/files` : '/api/assets')
     if (!Array.isArray(data)) return []
     return data.map(a => ({
       id: a.id,
       name: a.name,
       type: BACKEND_TO_UI[a.type] ?? 'other',
       size: a.size,
-      previewUrl: a.preview_url ? apiUrl(withScene(a.preview_url, sceneId)) : undefined,
-      geojsonUrl: a.type === 'geojson' ? apiUrl(withScene(`/api/assets/${encodeURIComponent(a.id)}/geojson`, sceneId)) : undefined,
+      previewUrl: a.preview_url ? apiUrl(a.preview_url) : undefined,
+      geojsonUrl: a.geojson_url ? apiUrl(a.geojson_url) : a.type === 'geojson' ? apiUrl(`/api/assets/${encodeURIComponent(a.id)}/geojson`) : undefined,
       bounds: a.bounds_wgs84 ?? a.bounds,
     }))
   },

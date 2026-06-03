@@ -8,7 +8,7 @@ import Modal from '../../src/components/shell/Modal'
 import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
 import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
-import { settingsRepo } from '../../src/lib/repos/settingsRepo'
+import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
 import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
@@ -63,7 +63,7 @@ export default function WorkbenchPage() {
   const [streaming, setStreaming] = React.useState(false)
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
-  const defaultModel = React.useMemo(() => (typeof window !== 'undefined' ? settingsRepo.defaultModel() : undefined), [])
+  const [defaultModel, setDefaultModel] = React.useState<ModelCfg | undefined>(undefined)
 
   // task + log
   const [task, setTask] = React.useState<TaskState>('idle')
@@ -80,13 +80,30 @@ export default function WorkbenchPage() {
 
   React.useEffect(() => {
     if (!sceneId) return
-    const s = scenesRepo.get(sceneId)
-    if (s) { setSceneName(s.name); setRegion(s.region) }
+    let cancelled = false
+    scenesRepo.get(sceneId).then(s => {
+      if (cancelled) return
+      if (s) {
+        setSceneName(s.name)
+        setRegion(s.region)
+      } else {
+        setSceneName(sceneId)
+        setRegion('')
+        toast('未找到后端场景，请从场景页进入真实场景')
+      }
+    })
+    return () => { cancelled = true }
   }, [sceneId])
 
   React.useEffect(() => {
     let cancelled = false
-    workbenchRepo.listFiles(sceneId || undefined).then(f => { if (!cancelled && f.length) setFiles(f) }).catch(() => {})
+    settingsRepo.defaultModel().then(model => { if (!cancelled) setDefaultModel(model) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  React.useEffect(() => {
+    let cancelled = false
+    workbenchRepo.listFiles(sceneId || undefined).then(f => { if (!cancelled) setFiles(sceneId ? f : (f.length ? f : SEED_FILES)) }).catch(() => { if (!cancelled && sceneId) setFiles([]) })
     workbenchRepo.listModels().then(m => { if (!cancelled && m.length) setModels(m) }).catch(() => {})
     return () => { cancelled = true }
   }, [sceneId])

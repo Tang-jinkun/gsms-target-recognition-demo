@@ -1,24 +1,28 @@
-import { loadSeeded, save } from '../localStore'
+import { api } from '../apiClient'
 
 export type ModelCfg = {
+  providerId?: string
   name: string
   provider: string
   id: string
+  url?: string
   status: 'connected' | 'untested' | 'failed'
   def: boolean
 }
 export type UserInfo = { name: string; email: string; org: string; field: string }
 
-const MODELS_KEY = 'gsms.llmModels'
-const USER_KEY = 'gsms.user'
-
-const SEED_MODELS: ModelCfg[] = [
-  { name: 'GPT-4o', provider: 'OpenAI', id: 'gpt-4o', status: 'connected', def: true },
-  { name: 'Claude 3.5 Sonnet', provider: 'Anthropic', id: 'claude-3-5-sonnet', status: 'connected', def: false },
-  { name: 'DeepSeek-V2', provider: 'DeepSeek', id: 'deepseek-chat', status: 'untested', def: false },
-  { name: '本地 Qwen2-72B', provider: 'Local', id: 'qwen2-72b', status: 'failed', def: false },
-]
-const SEED_USER: UserInfo = { name: '李泽', email: 'lize@geosci.edu.cn', org: '地理科学与生态研究院', field: '湿地碳汇与生态系统服务' }
+type BackendProvider = {
+  provider_id?: string
+  name: string
+  provider: string
+  id?: string
+  model_id?: string
+  url?: string
+  base_url?: string
+  status?: ModelCfg['status']
+  def?: boolean
+  is_default?: boolean
+}
 
 export const STATUS_META: Record<ModelCfg['status'], { badge: string; label: string; dot: boolean }> = {
   connected: { badge: 'badge-ok', label: '已连接', dot: true },
@@ -28,13 +32,70 @@ export const STATUS_META: Record<ModelCfg['status'], { badge: string; label: str
 
 export const PROVIDERS = ['OpenAI', 'Anthropic', 'DeepSeek', 'Qwen', 'Local', 'Custom']
 
+function normalizeProvider(item: BackendProvider): ModelCfg {
+  return {
+    providerId: item.provider_id,
+    name: item.name,
+    provider: item.provider,
+    id: item.model_id || item.id || '',
+    url: item.base_url || item.url || '',
+    status: item.status || 'untested',
+    def: Boolean(item.is_default ?? item.def),
+  }
+}
+
 export const settingsRepo = {
-  listModels: () => loadSeeded(MODELS_KEY, SEED_MODELS),
-  saveModels: (m: ModelCfg[]) => save(MODELS_KEY, m),
-  defaultModel(): ModelCfg | undefined {
-    const list = loadSeeded(MODELS_KEY, SEED_MODELS)
+  async listModels(): Promise<ModelCfg[]> {
+    const data = await api.get<BackendProvider[]>('/api/settings/llm-providers')
+    return Array.isArray(data) ? data.map(normalizeProvider) : []
+  },
+
+  async defaultModel(): Promise<ModelCfg | undefined> {
+    const list = await this.listModels()
     return list.find(m => m.def) ?? list[0]
   },
-  getUser: () => loadSeeded(USER_KEY, SEED_USER),
-  saveUser: (u: UserInfo) => save(USER_KEY, u),
+
+  async createModel(input: { name: string; provider: string; id: string; url: string; key?: string; def: boolean }): Promise<ModelCfg> {
+    const data = await api.post<BackendProvider>('/api/settings/llm-providers', {
+      name: input.name,
+      provider: input.provider,
+      model_id: input.id,
+      base_url: input.url,
+      api_key: input.key,
+      def: input.def,
+    })
+    return normalizeProvider(data)
+  },
+
+  async updateModel(model: ModelCfg, input: { name: string; provider: string; id: string; url: string; key?: string; def: boolean }): Promise<ModelCfg> {
+    if (!model.providerId) throw new Error('Missing provider id')
+    const data = await api.put<BackendProvider>(`/api/settings/llm-providers/${encodeURIComponent(model.providerId)}`, {
+      name: input.name,
+      provider: input.provider,
+      model_id: input.id,
+      base_url: input.url,
+      api_key: input.key || undefined,
+      def: input.def,
+    })
+    return normalizeProvider(data)
+  },
+
+  async removeModel(model: ModelCfg): Promise<void> {
+    if (!model.providerId) throw new Error('Missing provider id')
+    await api.del(`/api/settings/llm-providers/${encodeURIComponent(model.providerId)}`)
+  },
+
+  async setDefault(model: ModelCfg): Promise<ModelCfg> {
+    if (!model.providerId) throw new Error('Missing provider id')
+    const data = await api.post<BackendProvider>(`/api/settings/llm-providers/${encodeURIComponent(model.providerId)}/default`, {})
+    return normalizeProvider(data)
+  },
+
+  async getUser(): Promise<UserInfo> {
+    return api.get<UserInfo>('/api/settings/user')
+  },
+
+  async saveUser(user: UserInfo): Promise<UserInfo> {
+    return api.put<UserInfo>('/api/settings/user', user)
+  },
 }

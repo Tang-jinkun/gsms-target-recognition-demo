@@ -3,19 +3,59 @@ import Head from 'next/head'
 import TopNav from '../src/components/shell/TopNav'
 import Icon from '../src/components/shell/Icon'
 import { toast } from '../src/lib/toast'
-import { tree, filesByDir, TYPE_ICON, TYPE_LABEL, type HubFile } from '../src/lib/repos/dataHubRepo'
+import { buildTree, dataHubRepo, filesForDir, TYPE_ICON, TYPE_LABEL, type HubFile } from '../src/lib/repos/dataHubRepo'
 
 export default function DataHubPage() {
-  const [dir, setDir] = React.useState('raw')
+  const [dir, setDir] = React.useState('all')
+  const [files, setFiles] = React.useState<HubFile[]>([])
   const [file, setFile] = React.useState<HubFile | null>(null)
   const [query, setQuery] = React.useState('')
   const [loading, setLoading] = React.useState(true)
+  const inputRef = React.useRef<HTMLInputElement | null>(null)
 
-  React.useEffect(() => { setLoading(true); const t = setTimeout(() => setLoading(false), 240); return () => clearTimeout(t) }, [dir, query])
+  const reload = React.useCallback(async () => {
+    try {
+      setLoading(true)
+      const next = await dataHubRepo.list(query)
+      setFiles(next)
+      setFile(prev => prev ? next.find(item => item.id === prev.id) || null : null)
+    } catch {
+      toast('数据加载失败，请检查后端服务')
+    } finally {
+      setLoading(false)
+    }
+  }, [query])
 
-  const arr = (filesByDir[dir] || []).filter(f => !query || f.name.toLowerCase().includes(query.toLowerCase()))
+  React.useEffect(() => { reload() }, [reload])
+
+  const tree = buildTree(files)
+  const arr = filesForDir(files, dir).filter(f => !query || f.name.toLowerCase().includes(query.toLowerCase()))
 
   function selectDir(d: string) { setDir(d); setFile(null) }
+  async function uploadFiles(list: FileList | null) {
+    if (!list?.length) return
+    try {
+      setLoading(true)
+      for (const item of Array.from(list)) await dataHubRepo.upload(item)
+      toast(`已上传 ${list.length} 个文件`)
+      await reload()
+    } catch {
+      toast('上传失败，请检查后端服务', 'error')
+    } finally {
+      setLoading(false)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+  async function deleteFile(target: HubFile) {
+    try {
+      await dataHubRepo.remove(target.id)
+      toast('已删除文件')
+      setFile(null)
+      await reload()
+    } catch {
+      toast('删除失败，请检查后端服务', 'error')
+    }
+  }
 
   return (
     <>
@@ -26,7 +66,8 @@ export default function DataHubPage() {
           <h1>数据管理 / Data Hub</h1>
           <span style={{ flex: 1 }} />
           <div className="search"><Icon name="search" cls="ic-sm" /><input placeholder="搜索文件名…" value={query} onChange={e => setQuery(e.target.value)} /></div>
-          <button className="btn btn-primary" onClick={() => toast('上传功能开发中')}><Icon name="upload" cls="ic-sm" />上传数据</button>
+          <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={e => uploadFiles(e.target.files)} />
+          <button className="btn btn-primary" onClick={() => inputRef.current?.click()}><Icon name="upload" cls="ic-sm" />上传数据</button>
           <button className="btn" onClick={() => toast('新建文件夹开发中')}><Icon name="folder-plus" cls="ic-sm" />新建文件夹</button>
           <button className="btn" onClick={() => toast('导入功能开发中')}><Icon name="download" cls="ic-sm" />导入</button>
         </div>
@@ -52,14 +93,14 @@ export default function DataHubPage() {
               ) : arr.length === 0 ? (
                 <div className="state-empty"><Icon name="folder-open" /><b>{query ? '无匹配文件' : '该目录为空'}</b>{query ? '换个关键词试试' : '上传数据或从其他目录移动文件到这里'}</div>
               ) : (
-                arr.map((f, i) => (
-                  <div key={i} className={`row ${file?.name === f.name ? 'sel' : ''}`} onClick={() => setFile(f)}>
+                arr.map(f => (
+                  <div key={f.id} className={`row ${file?.id === f.id ? 'sel' : ''}`} onClick={() => setFile(f)}>
                     <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type]} cls="ic-sm" /></span>
                     <div style={{ minWidth: 0 }}>
                       <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                       <div className="fsub">{TYPE_LABEL[f.type]} · {f.size}</div>
                     </div>
-                    <span className="actions"><button className="icon-btn sm" title="更多" aria-label="更多"><Icon name="more-horizontal" cls="ic-sm" /></button></span>
+                    <span className="actions"><button className="icon-btn sm" title="删除" aria-label="删除" onClick={e => { e.stopPropagation(); deleteFile(f) }}><Icon name="trash" cls="ic-sm" /></button></span>
                   </div>
                 ))
               )}
@@ -89,7 +130,7 @@ export default function DataHubPage() {
                       <dt>大小</dt><dd className="mono">{file.size}</dd>
                       <dt>创建时间</dt><dd className="mono">{file.created}</dd>
                       <dt>修改时间</dt><dd className="mono">{file.modified}</dd>
-                      <dt>路径</dt><dd className="mono" style={{ fontSize: 11.5 }}>data/{dir}/{file.name}</dd>
+                      <dt>路径</dt><dd className="mono" style={{ fontSize: 11.5 }}>data/project/files/{file.name}</dd>
                       <dt>所属目录</dt><dd>{dir}</dd>
                       <dt>编码</dt><dd>{file.enc}</dd>
                       <dt>备注</dt><dd>{file.note}</dd>

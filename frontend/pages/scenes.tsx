@@ -34,10 +34,18 @@ export default function ScenesPage() {
   // delete modal
   const [delId, setDelId] = React.useState<string | null>(null)
 
-  const reload = React.useCallback(() => setScenes(scenesRepo.list()), [])
+  const reload = React.useCallback(async () => {
+    try {
+      setLoading(true)
+      setScenes(await scenesRepo.list())
+    } catch {
+      toast('场景加载失败，请检查后端服务')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
   React.useEffect(() => {
-    const t = setTimeout(() => { reload(); setLoading(false) }, 260)
-    return () => clearTimeout(t)
+    reload()
   }, [reload])
 
   const filtered = scenes.filter(s => !query || s.name.includes(query) || s.desc.includes(query))
@@ -54,16 +62,28 @@ export default function ScenesPage() {
   function openEdit(s: Scene) {
     setEditingId(s.id); setForm({ name: s.name, desc: s.desc, region: s.region, note: s.note }); setFormErr(''); setModalOpen(true)
   }
-  function save() {
+  async function save() {
     const name = form.name.trim()
     if (!name) { setFormErr('请填写场景名称。'); return }
-    if (scenesRepo.nameExists(name, editingId ?? undefined)) { setFormErr('已存在同名场景，请换一个名称。'); return }
-    if (editingId) { scenesRepo.update(editingId, { name, desc: form.desc.trim(), region: form.region.trim(), note: form.note.trim() }); toast('场景信息已更新') }
-    else { scenesRepo.create({ name, desc: form.desc.trim(), region: form.region.trim(), note: form.note.trim() }); toast('已创建场景') }
-    setModalOpen(false); reload()
+    try {
+      if (await scenesRepo.nameExists(name, editingId ?? undefined)) { setFormErr('已存在同名场景，请换一个名称。'); return }
+      if (editingId) { await scenesRepo.update(editingId, { name, desc: form.desc.trim(), region: form.region.trim(), note: form.note.trim() }); toast('场景信息已更新') }
+      else { await scenesRepo.create({ name, desc: form.desc.trim(), region: form.region.trim(), note: form.note.trim() }); toast('已创建场景') }
+      setModalOpen(false); await reload()
+    } catch {
+      setFormErr('保存失败，请检查后端服务。')
+    }
   }
-  function confirmDelete() {
-    if (delId) { scenesRepo.remove(delId); toast('已删除场景'); reload() }
+  async function confirmDelete() {
+    if (delId) {
+      try {
+        await scenesRepo.remove(delId)
+        toast('已删除场景')
+        await reload()
+      } catch {
+        toast('删除失败，请检查后端服务')
+      }
+    }
     setDelId(null)
   }
 
