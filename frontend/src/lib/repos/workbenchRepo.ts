@@ -33,6 +33,16 @@ export type WbModel = {
   inputs?: Array<{ id: string; label: string; kind?: string; asset_type?: string; required?: boolean }>
 }
 
+export type WbOutput = {
+  name: string
+  type: string
+  size?: number
+  previewUrl?: string
+  downloadUrl?: string
+  geojsonUrl?: string
+  bounds?: number[] | null
+}
+
 const BACKEND_TO_UI: Record<string, AssetType> = {
   raster: 'raster',
   vector: 'vector',
@@ -111,8 +121,18 @@ export const workbenchRepo = {
     api.get<{ job_id: string; status: string }>(sceneId ? `/api/scenes/${encodeURIComponent(sceneId)}/jobs/${encodeURIComponent(jobId)}` : `/api/jobs/${jobId}`),
   getLogs: (jobId: string, sceneId?: string) =>
     api.text(sceneId ? `/api/scenes/${encodeURIComponent(sceneId)}/jobs/${encodeURIComponent(jobId)}/logs` : `/api/jobs/${jobId}/logs`),
-  getOutputs: (jobId: string, sceneId?: string) =>
-    api.get<Array<{ name: string; type: string; preview_url?: string; download_url?: string }>>(
+  async getOutputs(jobId: string, sceneId?: string): Promise<WbOutput[]> {
+    const rows = await api.get<Array<{ name: string; type: string; size?: number; preview_url?: string; download_url?: string; geojson_url?: string; bounds?: number[] | null; bounds_wgs84?: number[] | null }>>(
       sceneId ? `/api/scenes/${encodeURIComponent(sceneId)}/jobs/${encodeURIComponent(jobId)}/outputs` : `/api/jobs/${jobId}/outputs`,
-    ),
+    )
+    return Array.isArray(rows) ? rows.map(o => ({
+      name: o.name,
+      type: o.type,
+      size: o.size,
+      previewUrl: o.preview_url ? apiUrl(o.preview_url) : undefined,
+      downloadUrl: o.download_url ? apiUrl(o.download_url) : undefined,
+      geojsonUrl: o.geojson_url ? apiUrl(o.geojson_url) : undefined,
+      bounds: o.bounds_wgs84 ?? o.bounds,
+    })) : []
+  },
 }

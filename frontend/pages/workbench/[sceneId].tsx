@@ -9,7 +9,7 @@ import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
 import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
 import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
-import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
+import { workbenchRepo, type WbFile, type WbModel, type WbOutput } from '../../src/lib/repos/workbenchRepo'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -72,11 +72,15 @@ export default function WorkbenchPage() {
   const [task, setTask] = React.useState<TaskState>('idle')
   const [curModel, setCurModel] = React.useState('Carbon Storage')
   const [logLines, setLogLines] = React.useState<{ cls: string; text: string }[]>([{ cls: 'l-dim', text: '等待任务… 运行模型后日志将显示在此。' }])
+  const [outputs, setOutputs] = React.useState<WbOutput[]>([])
+  const [outputsJobId, setOutputsJobId] = React.useState('')
+  const [outputsLoading, setOutputsLoading] = React.useState(false)
   const logRef = React.useRef<HTMLDivElement | null>(null)
   const pollRef = React.useRef<number | null>(null)
 
   // invest modal
   const [modalModel, setModalModel] = React.useState<WbModel | null>(null)
+  const [modelSearch, setModelSearch] = React.useState('')
   const [inputSel, setInputSel] = React.useState<Record<string, string>>({})
   const [runName, setRunName] = React.useState('')
   const [checkResult, setCheckResult] = React.useState<React.ReactNode>(null)
@@ -170,6 +174,32 @@ export default function WorkbenchPage() {
     }
   }
 
+  function outputToFile(o: WbOutput): WbFile {
+    const type = uiFromBackendAssetType(o.type)
+    return {
+      id: `${outputsJobId}:${o.name}`,
+      name: o.name,
+      type,
+      size: o.size,
+      previewUrl: o.previewUrl,
+      geojsonUrl: o.geojsonUrl,
+      bounds: o.bounds,
+    }
+  }
+
+  async function loadOutputs(jobId: string) {
+    setOutputsJobId(jobId)
+    setOutputsLoading(true)
+    try {
+      setOutputs(await workbenchRepo.getOutputs(jobId, sceneId || undefined))
+    } catch {
+      setOutputs([])
+      pushLog('l-warn', 'Outputs API request failed.')
+    } finally {
+      setOutputsLoading(false)
+    }
+  }
+
   /* ---- chat ---- */
   const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
   function addAtt(name: string) { setAtts(prev => (prev.includes(name) ? prev : [...prev, name])); setAttOpen(false) }
@@ -242,6 +272,7 @@ export default function WorkbenchPage() {
           if (st.status === 'succeeded' || st.status === 'failed') {
             if (pollRef.current) window.clearInterval(pollRef.current)
             setTask(st.status === 'succeeded' ? 'done' : 'fail')
+            if (st.status === 'succeeded') void loadOutputs(job_id)
             toast(st.status === 'succeeded' ? '运行完成：' + model.name : '运行失败：' + model.name, st.status === 'failed' ? 'error' : 'ok')
           }
         } catch { /* keep polling */ }
@@ -257,6 +288,8 @@ export default function WorkbenchPage() {
     setCurModel(model.name)
     setTask('run')
     setLogLines([])
+    setOutputs([])
+    setOutputsJobId('')
     const ok = await realRun(model)
     if (!ok) { pushLog('l-dim', '后端不可用，进入演示模式。'); simulateRun(model.name) }
   }
@@ -298,6 +331,11 @@ export default function WorkbenchPage() {
     fail: { ic: 'fail', icn: 'alert-circle', title: '运行失败，请查看日志', badge: <span className="badge badge-danger"><span className="bdot" />失败</span> },
   }
   const tm = TASK_META[task]
+  const filteredModels = models.filter(m => {
+    const q = modelSearch.trim().toLowerCase()
+    if (!q) return true
+    return `${m.name} ${m.id}`.toLowerCase().includes(q)
+  })
 
   function ChatList({ pad }: { pad: string }) {
     return (
@@ -391,15 +429,18 @@ export default function WorkbenchPage() {
 
             {leftTab === 'invest' && (
               <div className="col-body">
+                <div className="pad model-search">
+                  <Icon name="search" cls="ic-sm" />
+                  <input value={modelSearch} onChange={e => setModelSearch(e.target.value)} placeholder="搜索模型" />
+                </div>
                 <div>
-                  {models.map(m => {
+                  {filteredModels.map(m => {
                     const ready = m.status !== 'planned'
                     return (
                       <div className={`model-row ${ready ? '' : 'disabled'}`} key={m.id} onClick={() => openInvest(m)}>
                         <span className="fchip" style={{ background: ready ? 'var(--accent-soft)' : 'var(--inset)', color: ready ? 'var(--accent-ink)' : 'var(--faint)' }}><Icon name="box" cls="ic-sm" /></span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div className="ftitle">{m.name}</div>
-                          <div className="fsub">{m.description || ''}</div>
                         </div>
                         <span className={`badge ${ready ? 'badge-ok' : 'badge-muted'}`}>{ready ? '可运行' : '规划中'}</span>
                       </div>
@@ -498,6 +539,32 @@ export default function WorkbenchPage() {
                 {tm.badge}
               </div>
             </div>
+            <div className="outputs-card">
+              <div className="col-head compact">
+                <h2>输出文件</h2>
+                {outputsLoading && <span className="meta">加载中...</span>}
+              </div>
+              {outputs.length === 0 ? (
+                <div className="outputs-empty">{outputsLoading ? '正在读取任务输出...' : '运行成功后，输出会显示在这里。'}</div>
+              ) : outputs.map(o => {
+                const f = outputToFile(o)
+                const canMap = (f.type === 'raster' && f.previewUrl && f.bounds?.length === 4) || (f.type === 'vector' && f.geojsonUrl)
+                return (
+                  <div className="output-row" key={`${outputsJobId}:${o.name}`}>
+                    <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
+                    <div className="output-main">
+                      <div className="ftitle" title={o.name}>{o.name}</div>
+                      <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(o.size)}</div>
+                    </div>
+                    <span className="actions">
+                      {o.previewUrl && <button className="icon-btn sm" title="预览" aria-label="预览" onClick={() => window.open(o.previewUrl, '_blank', 'noopener,noreferrer')}><Icon name="eye" cls="ic-sm" /></button>}
+                      {o.downloadUrl && <button className="icon-btn sm" title="下载" aria-label="下载" onClick={() => window.open(o.downloadUrl, '_blank', 'noopener,noreferrer')}><Icon name="download" cls="ic-sm" /></button>}
+                      <button className="icon-btn sm" title="加入地图" aria-label="加入地图" disabled={!canMap} onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
             <div className="col-head" style={{ borderTop: '1px solid var(--border)' }}>
               <h2 style={{ fontSize: 12 }}>运行日志</h2>
               <div className="right"><button className="icon-btn sm" title="复制日志" aria-label="复制日志" onClick={() => { navigator.clipboard?.writeText(logLines.map(l => l.text).join('\n')).then(() => toast('日志已复制'), () => toast('复制失败', 'error')) }}><Icon name="copy" cls="ic-sm" /></button></div>
@@ -595,11 +662,16 @@ export default function WorkbenchPage() {
         .model-row:hover { background: var(--surface-2); }
         .model-row.disabled { cursor: not-allowed; }
         .model-row.disabled:hover { background: transparent; }
+        .model-search { position: relative; border-bottom: 1px solid var(--border); }
+        .model-search .ic { position: absolute; left: 21px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+        .model-search input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--fg); font: inherit; font-size: 12.5px; outline: none; padding: 0 10px 0 30px; }
+        .model-search input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
         .chat-wrap { height: 100%; display: flex; flex-direction: column; }
         .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 0 8px; }
-        .chat-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
+        .chat-inner { width: 100%; max-width: none; margin: 0; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
         .msg { display: flex; align-items: flex-end; gap: 9px; }
-        .msg.user { flex-direction: row-reverse; }
+        .msg.agent { justify-content: flex-start; }
+        .msg.user { flex-direction: row-reverse; justify-content: flex-start; }
         .msg .who { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
         .msg.user .who { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent-line); }
         .msg.agent .who { background: var(--accent); color: #fff; }
@@ -652,6 +724,13 @@ export default function WorkbenchPage() {
         .ti.run { background: var(--warn-soft); color: oklch(55% 0.12 65); }
         .ti.done { background: var(--ok-soft); color: var(--ok); }
         .ti.fail { background: var(--danger-soft); color: var(--danger); }
+        .outputs-card { border-bottom: 1px solid var(--border); }
+        .col-head.compact { height: 36px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+        .outputs-empty { padding: 12px 14px 14px; color: var(--faint); font-size: 12px; line-height: 1.5; }
+        .output-row { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+        .output-row:last-child { border-bottom: 0; }
+        .output-main { flex: 1; min-width: 0; }
+        .output-main .ftitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       `}</style>
     </>
   )
