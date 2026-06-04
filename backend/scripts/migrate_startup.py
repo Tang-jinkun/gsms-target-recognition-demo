@@ -21,6 +21,7 @@ def main() -> None:
     cfg = Config(str(root / "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
 
+    should_stamp_initial = False
     engine = create_engine(DATABASE_URL)
     with engine.begin() as conn:
         inspector = inspect(conn)
@@ -28,11 +29,14 @@ def main() -> None:
         has_version = "alembic_version" in tables
         has_initial_schema = "scenes" in tables and "data_files" in tables
         if has_initial_schema and not has_version:
-            command.stamp(cfg, "0001")
+            should_stamp_initial = True
         elif has_version:
             rows = conn.execute(text("SELECT version_num FROM alembic_version")).fetchall()
             if not rows and has_initial_schema:
-                command.stamp(cfg, "0001")
+                should_stamp_initial = True
+
+    if should_stamp_initial:
+        command.stamp(cfg, "0001")
 
     command.upgrade(cfg, "head")
 
