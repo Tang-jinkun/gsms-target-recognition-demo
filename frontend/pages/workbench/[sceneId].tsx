@@ -1,4 +1,4 @@
-import React from 'react'
+﻿import React from 'react'
 import Head from 'next/head'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
@@ -17,10 +17,10 @@ type LeftTab = 'layers' | 'files' | 'invest'
 type TaskState = 'idle' | 'run' | 'done' | 'fail'
 type ChatMsg = { role: 'user' | 'agent'; html: string; att: string[] }
 
-const TYPE_LABEL: Record<string, string> = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹', other: '其他' }
+const TYPE_LABEL: Record<string, string> = { raster: '鏍呮牸', vector: '鐭㈤噺', table: '琛ㄦ牸', text: '鏂囨湰', folder: '鏂囦欢澶?, other: '鍏朵粬' }
 const TYPE_ICON: Record<string, string> = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', other: 'file' }
 
-/* fallback seeds (used when backend offline) — mirror prototype */
+/* fallback seeds (used when backend offline) 鈥?mirror prototype */
 const SEED_FILES: WbFile[] = [
   { id: 'landuse_2020.tif', name: 'landuse_2020.tif', type: 'raster', size: 184 * 1024 * 1024 },
   { id: 'study_boundary.shp', name: 'study_boundary.shp', type: 'vector', size: 2.1 * 1024 * 1024 },
@@ -28,11 +28,11 @@ const SEED_FILES: WbFile[] = [
   { id: 'dem_30m.tif', name: 'dem_30m.tif', type: 'raster', size: 92 * 1024 * 1024 },
 ]
 const SEED_MODELS: WbModel[] = [
-  { id: 'carbon', name: 'Carbon Storage', status: 'ready', description: '碳储量与固碳 · 估算研究区地上/地下/土壤/枯落物碳库', inputs: [{ id: 'lulc_bas_asset_id', label: '土地利用数据', kind: 'asset', asset_type: 'raster', required: true }, { id: 'carbon_pools_asset_id', label: '碳密度表', kind: 'asset', asset_type: 'table', required: true }, { id: 'aoi_asset_id', label: '研究区边界', kind: 'asset', asset_type: 'geojson' }] },
-  { id: 'habitat_quality', name: 'Habitat Quality', status: 'ready', description: '生境质量 · 基于威胁因子评估生境退化与质量', inputs: [{ id: 'lulc_cur_asset_id', label: '土地利用数据', kind: 'asset', asset_type: 'raster', required: true }] },
-  { id: 'water_yield', name: 'Water Yield', status: 'planned', description: '产水量 · 流域尺度年均产水量估算', inputs: [] },
-  { id: 'sdr', name: 'Sediment Delivery Ratio', status: 'planned', description: '泥沙输移比 · 土壤侵蚀与泥沙输移（规划中）', inputs: [] },
-  { id: 'ndr', name: 'Nutrient Delivery Ratio', status: 'planned', description: '养分输移比 · 氮磷负荷与输移（规划中）', inputs: [] },
+  { id: 'carbon', name: 'Carbon Storage', status: 'ready', description: '纰冲偍閲忎笌鍥虹⒊ 路 浼扮畻鐮旂┒鍖哄湴涓?鍦颁笅/鍦熷￥/鏋惤鐗╃⒊搴?, inputs: [{ id: 'lulc_bas_asset_id', label: '鍦熷湴鍒╃敤鏁版嵁', kind: 'asset', asset_type: 'raster', required: true }, { id: 'carbon_pools_asset_id', label: '纰冲瘑搴﹁〃', kind: 'asset', asset_type: 'table', required: true }, { id: 'aoi_asset_id', label: '鐮旂┒鍖鸿竟鐣?, kind: 'asset', asset_type: 'geojson' }] },
+  { id: 'habitat_quality', name: 'Habitat Quality', status: 'ready', description: '鐢熷璐ㄩ噺 路 鍩轰簬濞佽儊鍥犲瓙璇勪及鐢熷閫€鍖栦笌璐ㄩ噺', inputs: [{ id: 'lulc_cur_asset_id', label: '鍦熷湴鍒╃敤鏁版嵁', kind: 'asset', asset_type: 'raster', required: true }] },
+  { id: 'water_yield', name: 'Water Yield', status: 'planned', description: '浜ф按閲?路 娴佸煙灏哄害骞村潎浜ф按閲忎及绠?, inputs: [] },
+  { id: 'sdr', name: 'Sediment Delivery Ratio', status: 'planned', description: '娉ユ矙杈撶Щ姣?路 鍦熷￥渚佃殌涓庢偿娌欒緭绉伙紙瑙勫垝涓級', inputs: [] },
+  { id: 'ndr', name: 'Nutrient Delivery Ratio', status: 'planned', description: '鍏诲垎杈撶Щ姣?路 姘７璐熻嵎涓庤緭绉伙紙瑙勫垝涓級', inputs: [] },
 ]
 
 const backendType = (uiType: AssetType): string => (uiType === 'vector' ? 'geojson' : uiType)
@@ -41,7 +41,7 @@ const uiFromBackendAssetType = (bt?: string): AssetType => (bt === 'geojson' ? '
 export default function WorkbenchPage() {
   const router = useRouter()
   const sceneId = typeof router.query.sceneId === 'string' ? router.query.sceneId : ''
-  const [sceneName, setSceneName] = React.useState('场景')
+  const [sceneName, setSceneName] = React.useState('鍦烘櫙')
   const [region, setRegion] = React.useState('')
 
   const [view, setView] = React.useState<View>('agent')
@@ -56,10 +56,10 @@ export default function WorkbenchPage() {
 
   // chat
   const [msgs, setMsgs] = React.useState<ChatMsg[]>([
-    { role: 'user', html: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', att: [] },
-    { role: 'agent', html: '当前项目包含 <code>landuse_2020.tif</code>（土地利用栅格）、<code>study_boundary.shp</code>（研究区边界）和 <code>carbon_pools.csv</code>（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', att: [] },
-    { role: 'user', html: '好的，先把这份土地利用数据作为上下文。', att: ['landuse_2020.tif'] },
-    { role: 'agent', html: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
+    { role: 'user', html: '甯垜鐪嬬湅褰撳墠椤圭洰閲屾湁鍝簺鏁版嵁鍙互鐢ㄦ潵璺戠⒊鍌ㄩ噺妯″瀷锛?, att: [] },
+    { role: 'agent', html: '褰撳墠椤圭洰鍖呭惈 <code>landuse_2020.tif</code>锛堝湡鍦板埄鐢ㄦ爡鏍硷級銆?code>study_boundary.shp</code>锛堢爺绌跺尯杈圭晫锛夊拰 <code>carbon_pools.csv</code>锛堢⒊瀵嗗害琛級銆傝繖涓夐」姝ｅソ瀵瑰簲 Carbon Storage 妯″瀷鐨勫叏閮ㄥ繀闇€杈撳叆锛屽彲浠ョ洿鎺ュ湪宸︽爮 InVEST 鏍囩閲屾墜鍔ㄩ厤缃繍琛屻€?, att: [] },
+    { role: 'user', html: '濂界殑锛屽厛鎶婅繖浠藉湡鍦板埄鐢ㄦ暟鎹綔涓轰笂涓嬫枃銆?, att: ['landuse_2020.tif'] },
+    { role: 'agent', html: '宸茶褰曡繖浠藉湡鍦板埄鐢ㄦ暟鎹綔涓哄璇濅笂涓嬫枃銆傞渶瑕佹垜瀵瑰畠鐨勫垎绫讳綋绯绘垨鏃剁浉鍋氳繘涓€姝ヨ鏄庡悧锛?, att: [] },
   ])
   const [atts, setAtts] = React.useState<string[]>([])
   const [draft, setDraft] = React.useState('')
@@ -71,7 +71,7 @@ export default function WorkbenchPage() {
   // task + log
   const [task, setTask] = React.useState<TaskState>('idle')
   const [curModel, setCurModel] = React.useState('Carbon Storage')
-  const [logLines, setLogLines] = React.useState<{ cls: string; text: string }[]>([{ cls: 'l-dim', text: '等待任务… 运行模型后日志将显示在此。' }])
+  const [logLines, setLogLines] = React.useState<{ cls: string; text: string }[]>([{ cls: 'l-dim', text: '绛夊緟浠诲姟鈥?杩愯妯″瀷鍚庢棩蹇楀皢鏄剧ず鍦ㄦ銆? }])
   const [outputs, setOutputs] = React.useState<WbOutput[]>([])
   const [outputsJobId, setOutputsJobId] = React.useState('')
   const [outputsLoading, setOutputsLoading] = React.useState(false)
@@ -96,7 +96,7 @@ export default function WorkbenchPage() {
       } else {
         setSceneName(sceneId)
         setRegion('')
-        toast('未找到后端场景，请从场景页进入真实场景')
+        toast('鏈壘鍒板悗绔満鏅紝璇蜂粠鍦烘櫙椤佃繘鍏ョ湡瀹炲満鏅?)
       }
     })
     return () => { cancelled = true }
@@ -126,19 +126,19 @@ export default function WorkbenchPage() {
 
   /* ---- layers ---- */
   function addToMap(f: WbFile) {
-    if (f.type !== 'raster' && f.type !== 'vector') { toast('该类型不支持加入地图'); return }
+    if (f.type !== 'raster' && f.type !== 'vector') { toast('璇ョ被鍨嬩笉鏀寔鍔犲叆鍦板浘'); return }
     const id = 'ly_' + f.id.replace(/[^a-zA-Z0-9_-]/g, '_')
-    if (layers.some(l => l.id === id)) { toast('图层已在地图中'); return }
+    if (layers.some(l => l.id === id)) { toast('鍥惧眰宸插湪鍦板浘涓?); return }
     setLayers(prev => [{ id, name: f.name, type: f.type === 'raster' ? 'raster' : 'vector', visible: true, opacity: f.type === 'raster' ? 64 : 82, rasterUrl: f.previewUrl, geojsonUrl: f.geojsonUrl, bounds: f.bounds }, ...prev])
     setFitNonce(n => n + 1)
     setLeftTab('layers')
-    toast('已加入地图：' + f.name)
+    toast('宸插姞鍏ュ湴鍥撅細' + f.name)
   }
   const setLayer = (id: string, patch: Partial<WbLayer>) => setLayers(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)))
-  const removeLayer = (id: string) => { setLayers(prev => prev.filter(l => l.id !== id)); toast('已移除图层') }
+  const removeLayer = (id: string) => { setLayers(prev => prev.filter(l => l.id !== id)); toast('宸茬Щ闄ゅ浘灞?) }
 
   async function openImportFiles() {
-    if (!sceneId) { toast('请先进入一个真实场景', 'error'); return }
+    if (!sceneId) { toast('璇峰厛杩涘叆涓€涓湡瀹炲満鏅?, 'error'); return }
     try {
       const all = await workbenchRepo.listDataHubFiles()
       const imported = new Set(files.map(f => f.id))
@@ -146,7 +146,7 @@ export default function WorkbenchPage() {
       setImportSel({})
       setImportOpen(true)
     } catch {
-      toast('Data Hub 文件加载失败，请检查后端服务', 'error')
+      toast('Data Hub 鏂囦欢鍔犺浇澶辫触锛岃妫€鏌ュ悗绔湇鍔?, 'error')
     }
   }
 
@@ -155,11 +155,11 @@ export default function WorkbenchPage() {
     if (!sceneId || !fileIds.length) return
     try {
       const result = await workbenchRepo.importFiles(sceneId, fileIds)
-      toast(`已导入 ${result.imported} 个文件`)
+      toast(`宸插鍏?${result.imported} 涓枃浠禶)
       setImportOpen(false)
       await refreshSceneFiles()
     } catch {
-      toast('导入失败，请检查后端服务', 'error')
+      toast('瀵煎叆澶辫触锛岃妫€鏌ュ悗绔湇鍔?, 'error')
     }
   }
 
@@ -167,10 +167,10 @@ export default function WorkbenchPage() {
     if (!sceneId) return
     try {
       await workbenchRepo.removeFileImport(sceneId, fileId)
-      toast('已从场景移除文件引用')
+      toast('宸蹭粠鍦烘櫙绉婚櫎鏂囦欢寮曠敤')
       await refreshSceneFiles()
     } catch {
-      toast('移除失败，请检查后端服务', 'error')
+      toast('绉婚櫎澶辫触锛岃妫€鏌ュ悗绔湇鍔?, 'error')
     }
   }
 
@@ -210,7 +210,7 @@ export default function WorkbenchPage() {
     const userMsg: ChatMsg = { role: 'user', html: escapeHtml(text), att: atts.slice() }
     setDraft(''); setAtts([])
     setStreaming(true)
-    const reply = '收到。我会基于当前项目的数据回答——你可以在左栏 InVEST 标签选择模型、配置输入后手动运行，运行状态与日志会显示在右侧面板。'
+    const reply = '鏀跺埌銆傛垜浼氬熀浜庡綋鍓嶉」鐩殑鏁版嵁鍥炵瓟鈥斺€斾綘鍙互鍦ㄥ乏鏍?InVEST 鏍囩閫夋嫨妯″瀷銆侀厤缃緭鍏ュ悗鎵嬪姩杩愯锛岃繍琛岀姸鎬佷笌鏃ュ織浼氭樉绀哄湪鍙充晶闈㈡澘銆?
     setMsgs(prev => [...prev, userMsg, { role: 'agent', html: '<span class="cursor-blink"></span>', att: [] }])
     let i = 0
     const tick = () => {
@@ -239,17 +239,17 @@ export default function WorkbenchPage() {
   function simulateRun(name: string) {
     setLogLines([{ cls: 'l-dim', text: `$ invest run ${name.toLowerCase().replace(/ /g, '-')}` }])
     const steps: [string, string][] = [
-      ['l-ok', '已加载输入：土地利用数据、碳密度表、研究区边界'],
-      ['l-dim', '校验栅格对齐与坐标系 EPSG:4326 … 通过'],
-      ['l-dim', '计算碳库：地上 / 地下 / 土壤 / 枯落物 …'],
-      ['l-warn', '警告：3.2% 像元缺失碳密度，已按邻域均值填充'],
-      ['l-dim', '汇总研究区总碳储量 …'],
-      ['l-ok', '输出已写入 outputs/carbon_storage/  →  tot_c_cur.tif'],
+      ['l-ok', '宸插姞杞借緭鍏ワ細鍦熷湴鍒╃敤鏁版嵁銆佺⒊瀵嗗害琛ㄣ€佺爺绌跺尯杈圭晫'],
+      ['l-dim', '鏍￠獙鏍呮牸瀵归綈涓庡潗鏍囩郴 EPSG:4326 鈥?閫氳繃'],
+      ['l-dim', '璁＄畻纰冲簱锛氬湴涓?/ 鍦颁笅 / 鍦熷￥ / 鏋惤鐗?鈥?],
+      ['l-warn', '璀﹀憡锛?.2% 鍍忓厓缂哄け纰冲瘑搴︼紝宸叉寜閭诲煙鍧囧€煎～鍏?],
+      ['l-dim', '姹囨€荤爺绌跺尯鎬荤⒊鍌ㄩ噺 鈥?],
+      ['l-ok', '杈撳嚭宸插啓鍏?outputs/carbon_storage/  鈫? tot_c_cur.tif'],
     ]
     let i = 0
     const next = () => {
       if (i < steps.length) { pushLog(steps[i][0], steps[i][1]); i++; window.setTimeout(next, 520) }
-      else { pushLog('l-ok', '✓ 运行完成，用时 9.4s'); setTask('done'); toast('运行完成：' + name) }
+      else { pushLog('l-ok', '鉁?杩愯瀹屾垚锛岀敤鏃?9.4s'); setTask('done'); toast('杩愯瀹屾垚锛? + name) }
     }
     window.setTimeout(next, 420)
   }
@@ -277,7 +277,7 @@ export default function WorkbenchPage() {
               void loadOutputs(job_id)
               void refreshSceneFiles()
             }
-            toast(st.status === 'succeeded' ? '运行完成：' + model.name : '运行失败：' + model.name, st.status === 'failed' ? 'error' : 'ok')
+            toast(st.status === 'succeeded' ? '杩愯瀹屾垚锛? + model.name : '杩愯澶辫触锛? + model.name, st.status === 'failed' ? 'error' : 'ok')
           }
         } catch { /* keep polling */ }
       }, 1000)
@@ -295,12 +295,12 @@ export default function WorkbenchPage() {
     setOutputs([])
     setOutputsJobId('')
     const ok = await realRun(model)
-    if (!ok) { pushLog('l-dim', '后端不可用，进入演示模式。'); simulateRun(model.name) }
+    if (!ok) { pushLog('l-dim', '鍚庣涓嶅彲鐢紝杩涘叆婕旂ず妯″紡銆?); simulateRun(model.name) }
   }
 
   /* ---- invest modal ---- */
   function openInvest(m: WbModel) {
-    if (m.status === 'planned') { toast('该模型规划中，暂不可运行'); return }
+    if (m.status === 'planned') { toast('璇ユā鍨嬭鍒掍腑锛屾殏涓嶅彲杩愯'); return }
     setModalModel(m); setInputSel({}); setRunName(m.name.toLowerCase().replace(/ /g, '_') + '_run'); setCheckResult(null)
   }
   function assetOptionsFor(uiType: AssetType) { return files.filter(f => f.type === uiType) }
@@ -314,25 +314,25 @@ export default function WorkbenchPage() {
           {r.info?.map((t, i) => <div key={'i' + i} className="notice notice-info" style={{ marginBottom: 7 }}><Icon name="info" cls="ic-sm" /><div>{t}</div></div>)}
           {r.warnings?.map((t, i) => <div key={'w' + i} className="notice notice-warn" style={{ marginBottom: 7 }}><Icon name="alert-triangle" cls="ic-sm" /><div>{t}</div></div>)}
           {r.errors?.map((t, i) => <div key={'e' + i} className="notice notice-error" style={{ marginBottom: 7 }}><Icon name="alert-circle" cls="ic-sm" /><div>{t}</div></div>)}
-          {!r.info?.length && !r.warnings?.length && !r.errors?.length && <div className="notice notice-ok"><Icon name="check-circle" cls="ic-sm" /><div>检查通过，可继续运行。</div></div>}
+          {!r.info?.length && !r.warnings?.length && !r.errors?.length && <div className="notice notice-ok"><Icon name="check-circle" cls="ic-sm" /><div>妫€鏌ラ€氳繃锛屽彲缁х画杩愯銆?/div></div>}
         </>,
       )
     } catch {
       setCheckResult(
         <>
-          <div className="notice notice-ok" style={{ marginBottom: 7 }}><Icon name="check-circle" cls="ic-sm" /><div>研究区边界、土地利用数据 — 通过</div></div>
-          <div className="notice notice-warn" style={{ marginBottom: 7 }}><Icon name="alert-triangle" cls="ic-sm" /><div>碳密度表 — 警告：缺少 3 个土地利用类别的碳值，将按 0 处理</div></div>
-          <div className="notice notice-info"><Icon name="info" cls="ic-sm" /><div>检查完成：1 项警告，0 项错误，可继续运行。</div></div>
+          <div className="notice notice-ok" style={{ marginBottom: 7 }}><Icon name="check-circle" cls="ic-sm" /><div>鐮旂┒鍖鸿竟鐣屻€佸湡鍦板埄鐢ㄦ暟鎹?鈥?閫氳繃</div></div>
+          <div className="notice notice-warn" style={{ marginBottom: 7 }}><Icon name="alert-triangle" cls="ic-sm" /><div>纰冲瘑搴﹁〃 鈥?璀﹀憡锛氱己灏?3 涓湡鍦板埄鐢ㄧ被鍒殑纰冲€硷紝灏嗘寜 0 澶勭悊</div></div>
+          <div className="notice notice-info"><Icon name="info" cls="ic-sm" /><div>妫€鏌ュ畬鎴愶細1 椤硅鍛婏紝0 椤归敊璇紝鍙户缁繍琛屻€?/div></div>
         </>,
       )
     }
   }
 
   const TASK_META: Record<TaskState, { ic: string; icn: string; title: string; badge: React.ReactNode }> = {
-    idle: { ic: 'idle', icn: 'box', title: '当前无运行任务', badge: null },
-    run: { ic: 'run', icn: 'refresh-cw', title: 'InVEST 正在运行', badge: <span className="badge badge-warn"><span className="bdot" />运行中</span> },
-    done: { ic: 'done', icn: 'check-circle', title: '运行完成', badge: <span className="badge badge-ok"><span className="bdot" />完成</span> },
-    fail: { ic: 'fail', icn: 'alert-circle', title: '运行失败，请查看日志', badge: <span className="badge badge-danger"><span className="bdot" />失败</span> },
+    idle: { ic: 'idle', icn: 'box', title: '褰撳墠鏃犺繍琛屼换鍔?, badge: null },
+    run: { ic: 'run', icn: 'refresh-cw', title: 'InVEST 姝ｅ湪杩愯', badge: <span className="badge badge-warn"><span className="bdot" />杩愯涓?/span> },
+    done: { ic: 'done', icn: 'check-circle', title: '杩愯瀹屾垚', badge: <span className="badge badge-ok"><span className="bdot" />瀹屾垚</span> },
+    fail: { ic: 'fail', icn: 'alert-circle', title: '杩愯澶辫触锛岃鏌ョ湅鏃ュ織', badge: <span className="badge badge-danger"><span className="bdot" />澶辫触</span> },
   }
   const tm = TASK_META[task]
   const filteredModels = models.filter(m => {
@@ -341,7 +341,7 @@ export default function WorkbenchPage() {
     return `${m.name} ${m.id}`.toLowerCase().includes(q)
   })
   const fileGroups = Array.from(files.reduce((map, file) => {
-    const key = file.folderName || '未分类'
+    const key = file.folderName || '鏈垎绫?
     const group = map.get(key) || []
     group.push(file)
     map.set(key, group)
@@ -353,7 +353,7 @@ export default function WorkbenchPage() {
       <div className="chat-inner" style={{ padding: pad }}>
         {msgs.map((m, i) => (
           <div className={`msg ${m.role}`} key={i}>
-            <span className="who">{m.role === 'user' ? '我' : 'AI'}</span>
+            <span className="who">{m.role === 'user' ? '鎴? : 'AI'}</span>
             <div className="bubble"><div className="body">
               <p dangerouslySetInnerHTML={{ __html: m.html }} />
               {m.att.length > 0 && <div className="att-tags">{m.att.map(a => <span className="att-chip" key={a} style={{ height: 24 }}><Icon name="paperclip" cls="ic-sm" />{a}</span>)}</div>}
@@ -366,47 +366,47 @@ export default function WorkbenchPage() {
 
   return (
     <>
-      <Head><title>{`${sceneName} · 工作台 · GSMS`}</title></Head>
+      <Head><title>{`${sceneName} 路 宸ヤ綔鍙?路 GSMS`}</title></Head>
       <div className="app">
         <TopNav active="workbench" />
 
         <div className="scene-bar">
           <div className="breadcrumb">
-            <Link href="/scenes"><Icon name="arrow-left" cls="ic-sm" />工作台</Link>
+            <Link href="/scenes"><Icon name="arrow-left" cls="ic-sm" />宸ヤ綔鍙?/Link>
             <Icon name="chevron-right" cls="ic-sm" />
             <b>{sceneName}</b>
           </div>
           <span style={{ flex: 1 }} />
-          {region && <span className="region"><Icon name="map" cls="ic-sm" />研究区：{region}</span>}
+          {region && <span className="region"><Icon name="map" cls="ic-sm" />鐮旂┒鍖猴細{region}</span>}
         </div>
 
         <div className="work">
           {/* LEFT */}
           <aside className="col c-left">
             <div className="tabs">
-              <button className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}><Icon name="layers" cls="ic-sm" />图层</button>
-              <button className={leftTab === 'files' ? 'on' : ''} onClick={() => setLeftTab('files')}><Icon name="file" cls="ic-sm" />文件</button>
+              <button className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}><Icon name="layers" cls="ic-sm" />鍥惧眰</button>
+              <button className={leftTab === 'files' ? 'on' : ''} onClick={() => setLeftTab('files')}><Icon name="file" cls="ic-sm" />鏂囦欢</button>
               <button className={leftTab === 'invest' ? 'on' : ''} onClick={() => setLeftTab('invest')}><Icon name="box" cls="ic-sm" />InVEST</button>
             </div>
 
             {leftTab === 'layers' && (
               <div className="col-body">
                 {layers.length === 0 ? (
-                  <div className="state-empty"><Icon name="layers" /><b>地图上还没有图层</b>从「文件」标签把数据加入地图，或运行模型生成输出。</div>
+                  <div className="state-empty"><Icon name="layers" /><b>鍦板浘涓婅繕娌℃湁鍥惧眰</b>浠庛€屾枃浠躲€嶆爣绛炬妸鏁版嵁鍔犲叆鍦板浘锛屾垨杩愯妯″瀷鐢熸垚杈撳嚭銆?/div>
                 ) : layers.map(l => (
                   <div className="layer" key={l.id}>
                     <div className="layer-top">
                       <span className={`fchip ${l.type}`} style={{ width: 26, height: 26 }}><Icon name={l.type === 'raster' ? 'image' : 'map'} cls="ic-sm" /></span>
                       <span className="layer-name" title={l.name}>{l.name}</span>
-                      <span className="badge badge-muted">{l.type === 'raster' ? '栅格' : '矢量'}</span>
-                      <label className="switch" title="显隐"><input type="checkbox" checked={l.visible} onChange={e => setLayer(l.id, { visible: e.target.checked })} /><span className="track" /></label>
+                      <span className="badge badge-muted">{l.type === 'raster' ? '鏍呮牸' : '鐭㈤噺'}</span>
+                      <label className="switch" title="鏄鹃殣"><input type="checkbox" checked={l.visible} onChange={e => setLayer(l.id, { visible: e.target.checked })} /><span className="track" /></label>
                     </div>
                     <div className="layer-ctl">
-                      <input className="range" type="range" min={0} max={100} value={l.opacity} aria-label="透明度" onChange={e => setLayer(l.id, { opacity: +e.target.value })} />
+                      <input className="range" type="range" min={0} max={100} value={l.opacity} aria-label="閫忔槑搴? onChange={e => setLayer(l.id, { opacity: +e.target.value })} />
                       <span className="pct">{l.opacity}%</span>
                       <span className="hideact">
-                        <button className="icon-btn sm" title="缩放到图层" aria-label="缩放到图层" onClick={() => setFitNonce(n => n + 1)}><Icon name="maximize" cls="ic-sm" /></button>
-                        <button className="icon-btn sm" title="移除" aria-label="移除" onClick={() => removeLayer(l.id)}><Icon name="trash" cls="ic-sm" /></button>
+                        <button className="icon-btn sm" title="缂╂斁鍒板浘灞? aria-label="缂╂斁鍒板浘灞? onClick={() => setFitNonce(n => n + 1)}><Icon name="maximize" cls="ic-sm" /></button>
+                        <button className="icon-btn sm" title="绉婚櫎" aria-label="绉婚櫎" onClick={() => removeLayer(l.id)}><Icon name="trash" cls="ic-sm" /></button>
                       </span>
                     </div>
                   </div>
@@ -417,10 +417,10 @@ export default function WorkbenchPage() {
             {leftTab === 'files' && (
               <div className="col-body">
                 <div className="pad" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <button className="btn btn-sm" onClick={openImportFiles}><Icon name="download" cls="ic-sm" />导入 Data Hub 文件</button>
+                  <button className="btn btn-sm" onClick={openImportFiles}><Icon name="download" cls="ic-sm" />瀵煎叆 Data Hub 鏂囦欢</button>
                 </div>
                 {files.length === 0 ? (
-                  <div className="state-empty"><Icon name="file" /><b>当前场景还没有文件</b>从 Data Hub 导入文件后，再配置模型输入。</div>
+                  <div className="state-empty"><Icon name="file" /><b>褰撳墠鍦烘櫙杩樻病鏈夋枃浠?/b>浠?Data Hub 瀵煎叆鏂囦欢鍚庯紝鍐嶉厤缃ā鍨嬭緭鍏ャ€?/div>
                 ) : fileGroups.map(([folderName, group]) => (
                   <div className="file-folder" key={folderName}>
                     <div className="file-folder-head"><Icon name="folder" cls="ic-sm" /><span>{folderName}</span><span className="tree-count">{group.length}</span></div>
@@ -429,12 +429,12 @@ export default function WorkbenchPage() {
                         <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
                         <div style={{ minWidth: 0 }}>
                           <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                          <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+                          <div className="fsub">{TYPE_LABEL[f.type] || '鍏朵粬'} 路 {fmtBytes(f.size)}</div>
                         </div>
                         <span className="actions">
-                          <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
-                          <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
-                          {sceneId && <button className="icon-btn sm" title="从场景移除引用" aria-label="从场景移除引用" onClick={() => removeImportedFile(f.id)}><Icon name="trash" cls="ic-sm" /></button>}
+                          <button className="icon-btn sm" title="鍔犲叆鍦板浘" aria-label="鍔犲叆鍦板浘" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
+                          <button className="icon-btn sm" title="浣滀负闄勪欢寮曠敤" aria-label="浣滀负闄勪欢" onClick={() => { addAtt(f.name); toast('宸蹭綔涓洪檮浠跺紩鐢?) }}><Icon name="paperclip" cls="ic-sm" /></button>
+                          {sceneId && <button className="icon-btn sm" title="浠庡満鏅Щ闄ゅ紩鐢? aria-label="浠庡満鏅Щ闄ゅ紩鐢? onClick={() => removeImportedFile(f.id)}><Icon name="trash" cls="ic-sm" /></button>}
                         </span>
                       </div>
                     ))}
@@ -447,7 +447,7 @@ export default function WorkbenchPage() {
               <div className="col-body">
                 <div className="pad model-search">
                   <Icon name="search" cls="ic-sm" />
-                  <input value={modelSearch} onChange={e => setModelSearch(e.target.value)} placeholder="搜索模型" />
+                  <input value={modelSearch} onChange={e => setModelSearch(e.target.value)} placeholder="鎼滅储妯″瀷" />
                 </div>
                 <div>
                   {filteredModels.map(m => {
@@ -458,12 +458,12 @@ export default function WorkbenchPage() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div className="ftitle">{m.name}</div>
                         </div>
-                        <span className={`badge ${ready ? 'badge-ok' : 'badge-muted'}`}>{ready ? '可运行' : '规划中'}</span>
+                        <span className={`badge ${ready ? 'badge-ok' : 'badge-muted'}`}>{ready ? '鍙繍琛? : '瑙勫垝涓?}</span>
                       </div>
                     )
                   })}
                 </div>
-                <div className="pad meta" style={{ borderTop: '1px solid var(--border)' }}>点击模型打开配置弹窗，设置输入与参数后手动运行。</div>
+                <div className="pad meta" style={{ borderTop: '1px solid var(--border)' }}>鐐瑰嚮妯″瀷鎵撳紑閰嶇疆寮圭獥锛岃缃緭鍏ヤ笌鍙傛暟鍚庢墜鍔ㄨ繍琛屻€?/div>
               </div>
             )}
           </aside>
@@ -477,7 +477,7 @@ export default function WorkbenchPage() {
                 <button className={view === 'split' ? 'on' : ''} onClick={() => setView('split')}><Icon name="columns" cls="ic-sm" />Split</button>
               </div>
               <div className="right" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span className="meta">场景：<b style={{ color: 'var(--fg)', fontWeight: 600 }}>{sceneName}</b></span>
+                <span className="meta">鍦烘櫙锛?b style={{ color: 'var(--fg)', fontWeight: 600 }}>{sceneName}</b></span>
               </div>
             </div>
 
@@ -489,35 +489,35 @@ export default function WorkbenchPage() {
                   <div className="composer-inner">
                     {atts.length > 0 && (
                       <div className="att-strip">
-                        {atts.map(a => <span className="att-chip" key={a}><Icon name="paperclip" cls="ic-sm" />{a}<button aria-label="移除" onClick={() => setAtts(prev => prev.filter(x => x !== a))}><Icon name="x" cls="ic-sm" /></button></span>)}
+                        {atts.map(a => <span className="att-chip" key={a}><Icon name="paperclip" cls="ic-sm" />{a}<button aria-label="绉婚櫎" onClick={() => setAtts(prev => prev.filter(x => x !== a))}><Icon name="x" cls="ic-sm" /></button></span>)}
                       </div>
                     )}
                     <div className="card-box">
-                      <textarea rows={1} placeholder="描述你的地理分析任务，或询问当前项目数据与模型结果..." value={draft}
+                      <textarea rows={1} placeholder="鎻忚堪浣犵殑鍦扮悊鍒嗘瀽浠诲姟锛屾垨璇㈤棶褰撳墠椤圭洰鏁版嵁涓庢ā鍨嬬粨鏋?.." value={draft}
                         onChange={e => setDraft(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} />
                       <div className="composer-bar">
                         <div style={{ position: 'relative' }}>
-                          <button className="icon-btn" title="添加附件" aria-label="添加附件" onClick={e => { e.stopPropagation(); setAttOpen(v => !v) }}><Icon name="paperclip" /></button>
+                          <button className="icon-btn" title="娣诲姞闄勪欢" aria-label="娣诲姞闄勪欢" onClick={e => { e.stopPropagation(); setAttOpen(v => !v) }}><Icon name="paperclip" /></button>
                           {attOpen && (
                             <div className="pop open" onClick={e => e.stopPropagation()}>
-                              <div className="head">添加附件</div>
-                              <button onClick={() => addAtt('本地文件_' + Math.floor(Math.random() * 1000) + '.tif')}><Icon name="upload" cls="ic-sm" />从本地上传</button>
-                              <div className="head">当前项目文件</div>
+                              <div className="head">娣诲姞闄勪欢</div>
+                              <button onClick={() => addAtt('鏈湴鏂囦欢_' + Math.floor(Math.random() * 1000) + '.tif')}><Icon name="upload" cls="ic-sm" />浠庢湰鍦颁笂浼?/button>
+                              <div className="head">褰撳墠椤圭洰鏂囦欢</div>
                               {files.slice(0, 4).map(f => <button key={f.id} onClick={() => addAtt(f.name)}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" />{f.name}</button>)}
                             </div>
                           )}
                         </div>
                         <span className="grow" />
-                        <div className="mini-select" title="对话模型" onClick={() => toast('对话模型在「设置 · 模型配置」中管理')}>
+                        <div className="mini-select" title="瀵硅瘽妯″瀷" onClick={() => toast('瀵硅瘽妯″瀷鍦ㄣ€岃缃?路 妯″瀷閰嶇疆銆嶄腑绠＄悊')}>
                           <Icon name="sparkles" cls="ic-sm" />
-                          <span>{defaultModel ? `${defaultModel.name}${defaultModel.def ? ' · 默认' : ''}` : '未配置模型'}</span>
+                          <span>{defaultModel ? `${defaultModel.name}${defaultModel.def ? ' 路 榛樿' : ''}` : '鏈厤缃ā鍨?}</span>
                           <Icon name="chevron-down" cls="ic-sm" />
                         </div>
-                        <button className="send-btn" title="发送" aria-label="发送" disabled={streaming || !draft.trim()} onClick={send}><Icon name="send" cls="ic-sm" /></button>
+                        <button className="send-btn" title="鍙戦€? aria-label="鍙戦€? disabled={streaming || !draft.trim()} onClick={send}><Icon name="send" cls="ic-sm" /></button>
                       </div>
                     </div>
-                    {!defaultModel && <div className="meta" style={{ marginTop: 7, color: 'var(--warn)' }}>未配置对话模型，请先到设置页配置后再发送。</div>}
+                    {!defaultModel && <div className="meta" style={{ marginTop: 7, color: 'var(--warn)' }}>鏈厤缃璇濇ā鍨嬶紝璇峰厛鍒拌缃〉閰嶇疆鍚庡啀鍙戦€併€?/div>}
                   </div>
                 </div>
               </div>
@@ -543,47 +543,21 @@ export default function WorkbenchPage() {
 
           {/* RIGHT */}
           <aside className="col c-right">
-            <div className="col-head"><h2>运行信息</h2></div>
+            <div className="col-head"><h2>杩愯淇℃伅</h2></div>
             <div className="task-card">
-              <div className="glabel" style={{ marginBottom: 9 }}>任务状态</div>
+              <div className="glabel" style={{ marginBottom: 9 }}>浠诲姟鐘舵€?/div>
               <div className="task-state">
                 <span className={`ti ${tm.ic}`}>{task === 'run' ? <span className="spinner" /> : <Icon name={tm.icn} />}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-strong)' }}>{tm.title}</div>
-                  <div className="meta" style={{ marginTop: 1 }}>{task === 'idle' ? '配置并运行一个 InVEST 模型后，状态会显示在这里' : '模型：' + curModel}</div>
+                  <div className="meta" style={{ marginTop: 1 }}>{task === 'idle' ? '閰嶇疆骞惰繍琛屼竴涓?InVEST 妯″瀷鍚庯紝鐘舵€佷細鏄剧ず鍦ㄨ繖閲? : '妯″瀷锛? + curModel}</div>
                 </div>
                 {tm.badge}
               </div>
             </div>
-            <div className="outputs-card">
-              <div className="col-head compact">
-                <h2>输出文件</h2>
-                {outputsLoading && <span className="meta">加载中...</span>}
-              </div>
-              {outputs.length === 0 ? (
-                <div className="outputs-empty">{outputsLoading ? '正在读取任务输出...' : '运行成功后，输出会显示在这里。'}</div>
-              ) : outputs.map(o => {
-                const f = outputToFile(o)
-                const canMap = (f.type === 'raster' && f.previewUrl && f.bounds?.length === 4) || (f.type === 'vector' && f.geojsonUrl)
-                return (
-                  <div className="output-row" key={`${outputsJobId}:${o.name}`}>
-                    <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
-                    <div className="output-main">
-                      <div className="ftitle" title={o.name}>{o.name}</div>
-                      <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(o.size)}</div>
-                    </div>
-                    <span className="actions">
-                      {o.previewUrl && <button className="icon-btn sm" title="预览" aria-label="预览" onClick={() => window.open(o.previewUrl, '_blank', 'noopener,noreferrer')}><Icon name="eye" cls="ic-sm" /></button>}
-                      {o.downloadUrl && <button className="icon-btn sm" title="下载" aria-label="下载" onClick={() => window.open(o.downloadUrl, '_blank', 'noopener,noreferrer')}><Icon name="download" cls="ic-sm" /></button>}
-                      <button className="icon-btn sm" title="加入地图" aria-label="加入地图" disabled={!canMap} onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
             <div className="col-head" style={{ borderTop: '1px solid var(--border)' }}>
-              <h2 style={{ fontSize: 12 }}>运行日志</h2>
-              <div className="right"><button className="icon-btn sm" title="复制日志" aria-label="复制日志" onClick={() => { navigator.clipboard?.writeText(logLines.map(l => l.text).join('\n')).then(() => toast('日志已复制'), () => toast('复制失败', 'error')) }}><Icon name="copy" cls="ic-sm" /></button></div>
+              <h2 style={{ fontSize: 12 }}>杩愯鏃ュ織</h2>
+              <div className="right"><button className="icon-btn sm" title="澶嶅埗鏃ュ織" aria-label="澶嶅埗鏃ュ織" onClick={() => { navigator.clipboard?.writeText(logLines.map(l => l.text).join('\n')).then(() => toast('鏃ュ織宸插鍒?), () => toast('澶嶅埗澶辫触', 'error')) }}><Icon name="copy" cls="ic-sm" /></button></div>
             </div>
             <div className="log">
               <div className="log-out" ref={logRef}>
@@ -594,22 +568,22 @@ export default function WorkbenchPage() {
         </div>
       </div>
 
-      <Modal open={importOpen} title="导入 Data Hub 文件" sub="选择全局 Data Hub 文件引用到当前场景；不会复制或删除原始文件。" onClose={() => setImportOpen(false)}
+      <Modal open={importOpen} title="瀵煎叆 Data Hub 鏂囦欢" sub="閫夋嫨鍏ㄥ眬 Data Hub 鏂囦欢寮曠敤鍒板綋鍓嶅満鏅紱涓嶄細澶嶅埗鎴栧垹闄ゅ師濮嬫枃浠躲€? onClose={() => setImportOpen(false)}
         footer={<>
           <span className="grow" />
-          <button className="btn" onClick={() => setImportOpen(false)}>取消</button>
-          <button className="btn btn-primary" disabled={!Object.values(importSel).some(Boolean)} onClick={importSelectedFiles}>导入</button>
+          <button className="btn" onClick={() => setImportOpen(false)}>鍙栨秷</button>
+          <button className="btn btn-primary" disabled={!Object.values(importSel).some(Boolean)} onClick={importSelectedFiles}>瀵煎叆</button>
         </>}>
         <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--r)' }}>
           {hubFiles.length === 0 ? (
-            <div className="state-empty" style={{ margin: 20 }}><Icon name="file" /><b>没有可导入文件</b>Data Hub 为空，或所有文件都已导入当前场景。</div>
+            <div className="state-empty" style={{ margin: 20 }}><Icon name="file" /><b>娌℃湁鍙鍏ユ枃浠?/b>Data Hub 涓虹┖锛屾垨鎵€鏈夋枃浠堕兘宸插鍏ュ綋鍓嶅満鏅€?/div>
           ) : hubFiles.map(f => (
             <label className="row" key={f.id} style={{ cursor: 'pointer' }}>
               <input type="checkbox" checked={Boolean(importSel[f.id])} onChange={e => setImportSel(prev => ({ ...prev, [f.id]: e.target.checked }))} />
               <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
               <div style={{ minWidth: 0 }}>
                 <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+                <div className="fsub">{TYPE_LABEL[f.type] || '鍏朵粬'} 路 {fmtBytes(f.size)}</div>
               </div>
             </label>
           ))}
@@ -617,22 +591,22 @@ export default function WorkbenchPage() {
       </Modal>
 
       {/* InVEST modal */}
-      <Modal open={!!modalModel} title={`${modalModel?.name || ''} · 模型配置`} sub={modalModel?.description} onClose={() => setModalModel(null)}
+      <Modal open={!!modalModel} title={`${modalModel?.name || ''} 路 妯″瀷閰嶇疆`} sub={modalModel?.description} onClose={() => setModalModel(null)}
         footer={<>
-          <button className="btn btn-sm" onClick={() => modalModel && checkInputs(modalModel)}><Icon name="check-circle" cls="ic-sm" />检查输入</button>
+          <button className="btn btn-sm" onClick={() => modalModel && checkInputs(modalModel)}><Icon name="check-circle" cls="ic-sm" />妫€鏌ヨ緭鍏?/button>
           <span className="grow" />
-          <button className="btn" onClick={() => setModalModel(null)}>取消</button>
-          <button className="btn btn-primary" onClick={() => modalModel && runModel(modalModel)}><Icon name="play" cls="ic-sm" />运行模型</button>
+          <button className="btn" onClick={() => setModalModel(null)}>鍙栨秷</button>
+          <button className="btn btn-primary" onClick={() => modalModel && runModel(modalModel)}><Icon name="play" cls="ic-sm" />杩愯妯″瀷</button>
         </>}>
-        <div className="glabel" style={{ marginBottom: 9 }}>输入数据</div>
+        <div className="glabel" style={{ marginBottom: 9 }}>杈撳叆鏁版嵁</div>
         <div>
           {(modalModel?.inputs || []).filter(inp => inp.kind === 'asset').map(inp => {
             const uiType = uiFromBackendAssetType(inp.asset_type)
             return (
               <div className="field" key={inp.id}>
-                <label>{inp.label} <span style={{ color: 'var(--faint)', fontWeight: 400 }}>· {TYPE_LABEL[uiType]}</span></label>
+                <label>{inp.label} <span style={{ color: 'var(--faint)', fontWeight: 400 }}>路 {TYPE_LABEL[uiType]}</span></label>
                 <select className="select" value={inputSel[inp.id] || ''} onChange={e => setInputSel(prev => ({ ...prev, [inp.id]: e.target.value }))}>
-                  <option value="">从项目资产中选择…</option>
+                  <option value="">浠庨」鐩祫浜т腑閫夋嫨鈥?/option>
                   {assetOptionsFor(uiType).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </div>
@@ -640,14 +614,14 @@ export default function WorkbenchPage() {
           })}
         </div>
         <div className="sec-divider" style={{ margin: '16px 0 14px' }} />
-        <div className="glabel" style={{ marginBottom: 9 }}>参数设置</div>
-        <div className="field"><label>运行名称</label><input className="input" value={runName} onChange={e => setRunName(e.target.value)} /></div>
-        <div className="field" style={{ marginBottom: 6 }}><label>输出目录</label><input className="input" defaultValue="outputs/carbon_storage/" /></div>
+        <div className="glabel" style={{ marginBottom: 9 }}>鍙傛暟璁剧疆</div>
+        <div className="field"><label>杩愯鍚嶇О</label><input className="input" value={runName} onChange={e => setRunName(e.target.value)} /></div>
+        <div className="field" style={{ marginBottom: 6 }}><label>杈撳嚭鐩綍</label><input className="input" defaultValue="outputs/carbon_storage/" /></div>
         <details className="collapse">
-          <summary><span className="chev" style={{ display: 'inline-flex' }}><Icon name="chevron-right" cls="ic-sm" /></span>高级选项</summary>
+          <summary><span className="chev" style={{ display: 'inline-flex' }}><Icon name="chevron-right" cls="ic-sm" /></span>楂樼骇閫夐」</summary>
           <div className="field" style={{ marginTop: 10 }}>
-            <label>运行模式</label>
-            <select className="select"><option>标准（完整计算）</option><option>快速预览（降采样）</option></select>
+            <label>杩愯妯″紡</label>
+            <select className="select"><option>鏍囧噯锛堝畬鏁磋绠楋級</option><option>蹇€熼瑙堬紙闄嶉噰鏍凤級</option></select>
           </div>
         </details>
         {checkResult && <div style={{ marginTop: 14 }}>{checkResult}</div>}
@@ -744,13 +718,6 @@ export default function WorkbenchPage() {
         .ti.run { background: var(--warn-soft); color: oklch(55% 0.12 65); }
         .ti.done { background: var(--ok-soft); color: var(--ok); }
         .ti.fail { background: var(--danger-soft); color: var(--danger); }
-        .outputs-card { border-bottom: 1px solid var(--border); }
-        .col-head.compact { height: 36px; padding: 0 14px; border-bottom: 1px solid var(--border); }
-        .outputs-empty { padding: 12px 14px 14px; color: var(--faint); font-size: 12px; line-height: 1.5; }
-        .output-row { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
-        .output-row:last-child { border-bottom: 0; }
-        .output-main { flex: 1; min-width: 0; }
-        .output-main .ftitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       `}</style>
     </>
   )
