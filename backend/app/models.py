@@ -31,11 +31,24 @@ class Scene(Base):
     jobs: Mapped[list["Job"]] = relationship("Job", back_populates="scene", cascade="all, delete-orphan")
 
 
+class DataFolder(Base):
+    """Single-level Data Hub folder."""
+    __tablename__ = "data_folders"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    files: Mapped[list["DataFile"]] = relationship("DataFile", back_populates="folder")
+
+
 class DataFile(Base):
     """Global Data Hub file record."""
     __tablename__ = "data_files"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    folder_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("data_folders.id", ondelete="SET NULL"), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(50), default="unknown")  # raster/geojson/table/document/unknown
     file_format: Mapped[str] = mapped_column(String(50), default="unknown")
@@ -48,6 +61,7 @@ class DataFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    folder: Mapped["DataFolder | None"] = relationship("DataFolder", back_populates="files")
     imports: Mapped[list["SceneImport"]] = relationship("SceneImport", back_populates="data_file")
     features: Mapped[list["Feature"]] = relationship("Feature", back_populates="data_file", cascade="all, delete-orphan")
 

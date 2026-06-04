@@ -178,6 +178,7 @@ export default function WorkbenchPage() {
     const type = uiFromBackendAssetType(o.type)
     return {
       id: `${outputsJobId}:${o.name}`,
+      folderName: 'Outputs',
       name: o.name,
       type,
       size: o.size,
@@ -272,7 +273,10 @@ export default function WorkbenchPage() {
           if (st.status === 'succeeded' || st.status === 'failed') {
             if (pollRef.current) window.clearInterval(pollRef.current)
             setTask(st.status === 'succeeded' ? 'done' : 'fail')
-            if (st.status === 'succeeded') void loadOutputs(job_id)
+            if (st.status === 'succeeded') {
+              void loadOutputs(job_id)
+              void refreshSceneFiles()
+            }
             toast(st.status === 'succeeded' ? '运行完成：' + model.name : '运行失败：' + model.name, st.status === 'failed' ? 'error' : 'ok')
           }
         } catch { /* keep polling */ }
@@ -336,6 +340,13 @@ export default function WorkbenchPage() {
     if (!q) return true
     return `${m.name} ${m.id}`.toLowerCase().includes(q)
   })
+  const fileGroups = Array.from(files.reduce((map, file) => {
+    const key = file.folderName || '未分类'
+    const group = map.get(key) || []
+    group.push(file)
+    map.set(key, group)
+    return map
+  }, new Map<string, WbFile[]>()))
 
   function ChatList({ pad }: { pad: string }) {
     return (
@@ -410,18 +421,23 @@ export default function WorkbenchPage() {
                 </div>
                 {files.length === 0 ? (
                   <div className="state-empty"><Icon name="file" /><b>当前场景还没有文件</b>从 Data Hub 导入文件后，再配置模型输入。</div>
-                ) : files.map(f => (
-                  <div className="row" key={f.id}>
-                    <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
-                    <div style={{ minWidth: 0 }}>
-                      <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                      <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
-                    </div>
-                    <span className="actions">
-                      <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
-                      <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
-                      {sceneId && <button className="icon-btn sm" title="从场景移除引用" aria-label="从场景移除引用" onClick={() => removeImportedFile(f.id)}><Icon name="trash" cls="ic-sm" /></button>}
-                    </span>
+                ) : fileGroups.map(([folderName, group]) => (
+                  <div className="file-folder" key={folderName}>
+                    <div className="file-folder-head"><Icon name="folder" cls="ic-sm" /><span>{folderName}</span><span className="tree-count">{group.length}</span></div>
+                    {group.map(f => (
+                      <div className="row file-in-folder" key={f.id}>
+                        <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                          <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+                        </div>
+                        <span className="actions">
+                          <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
+                          <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
+                          {sceneId && <button className="icon-btn sm" title="从场景移除引用" aria-label="从场景移除引用" onClick={() => removeImportedFile(f.id)}><Icon name="trash" cls="ic-sm" /></button>}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -658,6 +674,10 @@ export default function WorkbenchPage() {
         .layer-ctl .pct { font-size: 11px; color: var(--faint); width: 30px; text-align: right; font-family: var(--mono); }
         .layer .hideact { opacity: 0; transition: opacity .12s; display: flex; gap: 1px; }
         .layer:hover .hideact, .layer:focus-within .hideact { opacity: 1; }
+        .file-folder { border-bottom: 1px solid var(--border); }
+        .file-folder-head { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; color: var(--fg-strong); background: var(--surface-2); font-size: 12px; font-weight: 650; }
+        .file-folder-head .tree-count { margin-left: auto; font-family: var(--mono); color: var(--faint); font-size: 11px; }
+        .file-in-folder { padding-left: 20px; }
         .model-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
         .model-row:hover { background: var(--surface-2); }
         .model-row.disabled { cursor: not-allowed; }

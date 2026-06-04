@@ -4,6 +4,8 @@ import { api, apiUrl, type AssetType } from '../apiClient'
 
 export type BackendAsset = {
   id: string
+  folder_id?: string | null
+  folder_name?: string | null
   name: string
   type: string // backend: raster|table|geojson|document|unknown
   size?: number
@@ -17,6 +19,8 @@ export type BackendAsset = {
 
 export type WbFile = {
   id: string
+  folderId?: string | null
+  folderName?: string | null
   name: string
   type: AssetType // ui category
   size?: number
@@ -72,6 +76,8 @@ export const workbenchRepo = {
     if (!Array.isArray(data)) return []
     return data.map(a => ({
       id: a.id,
+      folderId: a.folder_id,
+      folderName: a.folder_name,
       name: a.name,
       type: BACKEND_TO_UI[a.type] ?? 'other',
       size: a.size,
@@ -86,6 +92,8 @@ export const workbenchRepo = {
     if (!Array.isArray(data)) return []
     return data.map(a => ({
       id: a.id,
+      folderId: a.folder_id,
+      folderName: a.folder_name,
       name: a.name,
       type: BACKEND_TO_UI[a.type] ?? 'other',
       size: a.size,

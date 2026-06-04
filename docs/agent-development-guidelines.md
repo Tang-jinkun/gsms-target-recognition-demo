@@ -399,6 +399,33 @@ scan workspace
 - 若 PowerShell 控制台显示中文乱码，优先确认文件实际编码，不要随意改成非 UTF-8。
 - README 和阶段计划应与实际功能同步，避免文档承诺超过系统能力。
 
+### 6.1 Windows PowerShell 中文读取规则
+
+本项目源码和文档使用 UTF-8。当前 Windows 本地环境已确认：
+
+```text
+PowerShell: 5.1
+Active code page: 936
+Console InputEncoding: gb2312
+Console OutputEncoding: utf-8
+```
+
+在该环境下，`Get-Content`、`Select-String` 等命令如果不显式指定编码，可能把 UTF-8 文件按系统 ANSI/GBK 解读，导致终端输出出现 `鏁版嵁`、`宸ヤ綔鍙` 这类 mojibake。此时通常不是文件损坏，而是读取方式错误。
+
+读取含中文文件时必须使用以下方式之一：
+
+```powershell
+Get-Content -Encoding UTF8 -Path docs/agent-development-guidelines.md
+Get-Content -Encoding UTF8 -LiteralPath 'frontend/pages/workbench/[sceneId].tsx'
+[System.IO.File]::ReadAllText((Resolve-Path -LiteralPath 'frontend/pages/workbench/[sceneId].tsx'), [System.Text.Encoding]::UTF8)
+```
+
+注意事项：
+
+- `frontend/pages/workbench/[sceneId].tsx` 这类路径必须用 `-LiteralPath`，否则方括号会被 PowerShell 当作通配符。
+- 不要从乱码终端输出中复制中文片段再写回源码；这会把显示层 mojibake 变成真实文件内容。
+- 如果需要判断文件是否真的损坏，先用 UTF-8 显式读取并检查是否包含正常中文，而不是依赖默认 `Get-Content` 输出。
+
 ## 7. 验证准则
 
 ### 7.1 后端验证
