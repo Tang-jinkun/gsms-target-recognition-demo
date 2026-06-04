@@ -23,4 +23,4 @@ EXPOSE 8000
 
 USER root
 
-CMD ["micromamba", "run", "-n", "gsms-invest", "bash", "-lc", "alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["micromamba", "run", "-n", "gsms-invest", "bash", "-lc", "python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"]
