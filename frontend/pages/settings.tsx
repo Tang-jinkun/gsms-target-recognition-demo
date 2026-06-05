@@ -3,6 +3,7 @@ import Head from 'next/head'
 import TopNav from '../src/components/shell/TopNav'
 import Icon from '../src/components/shell/Icon'
 import Modal from '../src/components/shell/Modal'
+import Select from '../src/components/shell/Select'
 import { toast } from '../src/lib/toast'
 import { settingsRepo, STATUS_META, PROVIDERS, type ModelCfg, type UserInfo } from '../src/lib/repos/settingsRepo'
 
@@ -145,9 +146,7 @@ export default function SettingsPage() {
         <div className="form-grid">
           <div className="field"><label>模型名称</label><input className="input" placeholder="如：GPT-4o" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
           <div className="field"><label>供应商</label>
-            <select className="select" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
-              {PROVIDERS.map(p => <option key={p}>{p}</option>)}
-            </select>
+            <Select value={form.provider} options={PROVIDERS.map(p => ({ value: p, label: p }))} onChange={provider => setForm({ ...form, provider })} />
           </div>
           <div className="field full"><label>API Key</label>
             <div className="pwd-wrap">

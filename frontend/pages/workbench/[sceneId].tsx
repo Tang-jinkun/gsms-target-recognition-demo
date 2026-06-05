@@ -5,6 +5,7 @@ import { useRouter } from 'next/router'
 import TopNav from '../../src/components/shell/TopNav'
 import Icon from '../../src/components/shell/Icon'
 import Modal from '../../src/components/shell/Modal'
+import Select from '../../src/components/shell/Select'
 import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
 import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
@@ -79,6 +80,7 @@ export default function WorkbenchPage() {
   const [modalModel, setModalModel] = React.useState<WbModel | null>(null)
   const [modelSearch, setModelSearch] = React.useState('')
   const [inputSel, setInputSel] = React.useState<Record<string, string>>({})
+  const [uiRunMode, setUiRunMode] = React.useState('standard')
   const [runName, setRunName] = React.useState('')
   const [checkResult, setCheckResult] = React.useState<React.ReactNode>(null)
 
@@ -572,10 +574,12 @@ export default function WorkbenchPage() {
             return (
               <div className="field" key={inp.id}>
                 <label>{inp.label} <span style={{ color: 'var(--faint)', fontWeight: 400 }}>· {TYPE_LABEL[uiType]}</span></label>
-                <select className="select" value={inputSel[inp.id] || ''} onChange={e => setInputSel(prev => ({ ...prev, [inp.id]: e.target.value }))}>
-                  <option value="">从项目资产中选择…</option>
-                  {assetOptionsFor(uiType).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+                <Select
+                  value={inputSel[inp.id] || ''}
+                  placeholder="从项目资产中选择…"
+                  options={[{ value: '', label: '从项目资产中选择…' }, ...assetOptionsFor(uiType).map(a => ({ value: a.id, label: a.name }))]}
+                  onChange={value => setInputSel(prev => ({ ...prev, [inp.id]: value }))}
+                />
               </div>
             )
           })}
@@ -588,7 +592,11 @@ export default function WorkbenchPage() {
           <summary><span className="chev" style={{ display: 'inline-flex' }}><Icon name="chevron-right" cls="ic-sm" /></span>高级选项</summary>
           <div className="field" style={{ marginTop: 10 }}>
             <label>运行模式</label>
-            <select className="select"><option>标准（完整计算）</option><option>快速预览（降采样）</option></select>
+            <Select
+              value={uiRunMode}
+              options={[{ value: 'standard', label: '标准（完整计算）' }, { value: 'preview', label: '快速预览（降采样）' }]}
+              onChange={setUiRunMode}
+            />
           </div>
         </details>
         {checkResult && <div style={{ marginTop: 14 }}>{checkResult}</div>}
