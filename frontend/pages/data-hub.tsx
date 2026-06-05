@@ -2,8 +2,17 @@ import React from 'react'
 import Head from 'next/head'
 import TopNav from '../src/components/shell/TopNav'
 import Icon from '../src/components/shell/Icon'
+import Modal from '../src/components/shell/Modal'
+import Select from '../src/components/shell/Select'
 import { toast } from '../src/lib/toast'
 import { dataHubRepo, filesForDir, TYPE_ICON, TYPE_LABEL, type HubFile, type HubFolder } from '../src/lib/repos/dataHubRepo'
+
+type FolderDialog =
+  | { kind: 'create'; name: string }
+  | { kind: 'rename'; folder: HubFolder; name: string }
+  | { kind: 'delete'; folder: HubFolder }
+  | { kind: 'move'; file: HubFile; folderId: string }
+  | null
 
 export default function DataHubPage() {
   const [dir, setDir] = React.useState('all')
@@ -12,6 +21,7 @@ export default function DataHubPage() {
   const [file, setFile] = React.useState<HubFile | null>(null)
   const [query, setQuery] = React.useState('')
   const [loading, setLoading] = React.useState(true)
+  const [folderDialog, setFolderDialog] = React.useState<FolderDialog>(null)
   const inputRef = React.useRef<HTMLInputElement | null>(null)
 
   const reload = React.useCallback(async () => {
@@ -59,57 +69,83 @@ export default function DataHubPage() {
     }
   }
 
-  async function createFolder() {
-    const name = window.prompt('文件夹名称')
-    if (!name?.trim()) return
-    try {
-      const folder = await dataHubRepo.createFolder(name.trim())
-      toast('已新建文件夹')
-      setDir(folder.id)
-      await reload()
-    } catch {
-      toast('新建文件夹失败，请检查是否重名', 'error')
-    }
+  function openCreateFolder() {
+    setFolderDialog({ kind: 'create', name: '' })
   }
 
-  async function renameFolder(folder: HubFolder) {
-    const name = window.prompt('新的文件夹名称', folder.name)
-    if (!name?.trim() || name.trim() === folder.name) return
-    try {
-      await dataHubRepo.renameFolder(folder.id, name.trim())
-      toast('已重命名文件夹')
-      await reload()
-    } catch {
-      toast('重命名失败，请检查是否重名', 'error')
-    }
+  function openRenameFolder(folder: HubFolder) {
+    setFolderDialog({ kind: 'rename', folder, name: folder.name })
   }
 
-  async function deleteFolder(folder: HubFolder) {
+  function openDeleteFolder(folder: HubFolder) {
     if (folder.count > 0) { toast('只能删除空文件夹', 'error'); return }
-    if (!window.confirm(`删除空文件夹「${folder.name}」？`)) return
+    setFolderDialog({ kind: 'delete', folder })
+  }
+
+  function openMoveFile(target: HubFile) {
+    const targetFolder = folders.find(item => item.id !== target.folderId) || folders[0]
+    if (!targetFolder) { toast('暂无可移动的目标文件夹', 'error'); return }
+    setFolderDialog({ kind: 'move', file: target, folderId: targetFolder.id })
+  }
+
+  async function submitFolderDialog() {
+    if (!folderDialog) return
     try {
-      await dataHubRepo.deleteFolder(folder.id)
-      toast('已删除文件夹')
-      setDir('all')
+      if (folderDialog.kind === 'create') {
+        const name = folderDialog.name.trim()
+        if (!name) return
+        const folder = await dataHubRepo.createFolder(name)
+        toast('已新建文件夹')
+        setDir(folder.id)
+      } else if (folderDialog.kind === 'rename') {
+        const name = folderDialog.name.trim()
+        if (!name || name === folderDialog.folder.name) return
+        await dataHubRepo.renameFolder(folderDialog.folder.id, name)
+        toast('已重命名文件夹')
+      } else if (folderDialog.kind === 'delete') {
+        await dataHubRepo.deleteFolder(folderDialog.folder.id)
+        toast('已删除文件夹')
+        setDir('all')
+      } else {
+        await dataHubRepo.moveFiles([folderDialog.file.id], folderDialog.folderId)
+        toast('已移动文件')
+      }
+      setFolderDialog(null)
       await reload()
     } catch {
-      toast('删除文件夹失败', 'error')
+      const message =
+        folderDialog.kind === 'create' ? '新建文件夹失败，请检查是否重名' :
+        folderDialog.kind === 'rename' ? '重命名失败，请检查是否重名' :
+        folderDialog.kind === 'delete' ? '删除文件夹失败' :
+        '移动失败，请检查后端服务'
+      toast(message, 'error')
     }
   }
 
-  async function moveFile(target: HubFile) {
-    const name = window.prompt('移动到文件夹名称')
-    if (!name?.trim()) return
-    const folder = folders.find(item => item.name === name.trim())
-    if (!folder) { toast('未找到该文件夹', 'error'); return }
-    try {
-      await dataHubRepo.moveFiles([target.id], folder.id)
-      toast('已移动文件')
-      await reload()
-    } catch {
-      toast('移动失败，请检查后端服务', 'error')
-    }
+  function updateDialogName(name: string) {
+    setFolderDialog(prev => {
+      if (!prev || (prev.kind !== 'create' && prev.kind !== 'rename')) return prev
+      return { ...prev, name }
+    })
   }
+
+  function updateMoveFolder(folderId: string) {
+    setFolderDialog(prev => prev?.kind === 'move' ? { ...prev, folderId } : prev)
+  }
+
+  const dialogTitle =
+    folderDialog?.kind === 'create' ? '新建文件夹' :
+    folderDialog?.kind === 'rename' ? '重命名文件夹' :
+    folderDialog?.kind === 'delete' ? '删除文件夹' :
+    folderDialog?.kind === 'move' ? '移动文件' :
+    ''
+
+  const canSubmitDialog =
+    !folderDialog ? false :
+    folderDialog.kind === 'create' ? Boolean(folderDialog.name.trim()) :
+    folderDialog.kind === 'rename' ? Boolean(folderDialog.name.trim()) && folderDialog.name.trim() !== folderDialog.folder.name :
+    folderDialog.kind === 'move' ? Boolean(folderDialog.folderId) :
+    true
 
   return (
     <>
@@ -122,7 +158,7 @@ export default function DataHubPage() {
           <div className="search"><Icon name="search" cls="ic-sm" /><input placeholder="搜索文件名…" value={query} onChange={e => setQuery(e.target.value)} /></div>
           <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={e => uploadFiles(e.target.files)} />
           <button className="btn btn-primary" onClick={() => inputRef.current?.click()}><Icon name="upload" cls="ic-sm" />上传数据</button>
-          <button className="btn" onClick={createFolder}><Icon name="folder-plus" cls="ic-sm" />新建文件夹</button>
+          <button className="btn" onClick={openCreateFolder}><Icon name="folder-plus" cls="ic-sm" />新建文件夹</button>
           <button className="btn" onClick={() => toast('导入功能开发中')}><Icon name="download" cls="ic-sm" />导入</button>
         </div>
 
@@ -136,8 +172,8 @@ export default function DataHubPage() {
                   <span className="tree-count">{t.count}</span>
                   {t.name !== 'all' && t.name !== 'uncategorized' && (
                     <span className="tree-actions">
-                      <button className="icon-btn sm" title="重命名" aria-label="重命名" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) void renameFolder(folder) }}><Icon name="edit-3" cls="ic-sm" /></button>
-                      <button className="icon-btn sm" title="删除空文件夹" aria-label="删除空文件夹" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) void deleteFolder(folder) }}><Icon name="trash" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="重命名" aria-label="重命名" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) openRenameFolder(folder) }}><Icon name="edit-3" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="删除空文件夹" aria-label="删除空文件夹" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) openDeleteFolder(folder) }}><Icon name="trash" cls="ic-sm" /></button>
                     </span>
                   )}
                 </div>
@@ -161,7 +197,7 @@ export default function DataHubPage() {
                       <div className="fsub">{TYPE_LABEL[f.type]} · {f.size}</div>
                     </div>
                     <span className="actions">
-                      <button className="icon-btn sm" title="移动" aria-label="移动" onClick={e => { e.stopPropagation(); void moveFile(f) }}><Icon name="folder-input" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="移动" aria-label="移动" onClick={e => { e.stopPropagation(); openMoveFile(f) }}><Icon name="folder-input" cls="ic-sm" /></button>
                       <button className="icon-btn sm" title="删除" aria-label="删除" onClick={e => { e.stopPropagation(); deleteFile(f) }}><Icon name="trash" cls="ic-sm" /></button>
                     </span>
                   </div>
@@ -221,6 +257,57 @@ export default function DataHubPage() {
           </section>
         </div>
       </div>
+
+      <Modal
+        open={Boolean(folderDialog)}
+        title={dialogTitle}
+        onClose={() => setFolderDialog(null)}
+        width={500}
+        footer={(
+          <>
+            <span className="grow" />
+            <button className="btn" onClick={() => setFolderDialog(null)}>取消</button>
+            <button className="btn btn-primary" disabled={!canSubmitDialog} onClick={submitFolderDialog}>
+              {folderDialog?.kind === 'delete' ? '删除' : '确定'}
+            </button>
+          </>
+        )}
+      >
+        {folderDialog?.kind === 'create' && (
+          <div className="field">
+            <label>文件夹名称</label>
+            <input className="input" value={folderDialog.name} autoFocus onChange={e => updateDialogName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void submitFolderDialog() }} />
+          </div>
+        )}
+        {folderDialog?.kind === 'rename' && (
+          <div className="field">
+            <label>文件夹名称</label>
+            <input className="input" value={folderDialog.name} autoFocus onChange={e => updateDialogName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void submitFolderDialog() }} />
+          </div>
+        )}
+        {folderDialog?.kind === 'delete' && (
+          <div className="notice notice-warn">
+            <Icon name="alert-triangle" cls="ic-sm" />
+            <div>确认删除空文件夹「{folderDialog.folder.name}」？此操作不会影响其他文件夹。</div>
+          </div>
+        )}
+        {folderDialog?.kind === 'move' && (
+          <>
+            <div className="field">
+              <label>文件</label>
+              <input className="input" value={folderDialog.file.name} readOnly />
+            </div>
+            <div className="field">
+              <label>目标文件夹</label>
+              <Select
+                value={folderDialog.folderId}
+                options={folders.map(folder => ({ value: folder.id, label: folder.name }))}
+                onChange={updateMoveFolder}
+              />
+            </div>
+          </>
+        )}
+      </Modal>
 
       <style jsx global>{`
         .app { overflow-x: auto; }
