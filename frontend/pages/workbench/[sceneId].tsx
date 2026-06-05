@@ -605,6 +605,8 @@ export default function WorkbenchPage() {
         .scene-bar .region .ic { width: 13px; height: 13px; }
         .work { min-width: 1240px; flex: 1; min-height: 0; display: flex; }
         .c-left { width: 276px; flex: none; border-right: 1px solid var(--border); }
+        .c-left .tabs { padding: 0; }
+        .c-left .tabs button { flex: 1; justify-content: center; }
         .c-right { width: 312px; flex: none; border-left: 1px solid var(--border); }
         .c-center { flex: 1; min-width: 560px; background: var(--bg); display: flex; flex-direction: column; }
         .layer { padding: 10px 12px; border-bottom: 1px solid var(--border); }
