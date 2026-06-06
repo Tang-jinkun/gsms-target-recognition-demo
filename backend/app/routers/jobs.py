@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -16,10 +17,11 @@ from sqlalchemy.orm import Session
 
 from app import files_util
 from app.db import get_db
-from app.models import DataFile, Job, JobOutput, Scene, SceneImport
+from app.models import DataFile, DataFolder, Job, JobOutput, Scene, SceneImport
 from app.storage import project_files_dir, scene_job_dir
 
 router = APIRouter(prefix="/api/scenes", tags=["scene-jobs"])
+UNCATEGORIZED_FOLDER_ID = "uncategorized"
 
 
 class JobCreateIn(BaseModel):
@@ -97,6 +99,92 @@ def _output_dict(scene_id: str, job_id: str, output: JobOutput) -> dict:
     }
 
 
+def _task_folder_name(job: Job) -> str:
+    stamp = (job.completed_at or job.created_at or datetime.utcnow()).strftime("%Y%m%d_%H%M%S")
+    return f"{job.model_id}_{stamp}"
+
+
+def _ensure_task_folder(job: Job, db: Session) -> DataFolder:
+    name = _task_folder_name(job)
+    folder = db.query(DataFolder).filter(DataFolder.name == name).first()
+    if folder:
+        return folder
+    folder = DataFolder(id=uuid.uuid4().hex, name=name)
+    db.add(folder)
+    db.flush()
+    return folder
+
+
+def _unique_project_dest(src: Path, job: Job) -> Path:
+    files_dir = project_files_dir()
+    stem = src.stem
+    suffix = src.suffix
+    dest = files_dir / f"{job.id}_{src.name}"
+    if not dest.exists():
+        return dest
+    i = 1
+    while True:
+        candidate = files_dir / f"{job.id}_{stem}_{i}{suffix}"
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+def _existing_output_data_file(job_id: str, output_name: str, db: Session) -> DataFile | None:
+    rows = db.query(DataFile).all()
+    for df in rows:
+        meta = df.extra_meta or {}
+        if meta.get("source") == "job_output" and meta.get("job_id") == job_id and meta.get("output_name") == output_name:
+            return df
+    return None
+
+
+def _register_outputs_to_data_hub(scene_id: str, job: Job, outputs: list[Path], db: Session) -> None:
+    if job.status != "succeeded" or not outputs:
+        return
+    folder = _ensure_task_folder(job, db)
+    for path in outputs:
+        df = _existing_output_data_file(job.id, path.name, db)
+        if not df:
+            dest = _unique_project_dest(path, job)
+            shutil.copy2(path, dest)
+            try:
+                meta = files_util.read_file_metadata(dest)
+            except Exception:
+                meta = {
+                    "file_type": files_util.infer_file_type(dest.name),
+                    "file_format": dest.suffix.lower().lstrip(".") or "unknown",
+                    "size": dest.stat().st_size,
+                }
+            core = {"name", "file_type", "file_format", "size", "crs", "bounds", "bounds_wgs84"}
+            extra = {k: v for k, v in meta.items() if k not in core}
+            extra.update({"source": "job_output", "job_id": job.id, "scene_id": scene_id, "output_name": path.name})
+            df = DataFile(
+                id=uuid.uuid4().hex,
+                folder_id=folder.id,
+                name=path.name,
+                file_type=meta.get("file_type", "unknown"),
+                file_format=meta.get("file_format", dest.suffix.lower().lstrip(".") or "unknown"),
+                size=meta.get("size", dest.stat().st_size),
+                path=dest.name,
+                crs=meta.get("crs"),
+                bounds=meta.get("bounds"),
+                bounds_wgs84=meta.get("bounds_wgs84"),
+                extra_meta=extra,
+            )
+            db.add(df)
+            db.flush()
+            if df.file_type == "geojson":
+                try:
+                    files_util.ingest_vector_features(dest, df.id, db)
+                except Exception:
+                    pass
+        else:
+            df.folder_id = folder.id
+        if not db.get(SceneImport, {"scene_id": scene_id, "file_id": df.id}):
+            db.add(SceneImport(scene_id=scene_id, file_id=df.id))
+
+
 def _sync_job_from_disk(scene_id: str, job: Job, db: Session) -> Job:
     job_dir = _job_dir(scene_id, job.id)
     log_dir = job_dir if job_dir.exists() else None
@@ -127,6 +215,7 @@ def _sync_job_from_disk(scene_id: str, job: Job, db: Session) -> Job:
         output.bounds_wgs84 = meta.get("bounds_wgs84")
         output.crs = meta.get("crs")
     job.outputs_count = len(outputs)
+    _register_outputs_to_data_hub(scene_id, job, outputs, db)
     db.commit()
     db.refresh(job)
     return job

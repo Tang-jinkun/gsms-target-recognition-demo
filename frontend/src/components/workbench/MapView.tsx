@@ -1,6 +1,9 @@
 import React from 'react'
 import maplibregl from 'maplibre-gl'
 
+const DEFAULT_BASEMAP_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+const BASEMAP_TILE_URL = process.env.NEXT_PUBLIC_BASEMAP_TILE_URL || DEFAULT_BASEMAP_TILE_URL
+
 export type WbLayer = {
   id: string
   name: string
@@ -27,13 +30,28 @@ export default function MapView({ layers, fitNonce, active }: { layers: WbLayer[
     if (typeof window === 'undefined' || mapRef.current || !containerRef.current) return
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#dbe4ee' } }] },
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: [BASEMAP_TILE_URL],
+            tileSize: 256,
+            attribution: '&copy; OpenStreetMap contributors',
+          },
+        },
+        layers: [
+          { id: 'bg', type: 'background', paint: { 'background-color': '#dbe4ee' } },
+          { id: 'osm-basemap', type: 'raster', source: 'osm' },
+        ],
+      },
       center: [113, 30.6],
       zoom: 5.5,
       attributionControl: false,
     })
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left')
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
     map.on('load', () => setReady(true))
     mapRef.current = map
     const ro = new ResizeObserver(() => map.resize())

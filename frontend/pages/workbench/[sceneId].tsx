@@ -5,10 +5,11 @@ import { useRouter } from 'next/router'
 import TopNav from '../../src/components/shell/TopNav'
 import Icon from '../../src/components/shell/Icon'
 import Modal from '../../src/components/shell/Modal'
+import Select from '../../src/components/shell/Select'
 import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
 import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
-import { settingsRepo } from '../../src/lib/repos/settingsRepo'
+import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
 import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
@@ -47,6 +48,9 @@ export default function WorkbenchPage() {
   const [view, setView] = React.useState<View>('agent')
   const [leftTab, setLeftTab] = React.useState<LeftTab>('layers')
   const [files, setFiles] = React.useState<WbFile[]>(SEED_FILES)
+  const [hubFiles, setHubFiles] = React.useState<WbFile[]>([])
+  const [importOpen, setImportOpen] = React.useState(false)
+  const [importSel, setImportSel] = React.useState<Record<string, boolean>>({})
   const [models, setModels] = React.useState<WbModel[]>(SEED_MODELS)
   const [layers, setLayers] = React.useState<WbLayer[]>([])
   const [fitNonce, setFitNonce] = React.useState(0)
@@ -63,7 +67,7 @@ export default function WorkbenchPage() {
   const [streaming, setStreaming] = React.useState(false)
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
-  const defaultModel = React.useMemo(() => (typeof window !== 'undefined' ? settingsRepo.defaultModel() : undefined), [])
+  const [defaultModel, setDefaultModel] = React.useState<ModelCfg | undefined>(undefined)
 
   // task + log
   const [task, setTask] = React.useState<TaskState>('idle')
@@ -74,19 +78,43 @@ export default function WorkbenchPage() {
 
   // invest modal
   const [modalModel, setModalModel] = React.useState<WbModel | null>(null)
+  const [modelSearch, setModelSearch] = React.useState('')
   const [inputSel, setInputSel] = React.useState<Record<string, string>>({})
+  const [uiRunMode, setUiRunMode] = React.useState('standard')
   const [runName, setRunName] = React.useState('')
   const [checkResult, setCheckResult] = React.useState<React.ReactNode>(null)
 
   React.useEffect(() => {
     if (!sceneId) return
-    const s = scenesRepo.get(sceneId)
-    if (s) { setSceneName(s.name); setRegion(s.region) }
+    let cancelled = false
+    scenesRepo.get(sceneId).then(s => {
+      if (cancelled) return
+      if (s) {
+        setSceneName(s.name)
+        setRegion(s.region)
+      } else {
+        setSceneName(sceneId)
+        setRegion('')
+        toast('未找到后端场景，请从场景页进入真实场景')
+      }
+    })
+    return () => { cancelled = true }
   }, [sceneId])
 
   React.useEffect(() => {
     let cancelled = false
-    workbenchRepo.listFiles(sceneId || undefined).then(f => { if (!cancelled && f.length) setFiles(f) }).catch(() => {})
+    settingsRepo.defaultModel().then(model => { if (!cancelled) setDefaultModel(model) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  const refreshSceneFiles = React.useCallback(async () => {
+    const next = await workbenchRepo.listFiles(sceneId || undefined)
+    setFiles(sceneId ? next : (next.length ? next : SEED_FILES))
+  }, [sceneId])
+
+  React.useEffect(() => {
+    let cancelled = false
+    workbenchRepo.listFiles(sceneId || undefined).then(f => { if (!cancelled) setFiles(sceneId ? f : (f.length ? f : SEED_FILES)) }).catch(() => { if (!cancelled && sceneId) setFiles([]) })
     workbenchRepo.listModels().then(m => { if (!cancelled && m.length) setModels(m) }).catch(() => {})
     return () => { cancelled = true }
   }, [sceneId])
@@ -107,6 +135,43 @@ export default function WorkbenchPage() {
   }
   const setLayer = (id: string, patch: Partial<WbLayer>) => setLayers(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)))
   const removeLayer = (id: string) => { setLayers(prev => prev.filter(l => l.id !== id)); toast('已移除图层') }
+
+  async function openImportFiles() {
+    if (!sceneId) { toast('请先进入一个真实场景', 'error'); return }
+    try {
+      const all = await workbenchRepo.listDataHubFiles()
+      const imported = new Set(files.map(f => f.id))
+      setHubFiles(all.filter(f => !imported.has(f.id)))
+      setImportSel({})
+      setImportOpen(true)
+    } catch {
+      toast('Data Hub 文件加载失败，请检查后端服务', 'error')
+    }
+  }
+
+  async function importSelectedFiles() {
+    const fileIds = Object.keys(importSel).filter(id => importSel[id])
+    if (!sceneId || !fileIds.length) return
+    try {
+      const result = await workbenchRepo.importFiles(sceneId, fileIds)
+      toast(`已导入 ${result.imported} 个文件`)
+      setImportOpen(false)
+      await refreshSceneFiles()
+    } catch {
+      toast('导入失败，请检查后端服务', 'error')
+    }
+  }
+
+  async function removeImportedFile(fileId: string) {
+    if (!sceneId) return
+    try {
+      await workbenchRepo.removeFileImport(sceneId, fileId)
+      toast('已从场景移除文件引用')
+      await refreshSceneFiles()
+    } catch {
+      toast('移除失败，请检查后端服务', 'error')
+    }
+  }
 
   /* ---- chat ---- */
   const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
@@ -171,15 +236,18 @@ export default function WorkbenchPage() {
       let lastLen = 0
       pollRef.current = window.setInterval(async () => {
         try {
-          const txt = await workbenchRepo.getLogs(job_id)
+          const txt = await workbenchRepo.getLogs(job_id, sceneId || undefined)
           if (txt.length > lastLen) {
             txt.slice(lastLen).split('\n').filter(Boolean).forEach(line => pushLog(classifyLog(line), line))
             lastLen = txt.length
           }
-          const st = await workbenchRepo.getJob(job_id)
+          const st = await workbenchRepo.getJob(job_id, sceneId || undefined)
           if (st.status === 'succeeded' || st.status === 'failed') {
             if (pollRef.current) window.clearInterval(pollRef.current)
             setTask(st.status === 'succeeded' ? 'done' : 'fail')
+            if (st.status === 'succeeded') {
+              void refreshSceneFiles()
+            }
             toast(st.status === 'succeeded' ? '运行完成：' + model.name : '运行失败：' + model.name, st.status === 'failed' ? 'error' : 'ok')
           }
         } catch { /* keep polling */ }
@@ -236,6 +304,18 @@ export default function WorkbenchPage() {
     fail: { ic: 'fail', icn: 'alert-circle', title: '运行失败，请查看日志', badge: <span className="badge badge-danger"><span className="bdot" />失败</span> },
   }
   const tm = TASK_META[task]
+  const filteredModels = models.filter(m => {
+    const q = modelSearch.trim().toLowerCase()
+    if (!q) return true
+    return `${m.name} ${m.id}`.toLowerCase().includes(q)
+  })
+  const fileGroups = Array.from(files.reduce((map, file) => {
+    const key = file.folderName || '未分类'
+    const group = map.get(key) || []
+    group.push(file)
+    map.set(key, group)
+    return map
+  }, new Map<string, WbFile[]>()))
 
   function ChatList({ pad }: { pad: string }) {
     return (
@@ -305,17 +385,28 @@ export default function WorkbenchPage() {
 
             {leftTab === 'files' && (
               <div className="col-body">
-                {files.map(f => (
-                  <div className="row" key={f.id}>
-                    <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
-                    <div style={{ minWidth: 0 }}>
-                      <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                      <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
-                    </div>
-                    <span className="actions">
-                      <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
-                      <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
-                    </span>
+                <div className="pad" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <button className="btn btn-sm" onClick={openImportFiles}><Icon name="download" cls="ic-sm" />导入 Data Hub 文件</button>
+                </div>
+                {files.length === 0 ? (
+                  <div className="state-empty"><Icon name="file" /><b>当前场景还没有文件</b>从 Data Hub 导入文件后，再配置模型输入。</div>
+                ) : fileGroups.map(([folderName, group]) => (
+                  <div className="file-folder" key={folderName}>
+                    <div className="file-folder-head"><Icon name="folder" cls="ic-sm" /><span>{folderName}</span><span className="tree-count">{group.length}</span></div>
+                    {group.map(f => (
+                      <div className="row file-in-folder" key={f.id}>
+                        <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                          <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+                        </div>
+                        <span className="actions">
+                          <button className="icon-btn sm" title="加入地图" aria-label="加入地图" onClick={() => addToMap(f)}><Icon name="map" cls="ic-sm" /></button>
+                          <button className="icon-btn sm" title="作为附件引用" aria-label="作为附件" onClick={() => { addAtt(f.name); toast('已作为附件引用') }}><Icon name="paperclip" cls="ic-sm" /></button>
+                          {sceneId && <button className="icon-btn sm" title="从场景移除引用" aria-label="从场景移除引用" onClick={() => removeImportedFile(f.id)}><Icon name="trash" cls="ic-sm" /></button>}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -323,15 +414,18 @@ export default function WorkbenchPage() {
 
             {leftTab === 'invest' && (
               <div className="col-body">
+                <div className="pad model-search">
+                  <Icon name="search" cls="ic-sm" />
+                  <input value={modelSearch} onChange={e => setModelSearch(e.target.value)} placeholder="搜索模型" />
+                </div>
                 <div>
-                  {models.map(m => {
+                  {filteredModels.map(m => {
                     const ready = m.status !== 'planned'
                     return (
                       <div className={`model-row ${ready ? '' : 'disabled'}`} key={m.id} onClick={() => openInvest(m)}>
                         <span className="fchip" style={{ background: ready ? 'var(--accent-soft)' : 'var(--inset)', color: ready ? 'var(--accent-ink)' : 'var(--faint)' }}><Icon name="box" cls="ic-sm" /></span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div className="ftitle">{m.name}</div>
-                          <div className="fsub">{m.description || ''}</div>
                         </div>
                         <span className={`badge ${ready ? 'badge-ok' : 'badge-muted'}`}>{ready ? '可运行' : '规划中'}</span>
                       </div>
@@ -443,6 +537,28 @@ export default function WorkbenchPage() {
         </div>
       </div>
 
+      <Modal open={importOpen} title="导入 Data Hub 文件" sub="选择全局 Data Hub 文件引用到当前场景；不会复制或删除原始文件。" onClose={() => setImportOpen(false)}
+        footer={<>
+          <span className="grow" />
+          <button className="btn" onClick={() => setImportOpen(false)}>取消</button>
+          <button className="btn btn-primary" disabled={!Object.values(importSel).some(Boolean)} onClick={importSelectedFiles}>导入</button>
+        </>}>
+        <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--r)' }}>
+          {hubFiles.length === 0 ? (
+            <div className="state-empty" style={{ margin: 20 }}><Icon name="file" /><b>没有可导入文件</b>Data Hub 为空，或所有文件都已导入当前场景。</div>
+          ) : hubFiles.map(f => (
+            <label className="row" key={f.id} style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={Boolean(importSel[f.id])} onChange={e => setImportSel(prev => ({ ...prev, [f.id]: e.target.checked }))} />
+              <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type] || 'file'} cls="ic-sm" /></span>
+              <div style={{ minWidth: 0 }}>
+                <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                <div className="fsub">{TYPE_LABEL[f.type] || '其他'} · {fmtBytes(f.size)}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Modal>
+
       {/* InVEST modal */}
       <Modal open={!!modalModel} title={`${modalModel?.name || ''} · 模型配置`} sub={modalModel?.description} onClose={() => setModalModel(null)}
         footer={<>
@@ -458,10 +574,12 @@ export default function WorkbenchPage() {
             return (
               <div className="field" key={inp.id}>
                 <label>{inp.label} <span style={{ color: 'var(--faint)', fontWeight: 400 }}>· {TYPE_LABEL[uiType]}</span></label>
-                <select className="select" value={inputSel[inp.id] || ''} onChange={e => setInputSel(prev => ({ ...prev, [inp.id]: e.target.value }))}>
-                  <option value="">从项目资产中选择…</option>
-                  {assetOptionsFor(uiType).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+                <Select
+                  value={inputSel[inp.id] || ''}
+                  placeholder="从项目资产中选择…"
+                  options={[{ value: '', label: '从项目资产中选择…' }, ...assetOptionsFor(uiType).map(a => ({ value: a.id, label: a.name }))]}
+                  onChange={value => setInputSel(prev => ({ ...prev, [inp.id]: value }))}
+                />
               </div>
             )
           })}
@@ -474,7 +592,11 @@ export default function WorkbenchPage() {
           <summary><span className="chev" style={{ display: 'inline-flex' }}><Icon name="chevron-right" cls="ic-sm" /></span>高级选项</summary>
           <div className="field" style={{ marginTop: 10 }}>
             <label>运行模式</label>
-            <select className="select"><option>标准（完整计算）</option><option>快速预览（降采样）</option></select>
+            <Select
+              value={uiRunMode}
+              options={[{ value: 'standard', label: '标准（完整计算）' }, { value: 'preview', label: '快速预览（降采样）' }]}
+              onChange={setUiRunMode}
+            />
           </div>
         </details>
         {checkResult && <div style={{ marginTop: 14 }}>{checkResult}</div>}
@@ -491,6 +613,8 @@ export default function WorkbenchPage() {
         .scene-bar .region .ic { width: 13px; height: 13px; }
         .work { min-width: 1240px; flex: 1; min-height: 0; display: flex; }
         .c-left { width: 276px; flex: none; border-right: 1px solid var(--border); }
+        .c-left .tabs { padding: 0; }
+        .c-left .tabs button { flex: 1; justify-content: center; }
         .c-right { width: 312px; flex: none; border-left: 1px solid var(--border); }
         .c-center { flex: 1; min-width: 560px; background: var(--bg); display: flex; flex-direction: column; }
         .layer { padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -501,15 +625,24 @@ export default function WorkbenchPage() {
         .layer-ctl .pct { font-size: 11px; color: var(--faint); width: 30px; text-align: right; font-family: var(--mono); }
         .layer .hideact { opacity: 0; transition: opacity .12s; display: flex; gap: 1px; }
         .layer:hover .hideact, .layer:focus-within .hideact { opacity: 1; }
+        .file-folder { border-bottom: 1px solid var(--border); }
+        .file-folder-head { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; color: var(--fg-strong); background: var(--surface-2); font-size: 12px; font-weight: 650; }
+        .file-folder-head .tree-count { margin-left: auto; font-family: var(--mono); color: var(--faint); font-size: 11px; }
+        .file-in-folder { padding-left: 20px; }
         .model-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
         .model-row:hover { background: var(--surface-2); }
         .model-row.disabled { cursor: not-allowed; }
         .model-row.disabled:hover { background: transparent; }
+        .model-search { position: relative; border-bottom: 1px solid var(--border); }
+        .model-search .ic { position: absolute; left: 21px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+        .model-search input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--fg); font: inherit; font-size: 12.5px; outline: none; padding: 0 10px 0 30px; }
+        .model-search input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
         .chat-wrap { height: 100%; display: flex; flex-direction: column; }
         .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 0 8px; }
-        .chat-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
+        .chat-inner { width: 100%; max-width: none; margin: 0; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
         .msg { display: flex; align-items: flex-end; gap: 9px; }
-        .msg.user { flex-direction: row-reverse; }
+        .msg.agent { justify-content: flex-start; }
+        .msg.user { flex-direction: row-reverse; justify-content: flex-start; }
         .msg .who { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
         .msg.user .who { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent-line); }
         .msg.agent .who { background: var(--accent); color: #fff; }

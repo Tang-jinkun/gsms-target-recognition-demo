@@ -4,7 +4,7 @@ import TopNav from '../src/components/shell/TopNav'
 import Icon from '../src/components/shell/Icon'
 import Modal from '../src/components/shell/Modal'
 import { toast } from '../src/lib/toast'
-import { skillsRepo, flattenTree, type Skill, type SkillFileNode } from '../src/lib/repos/skillsRepo'
+import { skillsRepo, flattenTree, type Skill, type SkillContent, type SkillFileNode } from '../src/lib/repos/skillsRepo'
 
 const PAGE_SIZE = 6
 
@@ -25,7 +25,10 @@ export default function SkillsPage() {
   const [query, setQuery] = React.useState('')
   const [page, setPage] = React.useState(1)
   const [curSkill, setCurSkill] = React.useState<string | null>(null)
+  const [skill, setSkill] = React.useState<Skill | null>(null)
+  const [treeNodes, setTreeNodes] = React.useState<SkillFileNode[]>([])
   const [curFile, setCurFile] = React.useState<string | null>(null)
+  const [content, setContent] = React.useState<SkillContent | undefined>(undefined)
 
   const [modalOpen, setModalOpen] = React.useState(false)
   const [editingId, setEditingId] = React.useState<string | null>(null)
@@ -33,7 +36,13 @@ export default function SkillsPage() {
   const [formErr, setFormErr] = React.useState('')
   const [delId, setDelId] = React.useState<string | null>(null)
 
-  const reload = React.useCallback(() => setSkills(skillsRepo.list()), [])
+  const reload = React.useCallback(async () => {
+    try {
+      setSkills(await skillsRepo.list())
+    } catch {
+      toast('Skills 加载失败，请检查后端服务')
+    }
+  }, [])
   React.useEffect(() => { reload() }, [reload])
 
   const filtered = skills.filter(s => !query || s.name.includes(query) || s.desc.includes(query))
@@ -41,34 +50,49 @@ export default function SkillsPage() {
   const curPage = Math.min(page, pages)
   const slice = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
 
-  function openSkill(id: string) {
+  async function openSkill(id: string) {
     setCurSkill(id)
-    const flat = flattenTree(skillsRepo.treeFor(id))
+    const [nextSkill, nextTree] = await Promise.all([skillsRepo.get(id), skillsRepo.treeFor(id)])
+    setSkill(nextSkill || null)
+    setTreeNodes(nextTree)
+    const flat = flattenTree(nextTree)
     const pick = flat.find(f => f.name === 'SKILL.md') || flat.find(f => f.name === 'README.md')
     setCurFile(pick ? pick.name : null)
   }
-  function saveSkill() {
+  async function saveSkill() {
     const name = form.name.trim()
     if (!name) { setFormErr('请填写名称。'); return }
-    if (skillsRepo.nameExists(name, editingId ?? undefined)) { setFormErr('已存在同名 Skill，请换一个名称。'); return }
-    if (editingId) { skillsRepo.update(editingId, { name, desc: form.desc.trim() }); toast('源信息已更新') }
-    else { skillsRepo.create({ name, desc: form.desc.trim() }); toast('已创建 Skill') }
-    setModalOpen(false); reload()
+    try {
+      if (await skillsRepo.nameExists(name, editingId ?? undefined)) { setFormErr('已存在同名 Skill，请换一个名称。'); return }
+      if (editingId) { await skillsRepo.update(editingId, { name, desc: form.desc.trim() }); toast('源信息已更新') }
+      else { await skillsRepo.create({ name, desc: form.desc.trim() }); toast('已创建 Skill') }
+      setModalOpen(false); await reload()
+    } catch {
+      setFormErr('保存失败，请检查后端服务。')
+    }
   }
-  function confirmDelete() {
+  async function confirmDelete() {
     if (delId) {
-      skillsRepo.remove(delId); toast('已删除 Skill')
-      if (curSkill === delId) { setCurSkill(null); setCurFile(null) }
-      reload()
+      try {
+        await skillsRepo.remove(delId); toast('已删除 Skill')
+        if (curSkill === delId) { setCurSkill(null); setSkill(null); setTreeNodes([]); setCurFile(null); setContent(undefined) }
+        await reload()
+      } catch {
+        toast('删除失败，请检查后端服务')
+      }
     }
     setDelId(null)
   }
 
-  const skill = curSkill ? skillsRepo.get(curSkill) : null
   const delSkill = delId ? skills.find(s => s.id === delId) : null
-  const treeNodes = curSkill ? skillsRepo.treeFor(curSkill) : []
   const fileMeta = curSkill && curFile ? flattenTree(treeNodes).find(f => f.name === curFile) : null
-  const content = curSkill && curFile ? skillsRepo.contentFor(curSkill, curFile) : undefined
+
+  React.useEffect(() => {
+    if (!curSkill || !curFile) { setContent(undefined); return }
+    let cancelled = false
+    skillsRepo.contentFor(curSkill, curFile).then(next => { if (!cancelled) setContent(next) })
+    return () => { cancelled = true }
+  }, [curSkill, curFile])
 
   return (
     <>

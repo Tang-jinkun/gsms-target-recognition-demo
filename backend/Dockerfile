@@ -23,4 +23,6 @@ EXPOSE 8000
 
 USER root
 
-CMD ["micromamba", "run", "-n", "gsms-invest", "python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV PYTHONPATH=/workspace/backend
+
+CMD ["bash", "-lc", "micromamba run -n gsms-invest python scripts/migrate_startup.py && exec micromamba run -n gsms-invest python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"]

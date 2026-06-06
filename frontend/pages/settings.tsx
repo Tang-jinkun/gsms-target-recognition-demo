@@ -3,6 +3,7 @@ import Head from 'next/head'
 import TopNav from '../src/components/shell/TopNav'
 import Icon from '../src/components/shell/Icon'
 import Modal from '../src/components/shell/Modal'
+import Select from '../src/components/shell/Select'
 import { toast } from '../src/lib/toast'
 import { settingsRepo, STATUS_META, PROVIDERS, type ModelCfg, type UserInfo } from '../src/lib/repos/settingsRepo'
 
@@ -19,30 +20,43 @@ export default function SettingsPage() {
   const [showKey, setShowKey] = React.useState(false)
   const [test, setTest] = React.useState<TestState>('')
 
-  React.useEffect(() => { setModels(settingsRepo.listModels()); setUser(settingsRepo.getUser()) }, [])
-  const persist = (m: ModelCfg[]) => { settingsRepo.saveModels(m); setModels(m) }
+  const reload = React.useCallback(async () => {
+    try {
+      const [nextModels, nextUser] = await Promise.all([settingsRepo.listModels(), settingsRepo.getUser()])
+      setModels(nextModels)
+      setUser(nextUser)
+    } catch {
+      toast('设置加载失败，请检查后端服务')
+    }
+  }, [])
+  React.useEffect(() => { reload() }, [reload])
 
   function openAdd() {
     setEditIdx(null); setForm({ name: '', provider: 'OpenAI', key: '', url: 'https://api.openai.com/v1', id: 'gpt-4o', def: false }); setShowKey(false); setTest(''); setModalOpen(true)
   }
   function openEdit(i: number) {
     const m = models[i]
-    setEditIdx(i); setForm({ name: m.name, provider: m.provider, key: '', url: '', id: m.id, def: m.def }); setShowKey(false); setTest(''); setModalOpen(true)
+    setEditIdx(i); setForm({ name: m.name, provider: m.provider, key: '', url: m.url || '', id: m.id, def: m.def }); setShowKey(false); setTest(''); setModalOpen(true)
   }
-  function saveModel() {
+  async function saveModel() {
     const name = form.name.trim() || '未命名模型'
-    if (editIdx != null) {
-      const next = models.map((m, i) => i === editIdx ? { ...m, name, provider: form.provider, id: form.id.trim(), def: form.def } : (form.def ? { ...m, def: false } : m))
-      persist(next)
-    } else {
-      const created: ModelCfg = { name, provider: form.provider, id: form.id.trim() || 'model', status: 'untested', def: form.def }
-      const next = form.def ? [...models.map(m => ({ ...m, def: false })), created] : [...models, created]
-      persist(next)
+    try {
+      const payload = { name, provider: form.provider, id: form.id.trim() || 'model', url: form.url.trim(), key: form.key.trim(), def: form.def }
+      if (editIdx != null) await settingsRepo.updateModel(models[editIdx], payload)
+      else await settingsRepo.createModel(payload)
+      setModalOpen(false); toast('模型已保存'); await reload()
+    } catch {
+      toast('模型保存失败，请检查后端服务', 'error')
     }
-    setModalOpen(false); toast('模型已保存')
   }
-  function setDefault(i: number) { persist(models.map((m, j) => ({ ...m, def: j === i }))); toast('已设为默认模型') }
-  function del(i: number) { persist(models.filter((_, j) => j !== i)); toast('已删除模型') }
+  async function setDefault(i: number) {
+    try { await settingsRepo.setDefault(models[i]); toast('已设为默认模型'); await reload() }
+    catch { toast('设置默认模型失败，请检查后端服务', 'error') }
+  }
+  async function del(i: number) {
+    try { await settingsRepo.removeModel(models[i]); toast('已删除模型'); await reload() }
+    catch { toast('删除模型失败，请检查后端服务', 'error') }
+  }
   function runTest() {
     setTest('testing')
     window.setTimeout(() => setTest(form.url.trim() && form.id.trim() ? 'ok' : 'fail'), 900)
@@ -111,7 +125,7 @@ export default function SettingsPage() {
                       <div className="field"><label>研究方向</label><input className="input" value={user.field} onChange={e => setUser({ ...user, field: e.target.value })} /></div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6 }}>
-                      <button className="btn btn-primary" onClick={() => { settingsRepo.saveUser(user); toast('设置已保存') }}><Icon name="check" cls="ic-sm" />保存</button>
+                      <button className="btn btn-primary" onClick={async () => { try { setUser(await settingsRepo.saveUser(user)); toast('设置已保存') } catch { toast('保存失败，请检查后端服务', 'error') } }}><Icon name="check" cls="ic-sm" />保存</button>
                       <span className="meta">配置保存在本地浏览器</span>
                     </div>
                   </div>
@@ -132,9 +146,7 @@ export default function SettingsPage() {
         <div className="form-grid">
           <div className="field"><label>模型名称</label><input className="input" placeholder="如：GPT-4o" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
           <div className="field"><label>供应商</label>
-            <select className="select" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
-              {PROVIDERS.map(p => <option key={p}>{p}</option>)}
-            </select>
+            <Select value={form.provider} options={PROVIDERS.map(p => ({ value: p, label: p }))} onChange={provider => setForm({ ...form, provider })} />
           </div>
           <div className="field full"><label>API Key</label>
             <div className="pwd-wrap">
