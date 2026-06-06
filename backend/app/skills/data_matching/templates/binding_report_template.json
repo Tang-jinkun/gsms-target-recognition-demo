@@ -1,0 +1,47 @@
+{
+  "report_id": "{{report_id}}",
+  "project_id": "{{project_id}}",
+  "model_id": "{{model_id}}",
+  "status": "auto_bound | needs_review | failed",
+  "overall_confidence": 0.0,
+  "bindings": {
+    "{{slot_name}}": {
+      "asset_id": "{{asset_id}}",
+      "decision": "selected | candidate | rejected | missing",
+      "score": 0.0,
+      "evidence": [],
+      "warnings": []
+    }
+  },
+  "relations": [
+    {
+      "relation_id": "{{relation_id}}",
+      "status": "passed | failed | not_checked",
+      "evidence": [],
+      "warnings": [],
+      "details": {}
+    }
+  ],
+  "missing_required_inputs": [
+    {
+      "slot": "{{slot_name}}",
+      "expected": "{{expected_input_description}}"
+    }
+  ],
+  "ambiguous_inputs": [
+    {
+      "slot": "{{slot_name}}",
+      "candidates": [],
+      "reason": "{{ambiguity_reason}}"
+    }
+  ],
+  "conflicts": [
+    {
+      "type": "missing_required_input | ambiguous_candidates | hard_constraint_failure | relation_failure | metadata_incomplete | unsupported_asset_type",
+      "slot": "{{slot_name}}",
+      "message": "{{message}}"
+    }
+  ],
+  "recommended_next_action": "proceed_to_validation | ask_user_to_confirm | ask_user_to_upload_data | retry_with_relaxed_filters | stop_and_explain",
+  "created_at": "{{created_at}}"
+}
