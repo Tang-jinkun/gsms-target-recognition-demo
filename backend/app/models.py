@@ -62,8 +62,16 @@ class DataFile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     folder: Mapped["DataFolder | None"] = relationship("DataFolder", back_populates="files")
-    imports: Mapped[list["SceneImport"]] = relationship("SceneImport", back_populates="data_file")
-    features: Mapped[list["Feature"]] = relationship("Feature", back_populates="data_file", cascade="all, delete-orphan")
+    imports: Mapped[list["SceneImport"]] = relationship(
+        "SceneImport",
+        back_populates="data_file",
+        passive_deletes="all",
+    )
+    features: Mapped[list["Feature"]] = relationship(
+        "Feature",
+        back_populates="data_file",
+        passive_deletes="all",
+    )
 
 
 class SceneImport(Base):
