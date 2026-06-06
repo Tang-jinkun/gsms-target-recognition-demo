@@ -14,8 +14,13 @@ export function apiUrl(path: string) {
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(apiUrl(path), init)
   if (!res.ok) throw new Error(`${path} -> ${res.status}`)
+  if (res.status === 204 || res.status === 205) return undefined as T
+
+  const body = await res.text()
+  if (!body) return undefined as T
+
   const ct = res.headers.get('content-type') || ''
-  return (ct.includes('application/json') ? await res.json() : await res.text()) as T
+  return (ct.includes('application/json') ? JSON.parse(body) : body) as T
 }
 
 export const api = {
