@@ -101,6 +101,10 @@ export const dataHubRepo = {
     await api.post('/api/data/files/move', { fileIds, folderId })
   },
 
+  async deleteFiles(fileIds: string[]): Promise<void> {
+    await api.post('/api/data/files/delete', { fileIds })
+  },
+
   async remove(id: string): Promise<void> {
     await api.del(`/api/data/files/${encodeURIComponent(id)}`)
   },

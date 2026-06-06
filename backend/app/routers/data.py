@@ -34,6 +34,10 @@ class MoveFilesIn(BaseModel):
     folderId: str | None = None
 
 
+class DeleteFilesIn(BaseModel):
+    fileIds: list[str]
+
+
 def ensure_uncategorized_folder(db: Session) -> DataFolder:
     folder = db.get(DataFolder, UNCATEGORIZED_FOLDER_ID)
     if not folder:
@@ -198,6 +202,20 @@ def move_files(body: MoveFilesIn, db: Session = Depends(get_db)):
         moved += 1
     db.commit()
     return {"moved": moved}
+
+
+@router.post("/files/delete")
+def delete_files(body: DeleteFilesIn, db: Session = Depends(get_db)):
+    file_ids = list(dict.fromkeys(body.fileIds))
+    if not file_ids:
+        return {"deleted": 0}
+    files = db.query(DataFile).filter(DataFile.id.in_(file_ids)).all()
+    stored_paths = [path for df in files for path in _stored_paths(df)]
+    for df in files:
+        db.delete(df)
+    db.commit()
+    _unlink_stored_paths(stored_paths)
+    return {"deleted": len(files)}
 
 
 @router.get("/files")

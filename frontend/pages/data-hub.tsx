@@ -11,7 +11,8 @@ type FolderDialog =
   | { kind: 'create'; name: string }
   | { kind: 'rename'; folder: HubFolder; name: string }
   | { kind: 'delete'; folder: HubFolder }
-  | { kind: 'move'; file: HubFile; folderId: string }
+  | { kind: 'move'; files: HubFile[]; folderId: string }
+  | { kind: 'delete-files'; files: HubFile[] }
   | null
 
 export default function DataHubPage() {
@@ -22,7 +23,9 @@ export default function DataHubPage() {
   const [query, setQuery] = React.useState('')
   const [loading, setLoading] = React.useState(true)
   const [folderDialog, setFolderDialog] = React.useState<FolderDialog>(null)
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set())
   const inputRef = React.useRef<HTMLInputElement | null>(null)
+  const selectAllRef = React.useRef<HTMLInputElement | null>(null)
 
   const reload = React.useCallback(async () => {
     try {
@@ -31,6 +34,7 @@ export default function DataHubPage() {
       setFolders(nextFolders)
       setFiles(next)
       setFile(prev => prev ? next.find(item => item.id === prev.id) || null : null)
+      setSelectedIds(prev => new Set([...prev].filter(id => next.some(item => item.id === id))))
     } catch {
       toast('数据加载失败，请检查后端服务')
     } finally {
@@ -42,8 +46,31 @@ export default function DataHubPage() {
 
   const tree = [{ name: 'all', label: '全部', count: files.length }, ...folders.map(folder => ({ name: folder.id, label: folder.name, count: folder.count }))]
   const arr = filesForDir(files, dir).filter(f => !query || f.name.toLowerCase().includes(query.toLowerCase()))
+  const selectedFiles = files.filter(item => selectedIds.has(item.id))
+  const selectedVisibleCount = arr.filter(item => selectedIds.has(item.id)).length
+  const allVisibleSelected = arr.length > 0 && selectedVisibleCount === arr.length
 
-  function selectDir(d: string) { setDir(d); setFile(null) }
+  React.useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected
+  }, [allVisibleSelected, selectedVisibleCount])
+
+  function selectDir(d: string) { setDir(d); setFile(null); setSelectedIds(new Set()) }
+  function toggleFile(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  function toggleAllVisible() {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (allVisibleSelected) arr.forEach(item => next.delete(item.id))
+      else arr.forEach(item => next.add(item.id))
+      return next
+    })
+  }
   async function uploadFiles(list: FileList | null) {
     if (!list?.length) return
     try {
@@ -58,17 +85,6 @@ export default function DataHubPage() {
       if (inputRef.current) inputRef.current.value = ''
     }
   }
-  async function deleteFile(target: HubFile) {
-    try {
-      await dataHubRepo.remove(target.id)
-      toast('已删除文件')
-      setFile(null)
-      await reload()
-    } catch {
-      toast('删除失败，请检查后端服务', 'error')
-    }
-  }
-
   function openCreateFolder() {
     setFolderDialog({ kind: 'create', name: '' })
   }
@@ -81,10 +97,16 @@ export default function DataHubPage() {
     setFolderDialog({ kind: 'delete', folder })
   }
 
-  function openMoveFile(target: HubFile) {
-    const targetFolder = folders.find(item => item.id !== target.folderId) || folders[0]
+  function openMoveFiles(targets: HubFile[]) {
+    if (!targets.length) return
+    const targetFolder = folders.find(item => !targets.every(file => file.folderId === item.id)) || folders[0]
     if (!targetFolder) { toast('暂无可移动的目标文件夹', 'error'); return }
-    setFolderDialog({ kind: 'move', file: target, folderId: targetFolder.id })
+    setFolderDialog({ kind: 'move', files: targets, folderId: targetFolder.id })
+  }
+
+  function openDeleteFiles(targets: HubFile[]) {
+    if (!targets.length) return
+    setFolderDialog({ kind: 'delete-files', files: targets })
   }
 
   async function submitFolderDialog() {
@@ -105,9 +127,15 @@ export default function DataHubPage() {
         await dataHubRepo.deleteFolder(folderDialog.folder.id)
         toast('已删除文件夹')
         setDir('all')
+      } else if (folderDialog.kind === 'move') {
+        await dataHubRepo.moveFiles(folderDialog.files.map(item => item.id), folderDialog.folderId)
+        toast(`已移动 ${folderDialog.files.length} 个文件`)
+        setSelectedIds(new Set())
       } else {
-        await dataHubRepo.moveFiles([folderDialog.file.id], folderDialog.folderId)
-        toast('已移动文件')
+        await dataHubRepo.deleteFiles(folderDialog.files.map(item => item.id))
+        toast(`已删除 ${folderDialog.files.length} 个文件`)
+        if (file && folderDialog.files.some(item => item.id === file.id)) setFile(null)
+        setSelectedIds(new Set())
       }
       setFolderDialog(null)
       await reload()
@@ -116,7 +144,8 @@ export default function DataHubPage() {
         folderDialog.kind === 'create' ? '新建文件夹失败，请检查是否重名' :
         folderDialog.kind === 'rename' ? '重命名失败，请检查是否重名' :
         folderDialog.kind === 'delete' ? '删除文件夹失败' :
-        '移动失败，请检查后端服务'
+        folderDialog.kind === 'move' ? '移动失败，请检查后端服务' :
+        '删除失败，请检查后端服务'
       toast(message, 'error')
     }
   }
@@ -137,13 +166,14 @@ export default function DataHubPage() {
     folderDialog?.kind === 'rename' ? '重命名文件夹' :
     folderDialog?.kind === 'delete' ? '删除文件夹' :
     folderDialog?.kind === 'move' ? '移动文件' :
+    folderDialog?.kind === 'delete-files' ? '删除文件' :
     ''
 
   const canSubmitDialog =
     !folderDialog ? false :
     folderDialog.kind === 'create' ? Boolean(folderDialog.name.trim()) :
     folderDialog.kind === 'rename' ? Boolean(folderDialog.name.trim()) && folderDialog.name.trim() !== folderDialog.folder.name :
-    folderDialog.kind === 'move' ? Boolean(folderDialog.folderId) :
+    folderDialog.kind === 'move' ? Boolean(folderDialog.folderId) && folderDialog.files.length > 0 :
     true
 
   return (
@@ -154,7 +184,7 @@ export default function DataHubPage() {
         <div className="hub-head">
           <h1>数据管理 / Data Hub</h1>
           <span style={{ flex: 1 }} />
-          <div className="search"><Icon name="search" cls="ic-sm" /><input placeholder="搜索文件名…" value={query} onChange={e => setQuery(e.target.value)} /></div>
+          <div className="search"><Icon name="search" cls="ic-sm" /><input placeholder="搜索文件名…" value={query} onChange={e => { setQuery(e.target.value); setSelectedIds(new Set()) }} /></div>
           <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={e => uploadFiles(e.target.files)} />
           <button className="btn btn-primary" onClick={() => inputRef.current?.click()}><Icon name="upload" cls="ic-sm" />上传数据</button>
           <button className="btn" onClick={openCreateFolder}><Icon name="folder-plus" cls="ic-sm" />新建文件夹</button>
@@ -181,7 +211,23 @@ export default function DataHubPage() {
           </aside>
 
           <section className="col c-list">
-            <div className="col-head"><h2>{tree.find(t => t.name === dir)?.label || dir}</h2><span className="right meta">{!loading && arr.length ? `${arr.length} 项` : ''}</span></div>
+            <div className="col-head file-list-head">
+              <input ref={selectAllRef} className="file-check" type="checkbox" aria-label="全选当前列表" checked={allVisibleSelected} disabled={!arr.length} onChange={toggleAllVisible} />
+              {selectedFiles.length ? (
+                <>
+                  <h2>已选 {selectedFiles.length} 项</h2>
+                  <span className="right">
+                    <button className="icon-btn sm" title="移动所选文件" aria-label="移动所选文件" onClick={() => openMoveFiles(selectedFiles)}><Icon name="folder-input" cls="ic-sm" /></button>
+                    <button className="icon-btn sm danger-action" title="删除所选文件" aria-label="删除所选文件" onClick={() => openDeleteFiles(selectedFiles)}><Icon name="trash" cls="ic-sm" /></button>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <h2>{tree.find(t => t.name === dir)?.label || dir}</h2>
+                  <span className="right meta">{!loading && arr.length ? `${arr.length} 项` : ''}</span>
+                </>
+              )}
+            </div>
             <div className="col-body">
               {loading ? (
                 <div className="pad">{[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 40, marginBottom: 8 }} />)}</div>
@@ -189,15 +235,16 @@ export default function DataHubPage() {
                 <div className="state-empty"><Icon name="folder-open" /><b>{query ? '无匹配文件' : '该目录为空'}</b>{query ? '换个关键词试试' : '上传数据或从其他目录移动文件到这里'}</div>
               ) : (
                 arr.map(f => (
-                  <div key={f.id} className={`row ${file?.id === f.id ? 'sel' : ''}`} onClick={() => setFile(f)}>
+                  <div key={f.id} className={`row ${file?.id === f.id ? 'sel' : ''} ${selectedIds.has(f.id) ? 'checked' : ''}`} onClick={() => setFile(f)}>
+                    <input className="file-check" type="checkbox" aria-label={`选择 ${f.name}`} checked={selectedIds.has(f.id)} onClick={e => e.stopPropagation()} onChange={() => toggleFile(f.id)} />
                     <span className={`fchip ${f.type}`}><Icon name={TYPE_ICON[f.type]} cls="ic-sm" /></span>
                     <div style={{ minWidth: 0 }}>
                       <div className="ftitle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                       <div className="fsub">{TYPE_LABEL[f.type]} · {f.size}</div>
                     </div>
                     <span className="actions">
-                      <button className="icon-btn sm" title="移动" aria-label="移动" onClick={e => { e.stopPropagation(); openMoveFile(f) }}><Icon name="folder-input" cls="ic-sm" /></button>
-                      <button className="icon-btn sm" title="删除" aria-label="删除" onClick={e => { e.stopPropagation(); deleteFile(f) }}><Icon name="trash" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="移动" aria-label="移动" onClick={e => { e.stopPropagation(); openMoveFiles([f]) }}><Icon name="folder-input" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="删除" aria-label="删除" onClick={e => { e.stopPropagation(); openDeleteFiles([f]) }}><Icon name="trash" cls="ic-sm" /></button>
                     </span>
                   </div>
                 ))
@@ -266,8 +313,8 @@ export default function DataHubPage() {
           <>
             <span className="grow" />
             <button className="btn" onClick={() => setFolderDialog(null)}>取消</button>
-            <button className={`btn ${folderDialog?.kind === 'delete' ? 'btn-danger' : 'btn-primary'}`} disabled={!canSubmitDialog} onClick={submitFolderDialog}>
-              {folderDialog?.kind === 'delete' ? '删除' : '确定'}
+            <button className={`btn ${folderDialog?.kind === 'delete' || folderDialog?.kind === 'delete-files' ? 'btn-danger' : 'btn-primary'}`} disabled={!canSubmitDialog} onClick={submitFolderDialog}>
+              {folderDialog?.kind === 'delete' || folderDialog?.kind === 'delete-files' ? '删除' : '确定'}
             </button>
           </>
         )}
@@ -297,8 +344,8 @@ export default function DataHubPage() {
         {folderDialog?.kind === 'move' && (
           <>
             <div className="field">
-              <label>文件</label>
-              <input className="input" value={folderDialog.file.name} readOnly />
+              <label>所选文件</label>
+              <div className="selection-summary">{folderDialog.files.length === 1 ? folderDialog.files[0].name : `${folderDialog.files.length} 个文件`}</div>
             </div>
             <div className="field">
               <label>目标文件夹</label>
@@ -309,6 +356,15 @@ export default function DataHubPage() {
               />
             </div>
           </>
+        )}
+        {folderDialog?.kind === 'delete-files' && (
+          <div className="notice notice-error">
+            <Icon name="alert-triangle" cls="ic-sm" />
+            <div>
+              确认永久删除 {folderDialog.files.length === 1 ? `「${folderDialog.files[0].name}」` : `${folderDialog.files.length} 个所选文件`}？
+              对应的场景引用和预览数据也会被删除，无法恢复。
+            </div>
+          </div>
         )}
       </Modal>
 
@@ -330,6 +386,11 @@ export default function DataHubPage() {
         .tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tree-count { flex: none; margin-left: auto; font-size: 11px; color: var(--faint); font-family: var(--mono); }
         .tree-actions { flex: none; display: inline-flex; align-items: center; gap: 1px; margin-left: 2px; }
+        .file-check { width: 15px; height: 15px; flex: none; margin: 0; accent-color: var(--accent); cursor: pointer; }
+        .file-check:disabled { cursor: default; opacity: .45; }
+        .row.checked { background: var(--accent-soft); }
+        .file-list-head .danger-action { color: var(--danger); }
+        .selection-summary { min-height: 34px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--inset); color: var(--fg); font-size: 12.5px; line-height: 1.45; word-break: break-all; }
       `}</style>
     </>
   )
