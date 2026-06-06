@@ -167,7 +167,7 @@ export default function DataHubPage() {
             <div className="col-body">
               {tree.map(t => (
                 <div key={t.name} className={`tree-node open ${t.name === dir ? 'sel' : ''}`} onClick={() => selectDir(t.name)}>
-                  <span className="chev"><Icon name="chevron-right" cls="ic-sm" /></span><Icon name="folder" cls="ic-sm" /><span>{t.label}</span>
+                  <span className="chev"><Icon name="chevron-right" cls="ic-sm" /></span><Icon name="folder" cls="ic-sm" /><span className="tree-label" title={t.label}>{t.label}</span>
                   <span className="tree-count">{t.count}</span>
                   {t.name !== 'all' && t.name !== 'uncategorized' && (
                     <span className="tree-actions">
@@ -327,10 +327,9 @@ export default function DataHubPage() {
         .tree-node.sel { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
         .tree-node .chev { color: var(--faint); display: inline-flex; transition: transform .12s; }
         .tree-node.open .chev { transform: rotate(90deg); }
-        .tree-count { margin-left: auto; font-size: 11px; color: var(--faint); font-family: var(--mono); }
-        .tree-actions { display: none; align-items: center; gap: 1px; margin-left: 2px; }
-        .tree-node:hover .tree-actions { display: inline-flex; }
-        .tree-node:hover .tree-count { display: none; }
+        .tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tree-count { flex: none; margin-left: auto; font-size: 11px; color: var(--faint); font-family: var(--mono); }
+        .tree-actions { flex: none; display: inline-flex; align-items: center; gap: 1px; margin-left: 2px; }
       `}</style>
     </>
   )
