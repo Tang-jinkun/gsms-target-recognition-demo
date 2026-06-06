@@ -78,7 +78,6 @@ export default function DataHubPage() {
   }
 
   function openDeleteFolder(folder: HubFolder) {
-    if (folder.count > 0) { toast('只能删除空文件夹', 'error'); return }
     setFolderDialog({ kind: 'delete', folder })
   }
 
@@ -173,7 +172,7 @@ export default function DataHubPage() {
                   {t.name !== 'all' && t.name !== 'uncategorized' && (
                     <span className="tree-actions">
                       <button className="icon-btn sm" title="重命名" aria-label="重命名" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) openRenameFolder(folder) }}><Icon name="edit-3" cls="ic-sm" /></button>
-                      <button className="icon-btn sm" title="删除空文件夹" aria-label="删除空文件夹" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) openDeleteFolder(folder) }}><Icon name="trash" cls="ic-sm" /></button>
+                      <button className="icon-btn sm" title="删除文件夹" aria-label="删除文件夹" onClick={e => { e.stopPropagation(); const folder = folders.find(item => item.id === t.name); if (folder) openDeleteFolder(folder) }}><Icon name="trash" cls="ic-sm" /></button>
                     </span>
                   )}
                 </div>
@@ -267,7 +266,7 @@ export default function DataHubPage() {
           <>
             <span className="grow" />
             <button className="btn" onClick={() => setFolderDialog(null)}>取消</button>
-            <button className="btn btn-primary" disabled={!canSubmitDialog} onClick={submitFolderDialog}>
+            <button className={`btn ${folderDialog?.kind === 'delete' ? 'btn-danger' : 'btn-primary'}`} disabled={!canSubmitDialog} onClick={submitFolderDialog}>
               {folderDialog?.kind === 'delete' ? '删除' : '确定'}
             </button>
           </>
@@ -286,9 +285,13 @@ export default function DataHubPage() {
           </div>
         )}
         {folderDialog?.kind === 'delete' && (
-          <div className="notice notice-warn">
+          <div className="notice notice-error">
             <Icon name="alert-triangle" cls="ic-sm" />
-            <div>确认删除空文件夹「{folderDialog.folder.name}」？此操作不会影响其他文件夹。</div>
+            <div>
+              确认删除文件夹「{folderDialog.folder.name}」
+              {folderDialog.folder.count > 0 ? `及其中的 ${folderDialog.folder.count} 个文件` : ''}？
+              文件、场景引用和预览数据将被永久删除，无法恢复。
+            </div>
           </div>
         )}
         {folderDialog?.kind === 'move' && (

@@ -147,6 +147,8 @@ svg { display: block; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent-ink); border-color: var(--accent-ink); }
 .btn-primary:active { background: var(--accent-ink); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-danger:hover, .btn-danger:active { filter: brightness(.9); }
 .btn-ghost { border-color: transparent; background: transparent; }
 .btn-ghost:hover { background: var(--inset); border-color: transparent; }
 .btn-sm { height: 27px; padding: 0 9px; font-size: 12.5px; }

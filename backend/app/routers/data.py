@@ -50,6 +50,23 @@ def _resolve(df: DataFile) -> Path:
     return p
 
 
+def _stored_paths(df: DataFile) -> tuple[Path, Path]:
+    return (
+        project_files_dir() / Path(df.path).name,
+        project_file_previews_dir() / f"{df.id}.png",
+    )
+
+
+def _unlink_stored_paths(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # The database is authoritative. A later storage cleanup can remove
+            # files that are temporarily locked or unavailable.
+            pass
+
+
 def _data_hub_dict(df: DataFile) -> dict:
     """Shape consumed by the Data Hub page (dataHubRepo)."""
     extra = df.extra_meta or {}
@@ -157,11 +174,13 @@ def delete_folder(folder_id: str, db: Session = Depends(get_db)):
     folder = db.get(DataFolder, folder_id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
-    count = db.query(DataFile).filter(DataFile.folder_id == folder_id).count()
-    if count:
-        raise HTTPException(status_code=409, detail="Folder is not empty")
+    files = db.query(DataFile).filter(DataFile.folder_id == folder_id).all()
+    stored_paths = [path for df in files for path in _stored_paths(df)]
+    for df in files:
+        db.delete(df)
     db.delete(folder)
     db.commit()
+    _unlink_stored_paths(stored_paths)
 
 
 @router.post("/files/move")
@@ -256,11 +275,10 @@ def delete_file(file_id: str, db: Session = Depends(get_db)):
     df = db.get(DataFile, file_id)
     if not df:
         raise HTTPException(status_code=404, detail="File not found")
-    p = project_files_dir() / Path(df.path).name
+    stored_paths = list(_stored_paths(df))
     db.delete(df)  # cascades features + scene_imports
     db.commit()
-    if p.exists():
-        p.unlink()
+    _unlink_stored_paths(stored_paths)
 
 
 @router.get("/files/{file_id}/metadata")
