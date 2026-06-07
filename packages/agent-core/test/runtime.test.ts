@@ -108,6 +108,66 @@ test('agent proactively selects a skill, acts, and finishes with evidence', asyn
   )
 })
 
+test('reloading the active inline skill is idempotent', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'clean-agent-skill-repeat-'))
+  const skills = new SkillRegistry()
+  skills.replace([
+    {
+      name: 'investigate',
+      description: 'Investigate with read tools',
+      instructions: 'Investigate the current request before answering.',
+      source: 'user',
+      allowedTools: ['read_file'],
+      userInvocable: true,
+      modelInvocable: true,
+      execution: 'inline',
+    },
+  ])
+
+  const model = new FakeModelAdapter([
+    {
+      content: '',
+      toolCalls: [{ id: '1', name: 'skill', input: { skill: 'investigate' } }],
+    },
+    {
+      content: '',
+      toolCalls: [{ id: '2', name: 'skill', input: { skill: 'investigate' } }],
+    },
+    {
+      content: '',
+      toolCalls: [{
+        id: '3',
+        name: 'finish',
+        input: { summary: 'Finished with the active skill.', evidence: ['investigate'] },
+      }],
+    },
+  ])
+
+  const tools = new ToolRegistry([finishTool])
+  tools.register(
+    createSkillAgentTool(new SkillTool(skills), {
+      availableTools: () => ['read_file'],
+    }),
+  )
+
+  const result = await new AgentRuntime({
+    model,
+    tools,
+    skills,
+    workspace,
+  }).run('Investigate the request')
+
+  assert.equal(result.goal.status, 'completed')
+  assert.ok(
+    model.requests[2]!.messages.some(
+      message =>
+        message.role === 'tool' &&
+        message.toolCallId === '2' &&
+        /already active/.test(message.content),
+    ),
+  )
+})
+
 test('active skill scope denies tools outside its allowlist', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'clean-agent-scope-'))
   const skills = new SkillRegistry()

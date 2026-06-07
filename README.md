@@ -235,6 +235,14 @@ docker compose up -d --build backend agent-worker frontend
 - Do not let the LLM directly assemble shell commands to run InVEST.
 - The backend is authoritative for model schemas, validation, execution, output
   inventories, and raster statistics.
+- Domain workflow knowledge belongs in Skills. Do not hard-code user-intent
+  keyword rules such as "if the user asks X, call tool Y" in the worker,
+  runtime, or backend. Skills should guide the model to decide what evidence it
+  needs and which tools to use.
+- Tools and runtime code may enforce generic safety boundaries: permissions,
+  evidence availability, workflow phase limits, path safety, deterministic
+  validation, and audit logging. They should not encode InVEST-specific
+  reasoning that belongs in Skills.
 - Skills provide workflow guidance; tools enforce evidence, permissions, and
   workflow boundaries.
 - Generated reports must cite deterministic artifacts and must not introduce
@@ -242,6 +250,12 @@ docker compose up -d --build backend agent-worker frontend
 - Data matching and result interpretation should leave auditable artifacts.
 - Agent-generated evidence that is useful to users should be visible in Data
   Hub, not only hidden in the Agent worker volume.
+- Treat `packages/agent-core` as a model-agnostic runtime inspired by Claude
+  Code. Changes there require extra scrutiny and should be minimal, generic,
+  well-tested, and never tailored to a specific InVEST model or GSMS workflow.
+- Prefer putting new domain procedures in `agent/skills/*/SKILL.md`; prefer
+  putting scientific facts and validation in backend schemas/tools; modify core
+  only when the issue is truly a general Agent runtime concern.
 
 ## Useful Docs
 

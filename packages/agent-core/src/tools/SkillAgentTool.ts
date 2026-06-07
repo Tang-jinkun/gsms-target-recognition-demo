@@ -4,7 +4,7 @@ import {
   type SkillExecutionContext,
   type SkillInvocationRecord,
 } from '@gsms/skills-core'
-import type { AgentTool } from '../types.ts'
+import type { AgentMessage, AgentTool } from '../types.ts'
 
 export interface SkillAgentToolOptions {
   availableTools: () => readonly string[]
@@ -33,7 +33,17 @@ export function createSkillAgentTool(
     async execute(input, context) {
       const parsed = input as { skill: string; args?: string }
       if (context.skillScope?.name === parsed.skill.replace(/^\/+/, '')) {
-        throw new Error(`Skill "${context.skillScope.name}" is already active`)
+        return {
+          content:
+            `Skill "${context.skillScope.name}" is already active; continue using the existing skill instructions.`,
+          hiddenMessages: [{
+            role: 'user',
+            content:
+              `[Active skill reminder: ${context.skillScope.name}]\n\n` +
+              'The requested skill is already active. Do not call the skill tool again for this same skill; continue with the next required domain tool.',
+            hidden: true,
+          } satisfies AgentMessage],
+        }
       }
       const result = await skillTool.invokeModel(parsed, {
         availableTools: options.availableTools(),
