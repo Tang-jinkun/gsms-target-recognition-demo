@@ -218,7 +218,7 @@ test('rejects unknown highlightMetricIds', async () => {
   }
 })
 
-test('rejects report text that introduces unverified numerical values', async () => {
+test('omits report prose that introduces unverified numerical values', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
   try {
     const artifacts = new ArtifactStore()
@@ -253,13 +253,14 @@ test('rejects report text that introduces unverified numerical values', async ()
       }),
     }
 
-    await assert.rejects(
-      writeInvestReportTool.execute(
-        { contextualExplanation: 'Carbon storage increased by 12 percent.' },
-        context,
-      ),
-      /not found in result-analysis: 12/,
+    const result = await writeInvestReportTool.execute(
+      { contextualExplanation: 'Carbon storage increased by 12 percent.' },
+      context,
     )
+    const markdown = await readFile(join(workspace, 'runs', 'job-1', 'report.md'), 'utf8')
+    assert.doesNotMatch(markdown, /12 percent/)
+    assert.match(markdown, /deterministic result-analysis tables above/)
+    assert.equal(result.diagnostics?.[0]?.code, 'UNSUPPORTED_REPORT_NUMBERS_OMITTED')
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

@@ -59,9 +59,22 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
     }
     const analysisData = analysis.data as Record<string, unknown>
     const allowedNumbers = collectAllowedNumbers(analysisData)
-    assertNoUnsupportedNumbers(parsed.contextualExplanation, 'contextualExplanation', allowedNumbers)
-    parsed.limitations.forEach((limitation, index) =>
-      assertNoUnsupportedNumbers(limitation, `limitations[${index}]`, allowedNumbers))
+    const explanationUnsupported = findUnsupportedNumbers(parsed.contextualExplanation, allowedNumbers)
+    const limitationChecks = parsed.limitations.map(limitation => ({
+      limitation,
+      unsupported: findUnsupportedNumbers(limitation, allowedNumbers),
+    }))
+    const unsupportedNumbers = [
+      ...explanationUnsupported,
+      ...limitationChecks.flatMap(item => item.unsupported),
+    ]
+    const contextualExplanation = explanationUnsupported.length
+      ? 'The deterministic result-analysis tables above provide the authoritative numerical findings for this InVEST run. Interpretive conclusions are limited to those persisted statistics, output inventory, and execution log.'
+      : parsed.contextualExplanation
+    const limitations = limitationChecks.flatMap(item =>
+      item.unsupported.length
+        ? ['A limitation containing unsupported numeric values was omitted because it was not directly backed by result-analysis.']
+        : [item.limitation])
     const validMetricIds = new Set<string>()
     const rasters = Array.isArray(analysisData.rasters)
       ? (analysisData.rasters as Record<string, unknown>[])
@@ -101,6 +114,8 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
       state,
       artifacts: context.artifacts.list(),
       ...parsed,
+      contextualExplanation,
+      limitations,
     })
     await writeFile(reportPath, markdown, 'utf8')
     const relativePath = relative(root, reportPath).replaceAll('\\', '/')
@@ -124,6 +139,14 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
           metadata: { jobId, sceneId, modelId: state.modelId, dataHubFile: published },
         }],
         statePatch: { phase: 'report-written', reportPath: relativePath },
+        diagnostics: unsupportedNumbers.length
+          ? [{
+              code: 'UNSUPPORTED_REPORT_NUMBERS_OMITTED',
+              message:
+                `Omitted unsupported numeric prose from the report: ${[...new Set(unsupportedNumbers)].slice(0, 20).join(', ')}`,
+              severity: 'warning' as const,
+            }]
+          : [],
       }
     },
   }
@@ -152,16 +175,10 @@ function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
 }
 
-function assertNoUnsupportedNumbers(value: string, field: string, allowed: Set<string>): void {
-  const unsupported = [...value.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)]
+function findUnsupportedNumbers(value: string, allowed: Set<string>): string[] {
+  return [...value.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)]
     .map(match => normalizeNumber(match[0]))
     .filter(number => !allowed.has(number))
-  if (unsupported.length) {
-    throw new Error(
-      `${field} contains numerical values not found in result-analysis: ${[...new Set(unsupported)].join(', ')}. ` +
-      'Use only values from result-analysis or remove the unsupported numbers.',
-    )
-  }
 }
 
 function collectAllowedNumbers(value: unknown, result = new Set<string>()): Set<string> {
