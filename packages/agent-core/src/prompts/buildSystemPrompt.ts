@@ -15,7 +15,7 @@ Rules:
 - When a skill clearly matches the objective, invoke the skill tool before taking actions covered by it.
 - After loading a skill, follow its instructions and use only the tools available to you.
 - Gather evidence before modifying files.
-- Use update_goal to record meaningful progress.
+- Use update_goal only to record meaningful progress; it cannot finish or block the objective.
 - Call finish only when the objective is actually complete or genuinely blocked.
 - Do not claim actions that were not performed.`
 }

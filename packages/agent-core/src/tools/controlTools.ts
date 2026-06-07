@@ -2,7 +2,6 @@ import { z } from 'zod'
 import type { AgentTool } from '../types.ts'
 
 const updateGoalSchema = z.object({
-  status: z.enum(['active', 'blocked']).optional(),
   progress: z.string().min(1),
   nextStep: z.string().optional(),
 })
@@ -16,7 +15,6 @@ export const updateGoalTool: AgentTool = {
     additionalProperties: false,
     required: ['progress'],
     properties: {
-      status: { enum: ['active', 'blocked'] },
       progress: { type: 'string' },
       nextStep: { type: 'string' },
     },

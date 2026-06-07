@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { FakeModelAdapter } from '@gsms/agent-core'
 import { SkillRegistry } from '@gsms/skills-core'
-import { AgentSessionApiClient, InvestAgentWorker } from '../src/index.ts'
+import { AgentSessionApiClient, InvestAgentWorker, buildWorkflowResumeContext } from '../src/index.ts'
 import type { PersistedAgentSession } from '../src/worker/AgentSessionApiClient.ts'
 
 function session(): PersistedAgentSession {
@@ -144,6 +144,67 @@ test('worker does not fail a session when another worker wins the claim', async 
 
     assert.equal(await worker.runOnce(), true)
     assert.deepEqual(actions, ['start'])
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('workflow resume context directs validation to reuse the persisted binding report', () => {
+  const context = buildWorkflowResumeContext(
+    { phase: 'ready-for-validation', modelId: 'carbon' },
+    [
+      { id: 'schema', type: 'model-input-schema', metadata: { modelId: 'carbon' } },
+      { id: 'report', type: 'binding-report', metadata: { modelId: 'carbon' } },
+      { id: 'old-report', type: 'binding-report', metadata: { modelId: 'habitat_quality' } },
+    ],
+  )
+
+  assert.match(context, /Call validate_binding_report directly/)
+  assert.match(context, /do not reload schemas, retrieve candidates, or submit another report/)
+  assert.match(context, /"binding-report":2/)
+  assert.match(context, /"currentCounts":\{"model-input-schema":1,"binding-report":1\}/)
+})
+
+test('worker fails a progress-only run that reaches its turn limit instead of presenting it as complete', async () => {
+  const actions: string[] = []
+  const current = session()
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('status=queued')) return response([current])
+    if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Validate bindings' }])
+    if (url.endsWith('/confirmations')) return response([])
+    if (url.endsWith('/checkpoint')) {
+      const body = JSON.parse(String(init?.body))
+      actions.push(body.action)
+      current.status = body.action === 'start' ? 'running' : 'failed'
+      return response(current)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-worker-'))
+  try {
+    const worker = new InvestAgentWorker({
+      gsmsUrl: 'http://gsms',
+      proxyToken: 'token',
+      workspace,
+      skills: new SkillRegistry(),
+      sessionApi: new AgentSessionApiClient('http://gsms', fetch),
+      modelFactory: () =>
+        new FakeModelAdapter([
+          {
+            content: '',
+            toolCalls: [{
+              id: '1',
+              name: 'update_goal',
+              input: { progress: 'Submitting binding report' },
+            }],
+          },
+        ]),
+      maxTurns: 1,
+    })
+
+    assert.equal(await worker.runOnce(), true)
+    assert.deepEqual(actions, ['start', 'fail'])
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

@@ -197,6 +197,37 @@ test('runtime pauses when tool permission is deferred', async () => {
   assert.match(result.goal.remainingIssues[0]!, /Awaiting user confirmation/)
 })
 
+test('update_goal records progress without terminating the objective', async () => {
+  const model = new FakeModelAdapter([
+    {
+      content: '',
+      toolCalls: [{
+        id: '1',
+        name: 'update_goal',
+        input: { progress: 'Submitting binding report', nextStep: 'Submit it' },
+      }],
+    },
+    {
+      content: '',
+      toolCalls: [{
+        id: '2',
+        name: 'finish',
+        input: { summary: 'Binding report submitted', evidence: ['binding-report'] },
+      }],
+    },
+  ])
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([updateGoalTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+  }).run('Submit a binding report')
+
+  assert.equal(result.goal.status, 'completed')
+  assert.equal(result.goal.progress, 'Submitting binding report')
+  assert.equal(result.goal.finalSummary, 'Binding report submitted')
+})
+
 test('runtime persists tool artifacts, domain state patches, and diagnostics', async () => {
   const inspectDataTool: AgentTool = {
     name: 'inspect_data',
