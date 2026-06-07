@@ -113,9 +113,9 @@ test('reloading the active inline skill is idempotent', async () => {
   const skills = new SkillRegistry()
   skills.replace([
     {
-      name: 'investigate',
-      description: 'Investigate with read tools',
-      instructions: 'Investigate the current request before answering.',
+      name: 'inspect-request',
+      description: 'Inspect with read tools',
+      instructions: 'Inspect the current request before answering.',
       source: 'user',
       allowedTools: ['read_file'],
       userInvocable: true,
@@ -127,18 +127,18 @@ test('reloading the active inline skill is idempotent', async () => {
   const model = new FakeModelAdapter([
     {
       content: '',
-      toolCalls: [{ id: '1', name: 'skill', input: { skill: 'investigate' } }],
+      toolCalls: [{ id: '1', name: 'skill', input: { skill: 'inspect-request' } }],
     },
     {
       content: '',
-      toolCalls: [{ id: '2', name: 'skill', input: { skill: 'investigate' } }],
+      toolCalls: [{ id: '2', name: 'skill', input: { skill: 'inspect-request' } }],
     },
     {
       content: '',
       toolCalls: [{
         id: '3',
         name: 'finish',
-        input: { summary: 'Finished with the active skill.', evidence: ['investigate'] },
+        input: { summary: 'Finished with the active skill.', evidence: ['inspect-request'] },
       }],
     },
   ])
@@ -155,7 +155,7 @@ test('reloading the active inline skill is idempotent', async () => {
     tools,
     skills,
     workspace,
-  }).run('Investigate the request')
+  }).run('Inspect the request')
 
   assert.equal(result.goal.status, 'completed')
   assert.ok(
@@ -174,7 +174,7 @@ test('active skill scope denies tools outside its allowlist', async () => {
   skills.replace([
     {
       name: 'read-only',
-      description: 'Read-only investigation',
+      description: 'Read-only inspection',
       instructions: 'Only inspect.',
       source: 'user',
       allowedTools: ['read_file'],
@@ -244,8 +244,8 @@ test('runtime fails safely when max turns are reached', async () => {
 
 test('runtime stops consecutive identical tool-call loops before max turns', async () => {
   const validateTool: AgentTool = {
-    name: 'validate_binding_report',
-    description: 'Validate the current binding report',
+    name: 'validate_submission',
+    description: 'Validate the current submission',
     risk: 'read',
     inputSchema: { type: 'object' },
     async execute() {
@@ -257,8 +257,8 @@ test('runtime stops consecutive identical tool-call loops before max turns', asy
     toolCalls: [
       {
         id: 'ignored-by-loop-signature',
-        name: 'validate_binding_report',
-        input: { modelId: 'carbon' },
+        name: 'validate_submission',
+        input: { modelId: 'example' },
       },
     ],
   }
@@ -270,12 +270,12 @@ test('runtime stops consecutive identical tool-call loops before max turns', asy
     workspace: process.cwd(),
     maxTurns: 20,
     maxRepeatedToolCalls: 3,
-  }).run('Validate the Carbon binding once')
+  }).run('Validate the binding once')
 
   assert.equal(result.goal.status, 'failed')
   assert.equal(result.goal.turnCount, 3)
   assert.equal(result.diagnostics[0]?.code, 'AGENT_REPEATED_TOOL_CALL_LOOP')
-  assert.match(result.goal.remainingIssues[0]!, /validate_binding_report/)
+  assert.match(result.goal.remainingIssues[0]!, /validate_submission/)
   assert.equal(
     result.transcript.filter(event => event.type === 'tool_call').length,
     2,
@@ -284,7 +284,7 @@ test('runtime stops consecutive identical tool-call loops before max turns', asy
 })
 
 test('runtime stops a repeated multi-tool cycle before max turns', async () => {
-  const tools = ['retrieve_candidates', 'validate_binding_report'].map<AgentTool>(name => ({
+  const tools = ['inspect_inputs', 'validate_submission'].map<AgentTool>(name => ({
     name,
     description: name,
     risk: 'read',
@@ -299,7 +299,7 @@ test('runtime stops a repeated multi-tool cycle before max turns', async () => {
       toolCalls: [{
         id: String(index),
         name: tools[index % tools.length]!.name,
-        input: { modelId: 'carbon' },
+        input: { modelId: 'example' },
       }],
     })),
   )
@@ -310,21 +310,21 @@ test('runtime stops a repeated multi-tool cycle before max turns', async () => {
     workspace: process.cwd(),
     maxTurns: 20,
     maxRepeatedToolCalls: 3,
-  }).run('Validate the Carbon binding once')
+  }).run('Validate the binding once')
 
   assert.equal(result.goal.status, 'failed')
   assert.equal(result.goal.turnCount, 6)
-  assert.match(result.goal.remainingIssues[0]!, /retrieve_candidates.*validate_binding_report/)
+  assert.match(result.goal.remainingIssues[0]!, /inspect_inputs.*validate_submission/)
 })
 
 test('runtime stops one tool after three varied failures without progress', async () => {
   const failingTool: AgentTool = {
-    name: 'finalize_data_matching',
-    description: 'Finalize matching',
+    name: 'submit_report',
+    description: 'Submit a report',
     risk: 'control',
     inputSchema: { type: 'object' },
     async execute() {
-      throw new Error('Matching evidence is incomplete')
+      throw new Error('Required evidence is incomplete')
     },
   }
   const model = new FakeModelAdapter(
@@ -332,7 +332,7 @@ test('runtime stops one tool after three varied failures without progress', asyn
       content: '',
       toolCalls: [{
         id: String(index),
-        name: 'finalize_data_matching',
+        name: 'submit_report',
         input: { attempt: index },
       }],
     })),
@@ -343,7 +343,7 @@ test('runtime stops one tool after three varied failures without progress', asyn
     skills: new SkillRegistry(),
     workspace: process.cwd(),
     maxTurns: 10,
-  }).run('Finalize matching')
+  }).run('Submit the report')
 
   assert.equal(result.goal.status, 'failed')
   assert.equal(result.goal.turnCount, 3)
@@ -403,7 +403,7 @@ test('update_goal records progress without terminating the objective', async () 
       toolCalls: [{
         id: '1',
         name: 'update_goal',
-        input: { progress: 'Submitting binding report', nextStep: 'Submit it' },
+        input: { progress: 'Submitting report', nextStep: 'Submit it' },
       }],
     },
     {
@@ -411,7 +411,7 @@ test('update_goal records progress without terminating the objective', async () 
       toolCalls: [{
         id: '2',
         name: 'finish',
-        input: { summary: 'Binding report submitted', evidence: ['binding-report'] },
+        input: { summary: 'Report submitted', evidence: ['decision-report'] },
       }],
     },
   ])
@@ -420,11 +420,11 @@ test('update_goal records progress without terminating the objective', async () 
     tools: new ToolRegistry([updateGoalTool, finishTool]),
     skills: new SkillRegistry(),
     workspace: process.cwd(),
-  }).run('Submit a binding report')
+  }).run('Submit a report')
 
   assert.equal(result.goal.status, 'completed')
-  assert.equal(result.goal.progress, 'Submitting binding report')
-  assert.equal(result.goal.finalSummary, 'Binding report submitted')
+  assert.equal(result.goal.progress, 'Submitting report')
+  assert.equal(result.goal.finalSummary, 'Report submitted')
 })
 
 test('runtime persists tool artifacts, domain state patches, and diagnostics', async () => {
@@ -435,25 +435,25 @@ test('runtime persists tool artifacts, domain state patches, and diagnostics', a
     inputSchema: { type: 'object' },
     async execute() {
       return {
-        content: 'Inspected LULC raster',
+        content: 'Inspected data record',
         artifacts: [
           {
-            id: 'lulc-card',
+            id: 'record-card',
             type: 'data-card',
             createdBy: 'tool',
-            data: { assetType: 'raster', sampledCodes: [1, 2] },
+            data: { assetType: 'record', sampledValues: [1, 2] },
           },
         ],
         statePatch: {
-          phase: 'matching-slots',
-          slots: { lulc: { status: 'candidate-found', artifactId: 'lulc-card' } },
+          phase: 'inputs-reviewed',
+          items: { primary: { status: 'candidate-found', artifactId: 'record-card' } },
         },
         diagnostics: [
           {
-            code: 'RASTER_CODES_SAMPLED',
-            message: 'Sampled two raster codes',
+            code: 'VALUES_SAMPLED',
+            message: 'Sampled two values',
             severity: 'info',
-            relatedArtifactIds: ['lulc-card'],
+            relatedArtifactIds: ['record-card'],
           },
         ],
       }
@@ -470,7 +470,7 @@ test('runtime persists tool artifacts, domain state patches, and diagnostics', a
         {
           id: '2',
           name: 'finish',
-          input: { summary: 'Inspected data', evidence: ['lulc-card'] },
+          input: { summary: 'Inspected data', evidence: ['record-card'] },
         },
       ],
     },
@@ -481,14 +481,14 @@ test('runtime persists tool artifacts, domain state patches, and diagnostics', a
     tools: new ToolRegistry([inspectDataTool, finishTool]),
     skills: new SkillRegistry(),
     workspace: process.cwd(),
-  }).run('Inspect the available LULC data')
+  }).run('Inspect the available data')
 
-  assert.equal(result.artifacts[0]?.id, 'lulc-card')
+  assert.equal(result.artifacts[0]?.id, 'record-card')
   assert.deepEqual(result.domainState, {
-    phase: 'matching-slots',
-    slots: { lulc: { status: 'candidate-found', artifactId: 'lulc-card' } },
+    phase: 'inputs-reviewed',
+    items: { primary: { status: 'candidate-found', artifactId: 'record-card' } },
   })
-  assert.equal(result.diagnostics[0]?.code, 'RASTER_CODES_SAMPLED')
+  assert.equal(result.diagnostics[0]?.code, 'VALUES_SAMPLED')
   assert.ok(result.transcript.some(event => event.type === 'artifact'))
   assert.ok(result.transcript.some(event => event.type === 'state'))
   assert.ok(result.transcript.some(event => event.type === 'diagnostic'))
@@ -508,11 +508,11 @@ test('runtime emits auditable action events without exposing sensitive tool inpu
   const model = new FakeModelAdapter([
     {
       content: '',
-      toolCalls: [{ id: '1', name: 'inspect_data', input: { path: 'lulc.tif', apiKey: 'secret' } }],
+      toolCalls: [{ id: '1', name: 'inspect_data', input: { path: 'input.dat', apiKey: 'secret' } }],
     },
     {
       content: '',
-      toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Done', evidence: ['lulc.tif'] } }],
+      toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Done', evidence: ['input.dat'] } }],
     },
   ])
 

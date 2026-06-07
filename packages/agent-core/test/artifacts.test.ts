@@ -4,20 +4,20 @@ import { ArtifactStore, DomainStateStore } from '../src/index.ts'
 
 test('artifact store creates immutable snapshots and filters by type', () => {
   const store = new ArtifactStore()
-  const source = { fields: ['lucode'] }
+  const source = { fields: ['id'] }
   const artifact = store.create({
-    id: 'carbon-pools',
+    id: 'record-card',
     type: 'data-card',
     createdBy: 'tool',
     data: source,
   })
 
-  source.fields.push('c_above')
-  artifact.data.fields.push('c_below')
+  source.fields.push('name')
+  artifact.data.fields.push('status')
 
-  assert.deepEqual(store.get<{ fields: string[] }>('carbon-pools')?.data.fields, ['lucode'])
+  assert.deepEqual(store.get<{ fields: string[] }>('record-card')?.data.fields, ['id'])
   assert.equal(store.list('data-card').length, 1)
-  assert.equal(store.list('binding-report').length, 0)
+  assert.equal(store.list('decision-report').length, 0)
 })
 
 test('artifact store rejects a duplicate batch without partially writing it', () => {
@@ -36,25 +36,25 @@ test('artifact store rejects a duplicate batch without partially writing it', ()
 
 test('domain state store applies nested merge patches and supports deletion', () => {
   const store = new DomainStateStore({
-    phase: 'discovering-data',
-    slots: {
-      lulc: { status: 'unmatched', candidates: [] },
-      carbonPools: { status: 'unmatched' },
+    phase: 'reviewing-inputs',
+    items: {
+      primary: { status: 'unresolved', candidates: [] },
+      secondary: { status: 'unresolved' },
     },
   })
 
   store.applyPatch({
-    phase: 'matching-slots',
-    slots: {
-      lulc: { status: 'matched', candidates: ['asset-1'] },
-      carbonPools: null,
+    phase: 'inputs-reviewed',
+    items: {
+      primary: { status: 'resolved', candidates: ['asset-1'] },
+      secondary: null,
     },
   })
 
   assert.deepEqual(store.snapshot(), {
-    phase: 'matching-slots',
-    slots: {
-      lulc: { status: 'matched', candidates: ['asset-1'] },
+    phase: 'inputs-reviewed',
+    items: {
+      primary: { status: 'resolved', candidates: ['asset-1'] },
     },
   })
 })

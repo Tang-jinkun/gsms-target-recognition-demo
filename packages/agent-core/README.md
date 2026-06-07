@@ -30,3 +30,25 @@ their current content is invoked.
 Inline skills work directly in the main loop. Hosts that enable isolated skills
 must provide `runIsolated` to `createSkillAgentTool`; without it, isolated skill
 execution fails explicitly.
+
+## Domain Boundary
+
+`agent-core` is deliberately domain-neutral. It may implement reusable runtime
+mechanisms such as tool calling, skill activation, permission checks, bounded
+loops, generic workflow-state persistence, artifacts, diagnostics, and audit
+events.
+
+It must not contain product or domain knowledge, including:
+
+- GSMS, InVEST, Carbon, Habitat Quality, scene, or model-specific behavior.
+- User-intent keyword routing or rules that prescribe a domain tool sequence.
+- Domain phase names, schemas, validation rules, report contents, or data types.
+- Special cases added only to make one domain workflow succeed.
+
+Domain workflows belong in Skills and host-provided tools. Hosts may use the
+generic state, artifact, permission, and tool-filtering interfaces to enforce
+safety and evidence integrity without teaching `agent-core` the domain.
+
+Before changing `agent-core`, verify that the behavior is reusable outside the
+current application, keep the change minimal, and cover it with domain-neutral
+tests.
