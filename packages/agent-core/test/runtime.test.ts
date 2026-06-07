@@ -179,6 +179,82 @@ test('runtime fails safely when max turns are reached', async () => {
 
   assert.equal(result.goal.status, 'failed')
   assert.match(result.goal.remainingIssues[0]!, /maximum turns/)
+  assert.equal(result.diagnostics[0]?.code, 'AGENT_MAX_TURNS_REACHED')
+})
+
+test('runtime stops consecutive identical tool-call loops before max turns', async () => {
+  const validateTool: AgentTool = {
+    name: 'validate_binding_report',
+    description: 'Validate the current binding report',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: 'Validation passed' }
+    },
+  }
+  const repeatedResponse = {
+    content: 'Validating',
+    toolCalls: [
+      {
+        id: 'ignored-by-loop-signature',
+        name: 'validate_binding_report',
+        input: { modelId: 'carbon' },
+      },
+    ],
+  }
+  const model = new FakeModelAdapter(Array.from({ length: 20 }, () => repeatedResponse))
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([validateTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    maxTurns: 20,
+    maxRepeatedToolCalls: 3,
+  }).run('Validate the Carbon binding once')
+
+  assert.equal(result.goal.status, 'failed')
+  assert.equal(result.goal.turnCount, 3)
+  assert.equal(result.diagnostics[0]?.code, 'AGENT_REPEATED_TOOL_CALL_LOOP')
+  assert.match(result.goal.remainingIssues[0]!, /validate_binding_report/)
+  assert.equal(
+    result.transcript.filter(event => event.type === 'tool_call').length,
+    2,
+    'the repeated call that triggers the guard must not execute',
+  )
+})
+
+test('runtime stops a repeated multi-tool cycle before max turns', async () => {
+  const tools = ['retrieve_candidates', 'validate_binding_report'].map<AgentTool>(name => ({
+    name,
+    description: name,
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: `${name} completed` }
+    },
+  }))
+  const model = new FakeModelAdapter(
+    Array.from({ length: 20 }, (_, index) => ({
+      content: '',
+      toolCalls: [{
+        id: String(index),
+        name: tools[index % tools.length]!.name,
+        input: { modelId: 'carbon' },
+      }],
+    })),
+  )
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry(tools),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    maxTurns: 20,
+    maxRepeatedToolCalls: 3,
+  }).run('Validate the Carbon binding once')
+
+  assert.equal(result.goal.status, 'failed')
+  assert.equal(result.goal.turnCount, 6)
+  assert.match(result.goal.remainingIssues[0]!, /retrieve_candidates.*validate_binding_report/)
 })
 
 test('runtime pauses when tool permission is deferred', async () => {

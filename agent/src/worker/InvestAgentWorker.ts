@@ -127,15 +127,21 @@ export class InvestAgentWorker {
         return
       }
     }
+    const failureSummary = buildFailureSummary(result.goal.remainingIssues, result.diagnostics)
+    if (result.goal.status === 'failed') {
+      console.error(`[agent-session:${session.id}] ${failureSummary}`)
+    }
     await this.#sessionApi.checkpoint(session.id, {
       action: result.goal.status === 'failed' ? 'fail' : 'complete',
       domain_state: result.domainState,
       artifacts: result.artifacts,
       assistant_message:
         result.goal.finalSummary ??
-        result.goal.progress ??
-        `${result.goal.status}: ${result.goal.remainingIssues.join('; ')}`,
-      error: result.goal.status === 'failed' ? result.goal.remainingIssues.join('; ') : undefined,
+        (result.goal.status === 'failed'
+          ? `failed: ${failureSummary}`
+          : result.goal.progress ??
+            `${result.goal.status}: ${result.goal.remainingIssues.join('; ')}`),
+      error: result.goal.status === 'failed' ? failureSummary : undefined,
     })
   }
 
@@ -162,6 +168,17 @@ export class InvestAgentWorker {
     })
     return 'defer'
   }
+}
+
+function buildFailureSummary(
+  remainingIssues: readonly string[],
+  diagnostics: readonly { code: string; message: string; severity: string }[],
+): string {
+  const issues = remainingIssues.join('; ') || 'Agent run failed without a reported issue.'
+  const diagnosticCodes = diagnostics
+    .filter(diagnostic => diagnostic.severity === 'error')
+    .map(diagnostic => diagnostic.code)
+  return diagnosticCodes.length ? `${issues} [diagnostics: ${diagnosticCodes.join(', ')}]` : issues
 }
 
 export function buildWorkflowResumeContext(

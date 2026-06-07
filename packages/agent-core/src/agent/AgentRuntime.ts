@@ -28,6 +28,7 @@ export interface AgentRuntimeOptions {
   domainState?: DomainStateRepository
   initialDomainState?: DomainState
   maxTurns?: number
+  maxRepeatedToolCalls?: number
   signal?: AbortSignal
 }
 
@@ -64,6 +65,7 @@ export class AgentRuntime {
       domainState,
       signal: this.options.signal,
     }
+    const toolCallHistory: string[] = []
 
     while (goal.status === 'active' && goal.turnCount < goal.maxTurns) {
       this.options.signal?.throwIfAborted()
@@ -82,12 +84,31 @@ export class AgentRuntime {
       transcript.record('message', assistant)
 
       if (!response.toolCalls?.length) {
+        toolCallHistory.length = 0
         messages.push({
           role: 'user',
           content: 'Continue acting toward the objective. Use finish when done.',
           hidden: true,
         })
         continue
+      }
+
+      const toolCallSignature = canonicalToolCalls(response.toolCalls)
+      toolCallHistory.push(toolCallSignature)
+      const maxRepeatedToolCalls = this.options.maxRepeatedToolCalls ?? 4
+      const repeatedCycle = findRepeatedCycle(toolCallHistory, maxRepeatedToolCalls)
+      if (repeatedCycle) {
+        const summary = repeatedCycle.join(' -> ')
+        const diagnostic: Diagnostic = {
+          code: 'AGENT_REPEATED_TOOL_CALL_LOOP',
+          message: `Detected a tool-call cycle repeated ${maxRepeatedToolCalls} times: ${summary}`,
+          severity: 'error',
+        }
+        diagnostics.push(diagnostic)
+        transcript.record('diagnostic', diagnostic)
+        goal.status = 'failed'
+        goal.remainingIssues.push(diagnostic.message)
+        break
       }
 
       const pendingHiddenMessages: AgentMessage[] = []
@@ -102,7 +123,22 @@ export class AgentRuntime {
 
     if (goal.status === 'active') {
       goal.status = 'failed'
-      goal.remainingIssues.push(`Reached maximum turns (${goal.maxTurns})`)
+      const recentToolCalls = transcript.events
+        .filter(event => event.type === 'tool_call')
+        .slice(-8)
+        .map(event => summarizeToolCalls([event.data as ToolCall]))
+      const trace = recentToolCalls.length
+        ? ` Recent tool calls: ${recentToolCalls.join(' -> ')}`
+        : ''
+      const message = `Reached maximum turns (${goal.maxTurns}).${trace}`
+      goal.remainingIssues.push(message)
+      const diagnostic: Diagnostic = {
+        code: 'AGENT_MAX_TURNS_REACHED',
+        message,
+        severity: 'error',
+      }
+      diagnostics.push(diagnostic)
+      transcript.record('diagnostic', diagnostic)
     }
     transcript.record('goal', goal)
     return {
@@ -216,4 +252,43 @@ export class AgentRuntime {
     messages.push(message)
     transcript.record('tool_result', message)
   }
+}
+
+function canonicalToolCalls(calls: readonly ToolCall[]): string {
+  return calls.map(call => `${call.name}:${canonical(call.input)}`).join('|')
+}
+
+function findRepeatedCycle(history: readonly string[], repetitions: number): string[] | undefined {
+  const maxCycleLength = Math.min(6, Math.floor(history.length / repetitions))
+  for (let cycleLength = 1; cycleLength <= maxCycleLength; cycleLength++) {
+    const cycle = history.slice(-cycleLength)
+    const repeated = Array.from({ length: repetitions }, () => cycle).flat()
+    if (
+      history.length >= repeated.length &&
+      history.slice(-repeated.length).every((signature, index) => signature === repeated[index])
+    ) {
+      return cycle
+    }
+  }
+  return undefined
+}
+
+function summarizeToolCalls(calls: readonly ToolCall[]): string {
+  return calls
+    .map(call => {
+      const input = canonical(call.input)
+      return `${call.name}(${input.length > 160 ? `${input.slice(0, 157)}...` : input})`
+    })
+    .join(', ')
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
 }
