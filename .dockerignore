@@ -1,5 +1,6 @@
 .git
 .gitignore
+.env
 .vscode
 .idea
 
@@ -13,6 +14,10 @@ frontend/.next
 frontend/out
 frontend/playwright-report
 frontend/test-results
+agent/node_modules
+packages/agent-core/node_modules
+packages/skills-core/node_modules
+**/*.tsbuildinfo
 
 backend/data
 

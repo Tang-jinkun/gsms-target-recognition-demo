@@ -5,8 +5,6 @@ services:
       POSTGRES_DB: gsms
       POSTGRES_USER: gsms
       POSTGRES_PASSWORD: gsms
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,13 +19,13 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     ports:
-      - "8000:8000"
+      - "${GSMS_BACKEND_BIND:-127.0.0.1}:${GSMS_BACKEND_PORT:-8000}:8000"
     volumes:
       - backend-data:/workspace/backend/data
     environment:
       DATABASE_URL: "postgresql+psycopg2://gsms:gsms@db:5432/gsms"
-      FERNET_KEY: ""
-      GSMS_AGENT_PROXY_TOKEN: "${GSMS_AGENT_PROXY_TOKEN:-}"
+      FERNET_KEY: "${GSMS_FERNET_KEY:?Run scripts/start_docker_gsms.sh to initialize .env}"
+      GSMS_AGENT_PROXY_TOKEN: "${GSMS_AGENT_PROXY_TOKEN:?Run scripts/start_docker_gsms.sh to initialize .env}"
     depends_on:
       db:
         condition: service_healthy
@@ -47,12 +45,29 @@ services:
         INTERNAL_API_URL: "http://backend:8000"
         NPM_REGISTRY: "https://registry.npmjs.org/"
     ports:
-      - "3000:3000"
+      - "${GSMS_FRONTEND_BIND:-0.0.0.0}:${GSMS_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    environment:
+      GSMS_URL: "http://backend:8000"
+      GSMS_AGENT_PROXY_TOKEN: "${GSMS_AGENT_PROXY_TOKEN:?Run scripts/start_docker_gsms.sh to initialize .env}"
+      INVEST_AGENT_WORKSPACE: "/workspace/agent-data"
+      INVEST_AGENT_WORKER_POLL_MS: "${INVEST_AGENT_WORKER_POLL_MS:-1500}"
+    volumes:
+      - agent-data:/workspace/agent-data
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
+  agent-data:
   backend-data:
   pgdata:
