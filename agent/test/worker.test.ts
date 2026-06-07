@@ -5,7 +5,14 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { FakeModelAdapter } from '@gsms/agent-core'
 import { SkillRegistry } from '@gsms/skills-core'
-import { AgentSessionApiClient, InvestAgentWorker, buildWorkflowResumeContext } from '../src/index.ts'
+import {
+  AgentSessionApiClient,
+  InvestAgentWorker,
+  buildWorkflowResumeContext,
+  inferWorkflowBoundary,
+  workflowToolFilter,
+} from '../src/index.ts'
+import { ToolRegistry, type AgentContext, type AgentTool, ArtifactStore, DomainStateStore } from '@gsms/agent-core'
 import type { PersistedAgentSession } from '../src/worker/AgentSessionApiClient.ts'
 
 function session(): PersistedAgentSession {
@@ -215,6 +222,78 @@ test('worker fails a progress-only run that reaches its turn limit instead of pr
     await rm(workspace, { recursive: true, force: true })
   }
 })
+
+test('matching boundary hides validation, confirmation, and execution tools', () => {
+  assert.equal(inferWorkflowBoundary('为 Carbon 模型匹配当前场景数据，但不要执行。'), 'matching')
+  assert.equal(inferWorkflowBoundary('验证当前绑定，如果通过，准备执行。'), 'confirmation')
+  const tools = new ToolRegistry([
+    stubTool('finish'),
+    stubTool('get_invest_model_schema'),
+    stubTool('finalize_data_matching'),
+    stubTool('validate_binding_report'),
+    stubTool('confirm_validation_snapshot'),
+    stubTool('execute_validated_snapshot'),
+  ])
+  const artifacts = new ArtifactStore()
+  artifacts.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: {
+        modelId: 'carbon',
+        displayName: 'Carbon',
+        version: '3.19.0',
+        slots: [],
+      },
+      metadata: { modelId: 'carbon' },
+    },
+    {
+      type: 'binding-report',
+      createdBy: 'agent',
+      data: {},
+      metadata: { modelId: 'carbon', matchingContextId: 'ctx-carbon' },
+    },
+  ])
+  const context = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'match',
+      status: 'active' as const,
+      turnCount: 1,
+      maxTurns: 10,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts,
+    domainState: new DomainStateStore({
+      modelId: 'carbon',
+      matchingContextId: 'ctx-carbon',
+      phase: 'ready-for-validation',
+    }),
+  } satisfies AgentContext
+  const filter = workflowToolFilter('matching')
+
+  assert.deepEqual(
+    tools.list().filter(tool => filter(tool, context)).map(tool => tool.name),
+    ['finish'],
+    'after matching is finalized, only finish remains visible at the matching boundary',
+  )
+  assert.equal(filter(stubTool('validate_binding_report'), context), false)
+  assert.equal(filter(stubTool('execute_validated_snapshot'), context), false)
+})
+
+function stubTool(name: string): AgentTool {
+  return {
+    name,
+    description: name,
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: name }
+    },
+  }
+}
 
 function response(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {

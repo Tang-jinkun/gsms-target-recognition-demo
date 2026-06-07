@@ -32,6 +32,7 @@ export interface AgentRuntimeOptions {
   maxTurns?: number
   maxRepeatedToolCalls?: number
   eventSink?: AgentEventSink
+  toolFilter?: (tool: ReturnType<ToolRegistry['list']>[number], context: AgentContext) => boolean
   signal?: AbortSignal
 }
 
@@ -70,6 +71,8 @@ export class AgentRuntime {
       signal: this.options.signal,
     }
     const toolCallHistory: string[] = []
+    let failedToolName: string | undefined
+    let failedToolCount = 0
     await this.#emit({
       runId,
       turn: 0,
@@ -148,9 +151,49 @@ export class AgentRuntime {
 
       const pendingHiddenMessages: AgentMessage[] = []
       for (const call of response.toolCalls) {
+        const artifactCount = artifacts.list().length
+        const stateBefore = canonical(domainState.snapshot())
         pendingHiddenMessages.push(
           ...(await this.#executeTool(call, context, messages, transcript, diagnostics, runId)),
         )
+        const toolResult = [...messages].reverse().find(
+          message => message.role === 'tool' && message.toolCallId === call.id,
+        )
+        const madeProgress =
+          artifacts.list().length !== artifactCount ||
+          canonical(domainState.snapshot()) !== stateBefore
+        if (toolResult?.role === 'tool' && toolResult.isError && !madeProgress) {
+          if (failedToolName === call.name) {
+            failedToolCount++
+          } else {
+            failedToolName = call.name
+            failedToolCount = 1
+          }
+          if (failedToolCount >= 3) {
+            const diagnostic: Diagnostic = {
+              code: 'AGENT_TOOL_FAILURE_LOOP',
+              message: `Tool ${call.name} failed ${failedToolCount} consecutive times without producing progress. Last error: ${summarizeText(toolResult.content)}`,
+              severity: 'error',
+            }
+            diagnostics.push(diagnostic)
+            transcript.record('diagnostic', diagnostic)
+            await this.#emit({
+              runId,
+              turn: goal.turnCount,
+              eventType: 'loop.detected',
+              summary: diagnostic.message,
+              status: 'failed',
+              data: { code: diagnostic.code, tool: call.name },
+              timestamp: new Date().toISOString(),
+            })
+            goal.status = 'failed'
+            goal.remainingIssues.push(diagnostic.message)
+            break
+          }
+        } else {
+          failedToolName = undefined
+          failedToolCount = 0
+        }
         if (goal.status !== 'active') break
       }
       messages.push(...pendingHiddenMessages)
@@ -217,9 +260,10 @@ export class AgentRuntime {
       .list()
       .filter(
         tool =>
-          tool.risk === 'control' ||
-          !context.skillScope ||
-          context.skillScope.allowedTools.has(tool.name),
+          (tool.risk === 'control' ||
+            !context.skillScope ||
+            context.skillScope.allowedTools.has(tool.name)) &&
+          (this.options.toolFilter?.(tool, context) ?? true),
       )
       .map(({ name, description, inputSchema }) => ({
         name,

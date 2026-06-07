@@ -2,7 +2,13 @@ import { z } from 'zod'
 import type { AgentTool } from '@gsms/agent-core'
 import { GsmsClient } from '../gsms/GsmsClient.ts'
 import { adaptGsmsModelSchema } from '../gsms/modelSchemaAdapter.ts'
-import { dataCardSchema, relationCheckSchema, type DataCard } from '../domain/schemas.ts'
+import {
+  dataCardSchema,
+  modelInputSchemaSchema,
+  relationCheckSchema,
+  type DataCard,
+} from '../domain/schemas.ts'
+import { computeMatchingContextId } from './matchingTools.ts'
 
 const modelSchema = z.object({ modelId: z.string().min(1) })
 const sceneSchema = z.object({ sceneId: z.string().min(1) })
@@ -169,6 +175,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           statePatch: {
             modelId,
             phase: 'discovering-data',
+            matchingContextId: null,
             slots: null,
             bindingStatus: null,
             validationStatus: null,
@@ -192,10 +199,12 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         required: ['sceneId'],
         properties: { sceneId: { type: 'string' } },
       },
-      async execute(input) {
+      async execute(input, context) {
         const { sceneId } = sceneSchema.parse(input)
         const result = await client.listSceneDataCards(sceneId)
         const cards = normalizeDataCards(result)
+        const schemaArtifact = contextModelSchema(context)
+        const matchingContextId = computeMatchingContextId(sceneId, schemaArtifact, cards)
         return {
           content: JSON.stringify(result),
           artifacts: [
@@ -203,19 +212,25 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               type: 'gsms-scene-data-cards',
               createdBy: 'tool',
               data: result,
-              metadata: { sceneId },
+              metadata: { sceneId, modelId: schemaArtifact.modelId, matchingContextId },
             },
             ...cards.map(card => ({
               type: 'data-card',
               createdBy: 'tool' as const,
               data: card,
-              metadata: { sceneId, assetId: card.assetId },
+              metadata: {
+                sceneId,
+                modelId: schemaArtifact.modelId,
+                matchingContextId,
+                assetId: card.assetId,
+              },
             })),
           ],
           statePatch: {
             sceneId,
             phase: 'matching-slots',
             assetIds: cards.map(card => card.assetId),
+            matchingContextId,
           },
         }
       },
@@ -238,8 +253,12 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       async execute(input, context) {
         const parsed = relationSchema.parse(input)
         const modelId = context.domainState.snapshot().modelId
+        const matchingContextId = context.domainState.snapshot().matchingContextId
         if (typeof modelId !== 'string') {
           throw new Error('Select an InVEST model before checking data relations')
+        }
+        if (typeof matchingContextId !== 'string') {
+          throw new Error('Load current scene data before checking data relations')
         }
         const result = await client.checkRelation(parsed)
         const source = result as Record<string, unknown>
@@ -254,7 +273,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           facts: source.facts ?? [],
           missingValues: source.missing_values,
         })
-        const relationArtifactId = `relation-check:${modelId}:${check.id}`
+        const relationArtifactId = `relation-check:${matchingContextId}:${check.id}`
         const existing = context.artifacts.get(relationArtifactId)
         if (existing) {
           const existingCheck = relationCheckSchema.parse(existing.data)
@@ -280,13 +299,26 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         return {
           content: JSON.stringify(result),
           artifacts: [
-            { type: 'gsms-relation-check', createdBy: 'tool', data: result },
+            {
+              type: 'gsms-relation-check',
+              createdBy: 'tool',
+              data: result,
+              metadata: {
+                modelId,
+                sceneId: context.domainState.snapshot().sceneId,
+                matchingContextId,
+              },
+            },
             {
               id: relationArtifactId,
               type: 'relation-check',
               createdBy: 'tool',
               data: check,
-              metadata: { modelId },
+              metadata: {
+                modelId,
+                sceneId: context.domainState.snapshot().sceneId,
+                matchingContextId,
+              },
             },
           ],
         }
@@ -334,7 +366,9 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
         const report = [...context.artifacts.list('binding-report')]
           .reverse()
-          .find(artifact => artifact.metadata?.modelId === parsed.modelId)
+          .find(artifact =>
+            artifact.metadata?.modelId === parsed.modelId &&
+            artifact.metadata?.matchingContextId === state.matchingContextId)
         if (!report) throw new Error('Submit a Binding Report before validation')
         const result = await client.validateBindings({
           ...parsed,
@@ -586,6 +620,15 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       },
     },
   ]
+}
+
+function contextModelSchema(context: Parameters<AgentTool['execute']>[1]) {
+  const modelId = context.domainState.snapshot().modelId
+  const artifact = [...context.artifacts.list('model-input-schema')]
+    .reverse()
+    .find(candidate => !modelId || candidate.metadata?.modelId === modelId)
+  if (!artifact) throw new Error('Load a GSMS model schema before loading scene data')
+  return modelInputSchemaSchema.parse(artifact.data)
 }
 
 function canonical(value: unknown): string {

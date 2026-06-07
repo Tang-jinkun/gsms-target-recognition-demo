@@ -118,7 +118,7 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
     'list_scene_data_cards',
     'retrieve_input_candidates',
     'check_data_relation',
-    'submit_binding_report',
+    'finalize_data_matching',
     'validate_binding_report',
     'confirm_validation_snapshot',
     'execute_validated_snapshot',
@@ -205,6 +205,13 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
     {
       content: '',
       toolCalls: [
+        { id: '4a', name: 'retrieve_input_candidates', input: { slot: 'lulc_bas_path' } },
+        { id: '4b', name: 'retrieve_input_candidates', input: { slot: 'carbon_pools_path' } },
+      ],
+    },
+    {
+      content: '',
+      toolCalls: [
         {
           id: '6',
           name: 'check_data_relation',
@@ -217,7 +224,24 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
         },
       ],
     },
-    { content: '', toolCalls: [{ id: '7', name: 'submit_binding_report', input: report }] },
+    {
+      content: '',
+      toolCalls: [{
+        id: '7',
+        name: 'finalize_data_matching',
+        input: {
+          modelId: 'carbon',
+          decisions: report.bindings.map(binding => ({
+            slot: binding.slot,
+            selectedAssetId: binding.selectedAssetId,
+            status: binding.status,
+            confidence: binding.confidence,
+            reasoning: binding.agentReasoning,
+          })),
+          unresolvedQuestions: [],
+        },
+      }],
+    },
     {
       content: '',
       toolCalls: [

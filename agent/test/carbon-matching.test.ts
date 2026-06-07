@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { ArtifactStore, DomainStateStore, type AgentContext, type GoalState } from '@gsms/agent-core'
 import {
   assertReportCanProceed,
   buildBindingReport,
+  computeMatchingContextId,
+  createMatchingTools,
   retrieveCandidates,
 } from '../src/index.ts'
 import { carbonFields, csv, raster, testCarbonModelSchema, testCarbonSlot } from './fixtures.ts'
@@ -31,6 +34,16 @@ test('preserves multiple plausible LULC candidates for agent resolution', () => 
 
   assert.equal(candidates.candidates.length, 2)
   assert.equal(candidates.candidates[0]!.score, candidates.candidates[1]!.score)
+})
+
+test('matching context changes when current scene data provenance changes', () => {
+  const first = raster('lulc-current', 'lulc_current.tif', ['current land cover'], [1, 2])
+  const changed = { ...first, provenance: { ...first.provenance, fingerprint: 'changed-fingerprint' } }
+
+  assert.notEqual(
+    computeMatchingContextId('scene-1', testCarbonModelSchema, [first]),
+    computeMatchingContextId('scene-1', testCarbonModelSchema, [changed]),
+  )
 })
 
 test('binding report requires explicit reasoning and a next action', () => {
@@ -84,3 +97,115 @@ test('runtime guard blocks proceeding without required bindings and persisted ch
     /Required slot is not matched: carbon_pools_path/,
   )
 })
+
+test('finalize matching requires candidate evidence for every required slot', async () => {
+  const ctx = matchingContext()
+  ctx.artifacts.create({
+    id: 'candidate-set:old-context:carbon_pools_path',
+    type: 'candidate-set',
+    createdBy: 'tool',
+    data: retrieveCandidates(testCarbonSlot('carbon_pools_path'), [
+      csv('old-carbon-pools', 'old_carbon_pools.csv', carbonFields),
+    ]),
+    metadata: { modelId: 'carbon', matchingContextId: 'old-context', slot: 'carbon_pools_path' },
+  })
+  ctx.artifacts.create({
+    id: 'candidate-set:ctx-carbon:lulc_bas_path',
+    type: 'candidate-set',
+    createdBy: 'tool',
+    data: retrieveCandidates(testCarbonSlot('lulc_bas_path'), [
+      raster('lulc-current', 'lulc_current.tif', ['current land cover'], [1, 2]),
+    ]),
+    metadata: { modelId: 'carbon', matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path' },
+  })
+  const tool = createMatchingTools().find(candidate => candidate.name === 'finalize_data_matching')!
+
+  await assert.rejects(
+    tool.execute({
+      modelId: 'carbon',
+      decisions: [{
+        slot: 'lulc_bas_path',
+        selectedAssetId: 'lulc-current',
+        status: 'matched',
+        confidence: 0.9,
+        reasoning: 'Only current LULC candidate.',
+      }],
+    }, ctx),
+    /MATCHING_EVIDENCE_INCOMPLETE.*carbon_pools_path/,
+  )
+})
+
+test('finalize matching rejects assets outside the persisted candidate set', async () => {
+  const ctx = matchingContext()
+  addRequiredCandidateSets(ctx)
+  const tool = createMatchingTools().find(candidate => candidate.name === 'finalize_data_matching')!
+
+  await assert.rejects(
+    tool.execute({
+      modelId: 'carbon',
+      decisions: [
+        {
+          slot: 'lulc_bas_path',
+          selectedAssetId: 'invented-lulc',
+          status: 'matched',
+          confidence: 0.9,
+          reasoning: 'Invented candidate.',
+        },
+        {
+          slot: 'carbon_pools_path',
+          selectedAssetId: 'carbon-pools',
+          status: 'matched',
+          confidence: 0.9,
+          reasoning: 'Only pools candidate.',
+        },
+      ],
+    }, ctx),
+    /SELECTED_ASSET_NOT_CANDIDATE/,
+  )
+})
+
+function matchingContext(): AgentContext {
+  const goal: GoalState = {
+    objective: 'match carbon',
+    status: 'active',
+    turnCount: 1,
+    maxTurns: 10,
+    evidence: [],
+    remainingIssues: [],
+    startedAt: new Date().toISOString(),
+  }
+  const artifacts = new ArtifactStore()
+  artifacts.create({
+    type: 'model-input-schema',
+    createdBy: 'tool',
+    data: testCarbonModelSchema,
+    metadata: { modelId: 'carbon' },
+  })
+  return {
+    workspace: process.cwd(),
+    goal,
+    artifacts,
+    domainState: new DomainStateStore({
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      matchingContextId: 'ctx-carbon',
+      phase: 'matching-slots',
+    }),
+  }
+}
+
+function addRequiredCandidateSets(ctx: AgentContext): void {
+  const cards = [
+    raster('lulc-current', 'lulc_current.tif', ['current land cover'], [1, 2]),
+    csv('carbon-pools', 'carbon_pools.csv', carbonFields),
+  ]
+  for (const slot of testCarbonModelSchema.slots) {
+    ctx.artifacts.create({
+      id: `candidate-set:ctx-carbon:${slot.name}`,
+      type: 'candidate-set',
+      createdBy: 'tool',
+      data: retrieveCandidates(slot, cards),
+      metadata: { modelId: 'carbon', matchingContextId: 'ctx-carbon', slot: slot.name },
+    })
+  }
+}

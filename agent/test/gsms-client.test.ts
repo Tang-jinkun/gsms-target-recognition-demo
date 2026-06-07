@@ -56,6 +56,8 @@ test('GSMS tools use backend schemas and data cards as authoritative artifacts',
   const schemaResult = await tools
     .find(tool => tool.name === 'get_invest_model_schema')!
     .execute({ modelId: 'carbon' }, ctx)
+  ctx.artifacts.createMany(schemaResult.artifacts ?? [])
+  ctx.domainState.applyPatch(schemaResult.statePatch ?? {})
   const cardsResult = await tools
     .find(tool => tool.name === 'list_scene_data_cards')!
     .execute({ sceneId: 'scene-1' }, ctx)
@@ -93,7 +95,7 @@ test('GSMS relation tool sends a structured relation request', async () => {
     candidate => candidate.name === 'check_data_relation',
   )!
   const ctx = context()
-  ctx.domainState.applyPatch({ modelId: 'carbon' })
+  ctx.domainState.applyPatch({ modelId: 'carbon', matchingContextId: 'ctx-1', sceneId: 'scene-1' })
   await tool.execute(
     {
       kind: 'code-coverage',
@@ -133,7 +135,7 @@ test('GSMS relation tool reuses identical persisted evidence without creating du
     candidate => candidate.name === 'check_data_relation',
   )!
   const ctx = context()
-  ctx.domainState.applyPatch({ modelId: 'carbon' })
+  ctx.domainState.applyPatch({ modelId: 'carbon', matchingContextId: 'ctx-1', sceneId: 'scene-1' })
 
   const first = await tool.execute(
     { kind: 'code-coverage', leftAssetId: 'lulc-1', rightAssetId: 'pools-1', field: 'lucode' },
@@ -173,7 +175,7 @@ test('GSMS relation tool rejects changed results that conflict with persisted ev
     candidate => candidate.name === 'check_data_relation',
   )!
   const ctx = context()
-  ctx.domainState.applyPatch({ modelId: 'carbon' })
+  ctx.domainState.applyPatch({ modelId: 'carbon', matchingContextId: 'ctx-1', sceneId: 'scene-1' })
   const input = {
     kind: 'code-coverage',
     leftAssetId: 'lulc-1',

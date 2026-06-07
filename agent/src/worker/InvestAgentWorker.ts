@@ -16,12 +16,14 @@ import { GsmsClient } from '../gsms/GsmsClient.ts'
 import { createGsmsTools } from '../tools/gsmsTools.ts'
 import { createMatchingTools } from '../tools/matchingTools.ts'
 import { createReportTools } from '../tools/reportTools.ts'
+import { modelInputSchemaSchema } from '../domain/schemas.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import {
   AgentSessionApiClient,
   type PersistedAgentSession,
   type PersistedConfirmation,
 } from './AgentSessionApiClient.ts'
+import { inferWorkflowBoundary, workflowToolFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentWorkerOptions {
   gsmsUrl: string
@@ -72,6 +74,18 @@ export class InvestAgentWorker {
     const artifacts = new ArtifactStore()
     if (session.artifacts.length) artifacts.createMany(session.artifacts as ArtifactInput[])
     const domainState = new DomainStateStore(session.domain_state)
+    const workflowBoundary = inferWorkflowBoundary(latestUser.content)
+    domainState.applyPatch(
+      workflowBoundary === 'matching'
+        ? {
+            workflowBoundary,
+            phase: 'discovering-data',
+            matchingContextId: null,
+            slots: null,
+            bindingStatus: null,
+          }
+        : { workflowBoundary },
+    )
     const sessionWorkspace = resolve(this.options.workspace, 'sessions', session.id)
     await mkdir(sessionWorkspace, { recursive: true })
     const registry = new ToolRegistry()
@@ -97,6 +111,7 @@ export class InvestAgentWorker {
       artifacts,
       domainState,
       maxTurns: this.options.maxTurns ?? 30,
+      toolFilter: workflowToolFilter(workflowBoundary),
       eventSink: {
         emit: event =>
           this.#sessionApi.appendEvent(session.id, event.eventType, {
@@ -113,13 +128,15 @@ export class InvestAgentWorker {
         approve: (tool, input) => this.#approveOrDefer(session.id, confirmations, tool, input),
       }),
     })
+    const resumedState = domainState.snapshot()
     const result = await runtime.run(
       [
         `Current GSMS scene ID: ${session.scene_id}`,
         `Current user request: ${latestUser.content}`,
+        `Current workflow boundary: ${workflowBoundary}. Do not act beyond this boundary.`,
         'The current user request overrides persisted planning state. If it names or implies a different InVEST model, call get_invest_model_schema for that model before matching or validation.',
-        `Persisted domain state from earlier turns: ${JSON.stringify(session.domain_state)}`,
-        buildWorkflowResumeContext(session.domain_state, session.artifacts),
+        `Persisted domain state from earlier turns, adjusted for the current request boundary: ${JSON.stringify(resumedState)}`,
+        buildWorkflowResumeContext(resumedState, session.artifacts),
       ].join('\n\n'),
     )
     if (result.goal.status === 'blocked') {
@@ -204,8 +221,13 @@ export function buildWorkflowResumeContext(
   }, {})
   const modelId = typeof state.modelId === 'string' ? state.modelId : 'none'
   const phase = typeof state.phase === 'string' ? state.phase : 'unknown'
+  const matchingContextId =
+    typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
   const currentRows = rows.filter(
-    artifact => !artifact.metadata?.modelId || artifact.metadata.modelId === modelId,
+    artifact =>
+      (!artifact.metadata?.modelId || artifact.metadata.modelId === modelId) &&
+      (!artifact.metadata?.matchingContextId ||
+        artifact.metadata.matchingContextId === matchingContextId),
   )
   const currentCounts = currentRows.reduce<Record<string, number>>((result, artifact) => {
     result[artifact.type] = (result[artifact.type] ?? 0) + 1
@@ -219,7 +241,7 @@ export function buildWorkflowResumeContext(
       slot: artifact.metadata?.slot,
       id: artifact.id,
     }))
-  const directive = workflowDirective(phase, modelId, currentCounts)
+  const directive = workflowDirective(phase, modelId, currentCounts, currentRows)
   return [
     `Persisted workflow evidence: ${JSON.stringify({ phase, modelId, counts, currentCounts, currentArtifacts })}`,
     `Required continuation: ${directive}`,
@@ -228,7 +250,12 @@ export function buildWorkflowResumeContext(
   ].join('\n')
 }
 
-function workflowDirective(phase: string, modelId: string, counts: Record<string, number>): string {
+function workflowDirective(
+  phase: string,
+  modelId: string,
+  counts: Record<string, number>,
+  artifacts: readonly ReturnType<typeof normalizeArtifact>[],
+): string {
   if (phase === 'ready-for-validation' && counts['binding-report']) {
     return `A ${modelId} Binding Report already exists. Call validate_binding_report directly; do not reload schemas, retrieve candidates, or submit another report.`
   }
@@ -239,7 +266,20 @@ function workflowDirective(phase: string, modelId: string, counts: Record<string
     return 'The exact validation snapshot is confirmed. Execute it only if execution is part of the current user request.'
   }
   if (phase === 'matching-slots' && counts['candidate-set']) {
-    return 'Reuse the persisted candidate sets and relation checks, then submit the Binding Report. Do not restart discovery.'
+    const schemaArtifact = [...artifacts].reverse().find(artifact => artifact?.type === 'model-input-schema')
+    const schema = schemaArtifact ? modelInputSchemaSchema.safeParse(schemaArtifact.data) : undefined
+    const candidateSlots = new Set(
+      artifacts
+        .filter(artifact => artifact?.type === 'candidate-set')
+        .map(artifact => artifact?.metadata?.slot),
+    )
+    const missing = schema?.success
+      ? schema.data.slots.filter(slot => slot.required && !candidateSlots.has(slot.name)).map(slot => slot.name)
+      : []
+    if (missing.length) {
+      return `Retrieve candidates for these required slots before finalizing: ${missing.join(', ')}.`
+    }
+    return 'Reuse the persisted candidate sets and relation checks, then call finalize_data_matching. Do not construct a Binding Report manually.'
   }
   if (phase === 'validation-failed') {
     return 'Explain the persisted validation errors and stop unless the user changed bindings or parameters.'
@@ -250,9 +290,14 @@ function workflowDirective(phase: string, modelId: string, counts: Record<string
 function isArtifact(value: unknown): value is {
   id?: string
   type: string
+  data?: unknown
   metadata?: Record<string, unknown>
 } {
   return Boolean(value && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string')
+}
+
+function normalizeArtifact(value: unknown) {
+  return isArtifact(value) ? value : undefined
 }
 
 function canonical(value: unknown): string {

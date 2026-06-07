@@ -13,6 +13,7 @@ import {
   type PermissionDecision,
 } from '@gsms/agent-core'
 import { SkillRegistry, SkillTool } from '@gsms/skills-core'
+import { inferWorkflowBoundary, workflowToolFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentSessionOptions {
   model: ModelAdapter
@@ -39,6 +40,18 @@ export class InvestAgentSession {
   }
 
   async send(message: string): Promise<AgentRunResult> {
+    const workflowBoundary = inferWorkflowBoundary(message)
+    this.domainState.applyPatch(
+      workflowBoundary === 'matching'
+        ? {
+            workflowBoundary,
+            phase: 'discovering-data',
+            matchingContextId: null,
+            slots: null,
+            bindingStatus: null,
+          }
+        : { workflowBoundary },
+    )
     const objective = [
       `Current GSMS scene ID: ${this.options.sceneId}`,
       this.#history.length
@@ -48,6 +61,7 @@ export class InvestAgentSession {
             .join('\n')}`
         : '',
       `Current user request:\n${message}`,
+      `Current workflow boundary: ${workflowBoundary}. Do not act beyond this boundary.`,
       'The current user request overrides earlier planning state. If it names or implies a different InVEST model, select that model again before matching or validation.',
       'Act on the current request using the persisted artifacts and domain state from this session.',
     ]
@@ -62,6 +76,7 @@ export class InvestAgentSession {
       artifacts: this.artifacts,
       domainState: this.domainState,
       maxTurns: this.options.maxTurns,
+      toolFilter: workflowToolFilter(workflowBoundary),
     })
     const result = await runtime.run(objective)
     this.#history.push({

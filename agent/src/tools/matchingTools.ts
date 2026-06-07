@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { AgentContext, AgentTool } from '@gsms/agent-core'
 import {
   bindingReportSchema,
+  bindingStatusSchema,
+  candidateSetSchema,
   dataCardSchema,
   modelInputSchemaSchema,
   relationCheckSchema,
@@ -23,10 +26,42 @@ function latestModelSchema(context: AgentContext): ModelInputSchema {
 }
 
 function dataCards(context: AgentContext): DataCard[] {
-  return context.artifacts.list('data-card').map(artifact => dataCardSchema.parse(artifact.data))
+  const matchingContextId = currentMatchingContext(context)
+  return context.artifacts
+    .list('data-card')
+    .filter(artifact => artifact.metadata?.matchingContextId === matchingContextId)
+    .map(artifact => dataCardSchema.parse(artifact.data))
 }
 
 const retrieveSchema = z.object({ slot: z.string().min(1) })
+const finalizeSchema = z.object({
+  modelId: z.string().min(1),
+  decisions: z.array(z.object({
+    slot: z.string().min(1),
+    selectedAssetId: z.string().min(1).optional(),
+    status: bindingStatusSchema,
+    confidence: z.number().min(0).max(1),
+    reasoning: z.string().min(1),
+  })),
+  unresolvedQuestions: z.array(z.string()).default([]),
+})
+
+function currentMatchingContext(context: AgentContext): string {
+  const value = context.domainState.snapshot().matchingContextId
+  if (typeof value !== 'string') {
+    throw toolFailure('MATCHING_CONTEXT_MISSING', 'Load the model schema and current scene data before matching.', {
+      nextAction: { tool: 'list_scene_data_cards', input: {} },
+    })
+  }
+  return value
+}
+
+function contextualArtifacts(context: AgentContext, type: string) {
+  const matchingContextId = currentMatchingContext(context)
+  return context.artifacts
+    .list(type)
+    .filter(artifact => artifact.metadata?.matchingContextId === matchingContextId)
+}
 
 export const retrieveInputCandidatesTool: AgentTool = {
   name: 'retrieve_input_candidates',
@@ -41,17 +76,26 @@ export const retrieveInputCandidatesTool: AgentTool = {
   async execute(input, context) {
     const { slot } = retrieveSchema.parse(input)
     const schema = latestModelSchema(context)
+    const matchingContextId = currentMatchingContext(context)
     const inputSlot = schema.slots.find(candidate => candidate.name === slot)
     if (!inputSlot) throw new Error(`Unknown input slot for ${schema.modelId}: ${slot}`)
     const candidates = retrieveCandidates(inputSlot, dataCards(context))
+    const artifactId = `candidate-set:${matchingContextId}:${slot}`
+    const existing = context.artifacts.get(artifactId)
     return {
       content: JSON.stringify(candidates),
-      artifacts: [
+      artifacts: existing ? [] : [
         {
+          id: artifactId,
           type: 'candidate-set',
           createdBy: 'tool',
           data: candidates,
-          metadata: { slot, modelId: schema.modelId },
+          metadata: {
+            slot,
+            modelId: schema.modelId,
+            sceneId: context.domainState.snapshot().sceneId,
+            matchingContextId,
+          },
         },
       ],
       statePatch: {
@@ -67,36 +111,251 @@ export const retrieveInputCandidatesTool: AgentTool = {
   },
 }
 
-export const submitBindingReportTool: AgentTool = {
-  name: 'submit_binding_report',
-  description: 'Validate and persist an agent-authored binding report against the loaded GSMS schema',
+export const finalizeDataMatchingTool: AgentTool = {
+  name: 'finalize_data_matching',
+  description: 'Finalize matching decisions; the tool deterministically builds the complete Binding Report from persisted evidence',
   risk: 'control',
-  inputSchema: { type: 'object', description: 'A BindingReport object' },
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['modelId', 'decisions'],
+    properties: {
+      modelId: { type: 'string' },
+      decisions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['slot', 'status', 'confidence', 'reasoning'],
+          properties: {
+            slot: { type: 'string' },
+            selectedAssetId: { type: 'string' },
+            status: { enum: ['matched', 'ambiguous', 'missing', 'rejected'] },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+            reasoning: { type: 'string' },
+          },
+        },
+      },
+      unresolvedQuestions: { type: 'array', items: { type: 'string' } },
+    },
+  },
   async execute(input, context) {
-    const report: BindingReport = buildBindingReport(bindingReportSchema.parse(input))
+    const parsed = finalizeSchema.parse(input)
     const schema = latestModelSchema(context)
-    const checks = context.artifacts
-      .list('relation-check')
-      .filter(artifact => artifact.metadata?.modelId === schema.modelId)
+    if (parsed.modelId !== schema.modelId) {
+      throw toolFailure('MODEL_MISMATCH', `Matching model ${parsed.modelId} does not match ${schema.modelId}.`)
+    }
+    const matchingContextId = currentMatchingContext(context)
+    const candidateSets = contextualArtifacts(context, 'candidate-set')
+      .map(artifact => candidateSetSchema.parse(artifact.data))
+    const candidateBySlot = new Map(candidateSets.map(set => [set.slot, set]))
+    const missingPrerequisites = schema.slots
+      .filter(slot => slot.required && !candidateBySlot.has(slot.name))
+      .map(slot => `candidate-set:${slot.name}`)
+    if (missingPrerequisites.length) {
+      const slot = missingPrerequisites[0]!.slice('candidate-set:'.length)
+      throw toolFailure(
+        'MATCHING_EVIDENCE_INCOMPLETE',
+        'Retrieve candidates for every required slot before finalizing matching.',
+        {
+          missingPrerequisites,
+          nextAction: { tool: 'retrieve_input_candidates', input: { slot } },
+        },
+      )
+    }
+    const decisionsBySlot = new Map(parsed.decisions.map(decision => [decision.slot, decision]))
+    const bindings = schema.slots.map(slot => {
+      const decision = decisionsBySlot.get(slot.name)
+      const candidateSet = candidateBySlot.get(slot.name)
+      if (!decision) {
+        return {
+          slot: slot.name,
+          candidateAssetIds: candidateSet?.candidates.map(candidate => candidate.assetId) ?? [],
+          confidence: 0,
+          status: 'missing' as const,
+          facts: [],
+          agentReasoning: 'No matching decision was supplied for this slot.',
+        }
+      }
+      const candidateAssetIds = candidateSet?.candidates.map(candidate => candidate.assetId) ?? []
+      if (decision.selectedAssetId && !candidateAssetIds.includes(decision.selectedAssetId)) {
+        throw toolFailure(
+          'SELECTED_ASSET_NOT_CANDIDATE',
+          `Selected asset ${decision.selectedAssetId} is not a persisted candidate for ${slot.name}.`,
+          { invalidFields: [`decisions:${slot.name}:selectedAssetId`] },
+        )
+      }
+      const selected = candidateSet?.candidates.find(candidate => candidate.assetId === decision.selectedAssetId)
+      return {
+        slot: slot.name,
+        selectedAssetId: decision.selectedAssetId,
+        candidateAssetIds,
+        confidence: decision.confidence,
+        status: decision.status,
+        facts: selected?.evidence ?? [],
+        agentReasoning: decision.reasoning,
+      }
+    })
+    const persistedChecks = contextualArtifacts(context, 'relation-check')
       .map(artifact => relationCheckSchema.parse(artifact.data))
+    const missingRelation = schema.slots.flatMap(slot => {
+      const leftAssetId = bindings.find(binding => binding.slot === slot.name)?.selectedAssetId
+      if (!leftAssetId) return []
+      return slot.relationConstraints.flatMap(constraint => {
+        const rightAssetId = bindings.find(binding => binding.slot === constraint.otherSlot)?.selectedAssetId
+        if (!rightAssetId) return []
+        const exists = persistedChecks.some(check =>
+          check.kind === constraint.kind &&
+          check.leftAssetId === leftAssetId &&
+          check.rightAssetId === rightAssetId)
+        return exists ? [] : [{
+          slot: slot.name,
+          kind: constraint.kind,
+          leftAssetId,
+          rightAssetId,
+          field: constraint.field,
+        }]
+      })
+    })[0]
+    if (missingRelation) {
+      throw toolFailure(
+        'MATCHING_RELATION_CHECK_MISSING',
+        `Run the required ${missingRelation.kind} relation check before finalizing matching.`,
+        {
+          missingPrerequisites: [
+            `relation-check:${missingRelation.kind}:${missingRelation.leftAssetId}:${missingRelation.rightAssetId}`,
+          ],
+          nextAction: {
+            tool: 'check_data_relation',
+            input: {
+              kind: missingRelation.kind,
+              leftAssetId: missingRelation.leftAssetId,
+              rightAssetId: missingRelation.rightAssetId,
+              field: missingRelation.field,
+            },
+          },
+        },
+      )
+    }
+    const checks = persistedChecks.filter(check =>
+      schema.slots.some(slot => {
+        const left = bindings.find(binding => binding.slot === slot.name)?.selectedAssetId
+        return slot.relationConstraints.some(constraint => {
+          const right = bindings.find(binding => binding.slot === constraint.otherSlot)?.selectedAssetId
+          return check.kind === constraint.kind && check.leftAssetId === left && check.rightAssetId === right
+        })
+      }),
+    )
+    const conflicts = [
+      ...bindings
+        .filter(binding => schema.slots.find(slot => slot.name === binding.slot)?.required && binding.status !== 'matched')
+        .map(binding => ({
+          code: 'REQUIRED_SLOT_UNRESOLVED',
+          message: `Required slot ${binding.slot} is ${binding.status}.`,
+          relatedSlots: [binding.slot],
+          relatedAssetIds: binding.selectedAssetId ? [binding.selectedAssetId] : [],
+        })),
+      ...checks
+        .filter(check => check.status !== 'passed')
+        .map(check => ({
+          code: 'RELATION_CHECK_NOT_PASSED',
+          message: `Relation check ${check.id} is ${check.status}.`,
+          relatedSlots: [],
+          relatedAssetIds: [check.leftAssetId, check.rightAssetId],
+        })),
+    ]
+    const requiredMatched = schema.slots
+      .filter(slot => slot.required)
+      .every(slot => bindings.find(binding => binding.slot === slot.name)?.status === 'matched')
+    const requiredRelationsPassed = schema.slots.every(slot =>
+      slot.relationConstraints.every(constraint => {
+        const left = bindings.find(binding => binding.slot === slot.name)?.selectedAssetId
+        const right = bindings.find(binding => binding.slot === constraint.otherSlot)?.selectedAssetId
+        if (!left || !right) return false
+        return checks.some(check =>
+          check.kind === constraint.kind &&
+          check.leftAssetId === left &&
+          check.rightAssetId === right &&
+          check.status === 'passed')
+      }),
+    )
+    const recommendedNextAction =
+      requiredMatched && requiredRelationsPassed && !parsed.unresolvedQuestions.length
+        ? 'proceed-to-validation'
+        : conflicts.some(conflict => conflict.code === 'REQUIRED_SLOT_UNRESOLVED') || parsed.unresolvedQuestions.length
+          ? 'request-user-input'
+          : 'collect-more-evidence'
+    const report: BindingReport = buildBindingReport(bindingReportSchema.parse({
+      taskSpecId: `matching:${matchingContextId}`,
+      modelSchemaId: `${schema.modelId}:${schema.version}`,
+      bindings,
+      relationChecks: checks,
+      conflicts,
+      unresolvedQuestions: parsed.unresolvedQuestions,
+      recommendedNextAction,
+    }))
     assertReportCanProceed(report, schema, checks)
-    const completed = report.recommendedNextAction === 'proceed-to-validation'
+    const completed = recommendedNextAction === 'proceed-to-validation'
+    const artifactId = `binding-report:${matchingContextId}:${createHash('sha256')
+      .update(JSON.stringify(report.bindings))
+      .digest('hex')
+      .slice(0, 12)}`
+    const existing = context.artifacts.get(artifactId)
     return {
-      content: `Binding report accepted; next action: ${report.recommendedNextAction}`,
-      artifacts: [{
+      content: JSON.stringify({
+        status: 'matching-finalized',
+        recommendedNextAction,
+        bindingReport: report,
+        instruction: 'Finish and present the matching result. Do not validate unless the current request explicitly asks for validation.',
+      }),
+      artifacts: existing ? [] : [{
+        id: artifactId,
         type: 'binding-report',
         createdBy: 'agent',
         data: report,
-        metadata: { modelId: schema.modelId },
+        metadata: {
+          modelId: schema.modelId,
+          sceneId: context.domainState.snapshot().sceneId,
+          matchingContextId,
+        },
       }],
       statePatch: {
         phase: completed ? 'ready-for-validation' : 'resolving-ambiguity',
         bindingStatus: completed ? 'ready-for-validation' : report.recommendedNextAction,
       },
+      hiddenMessages: [{
+        role: 'user',
+        hidden: true,
+        content: 'Matching is finalized. Finish now with candidates, evidence, confidence, missing items, risks, and the recommended next step. Do not validate unless the current request explicitly asks for validation.',
+      }],
     }
   },
 }
 
 export function createMatchingTools(): AgentTool[] {
-  return [retrieveInputCandidatesTool, submitBindingReportTool]
+  return [retrieveInputCandidatesTool, finalizeDataMatchingTool]
+}
+
+function toolFailure(
+  code: string,
+  message: string,
+  details: Record<string, unknown> = {},
+): Error {
+  return new Error(JSON.stringify({ code, message, ...details }))
+}
+
+export function computeMatchingContextId(
+  sceneId: string,
+  schema: ModelInputSchema,
+  cards: readonly DataCard[],
+): string {
+  const payload = {
+    sceneId,
+    modelId: schema.modelId,
+    version: schema.version,
+    assets: cards
+      .map(card => ({ assetId: card.assetId, fingerprint: card.provenance.fingerprint }))
+      .sort((left, right) => left.assetId.localeCompare(right.assetId)),
+  }
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 24)
 }

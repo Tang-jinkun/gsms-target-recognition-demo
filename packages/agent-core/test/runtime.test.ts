@@ -257,6 +257,40 @@ test('runtime stops a repeated multi-tool cycle before max turns', async () => {
   assert.match(result.goal.remainingIssues[0]!, /retrieve_candidates.*validate_binding_report/)
 })
 
+test('runtime stops one tool after three varied failures without progress', async () => {
+  const failingTool: AgentTool = {
+    name: 'finalize_data_matching',
+    description: 'Finalize matching',
+    risk: 'control',
+    inputSchema: { type: 'object' },
+    async execute() {
+      throw new Error('Matching evidence is incomplete')
+    },
+  }
+  const model = new FakeModelAdapter(
+    Array.from({ length: 10 }, (_, index) => ({
+      content: '',
+      toolCalls: [{
+        id: String(index),
+        name: 'finalize_data_matching',
+        input: { attempt: index },
+      }],
+    })),
+  )
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([failingTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    maxTurns: 10,
+  }).run('Finalize matching')
+
+  assert.equal(result.goal.status, 'failed')
+  assert.equal(result.goal.turnCount, 3)
+  assert.equal(result.diagnostics[0]?.code, 'AGENT_TOOL_FAILURE_LOOP')
+  assert.match(result.goal.remainingIssues[0]!, /failed 3 consecutive times/)
+})
+
 test('runtime pauses when tool permission is deferred', async () => {
   const model = new FakeModelAdapter([
     { content: '', toolCalls: [{ id: '1', name: 'write_file', input: { path: 'x', content: 'y' } }] },
