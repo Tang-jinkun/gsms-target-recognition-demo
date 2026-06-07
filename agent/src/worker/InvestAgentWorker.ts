@@ -125,7 +125,8 @@ export class InvestAgentWorker {
           }).then(() => undefined),
       },
       permissions: new PermissionManager({
-        approve: (tool, input) => this.#approveOrDefer(session.id, confirmations, tool, input),
+        approve: (tool, input, context) =>
+          this.#approveOrDefer(session.id, confirmations, tool, input, context.domainState.snapshot()),
       }),
     })
     const resumedState = domainState.snapshot()
@@ -186,12 +187,19 @@ export class InvestAgentWorker {
     confirmations: PersistedConfirmation[],
     tool: AgentTool,
     input: unknown,
+    state: Record<string, unknown>,
   ): Promise<'allow' | 'defer'> {
+    const authorizationKey = permissionAuthorizationKey(tool, input, state)
     const approved = confirmations.find(
       confirmation =>
         confirmation.status === 'approved' &&
         confirmation.payload.tool === tool.name &&
-        canonical(confirmation.payload.input) === canonical(input),
+        (
+          confirmation.payload.authorizationKey === authorizationKey ||
+          (tool.name === 'write_invest_report' && !confirmation.payload.authorizationKey) ||
+          (!confirmation.payload.authorizationKey &&
+            canonical(confirmation.payload.input) === canonical(input))
+        ),
     )
     if (approved) {
       await this.#sessionApi.consumeConfirmation(sessionId, approved.id)
@@ -200,10 +208,25 @@ export class InvestAgentWorker {
     await this.#sessionApi.requestConfirmation(sessionId, {
       kind: tool.name,
       prompt: `Allow ${tool.risk} tool "${tool.name}"?`,
-      payload: { tool: tool.name, risk: tool.risk, input },
+      payload: { tool: tool.name, risk: tool.risk, input, authorizationKey },
     })
     return 'defer'
   }
+}
+
+function permissionAuthorizationKey(
+  tool: AgentTool,
+  input: unknown,
+  state: Record<string, unknown>,
+): string {
+  if (tool.name === 'write_invest_report') {
+    return canonical({
+      tool: tool.name,
+      sceneId: state.sceneId,
+      jobId: state.jobId,
+    })
+  }
+  return canonical({ tool: tool.name, input })
 }
 
 function buildFailureSummary(

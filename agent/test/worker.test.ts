@@ -138,7 +138,90 @@ test('worker requests confirmation and pauses before a write tool', async () => 
     assert.equal(await worker.runOnce(), true)
     assert.deepEqual(actions, ['start', 'pause'])
     assert.equal(confirmations[0]?.payload.tool, 'write_invest_report')
+    assert.match(String(confirmations[0]?.payload.authorizationKey), /job-1/)
     assert.equal((checkpoints[1]?.domain_state as Record<string, unknown>)?.phase, 'results-ready-for-interpretation')
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('approved report permission survives regenerated report wording for the same job', async () => {
+  const actions: string[] = []
+  const current = session()
+  current.domain_state = {
+    sceneId: 'scene-1',
+    modelId: 'carbon',
+    matchingContextId: 'ctx-carbon',
+    jobId: 'job-1',
+    phase: 'results-ready-for-interpretation',
+  }
+  current.artifacts = [{
+    id: 'schema',
+    type: 'model-input-schema',
+    createdBy: 'tool',
+    createdAt: new Date().toISOString(),
+    data: { modelId: 'carbon', displayName: 'Carbon', version: '3.17.2', slots: [] },
+    metadata: { modelId: 'carbon' },
+  }]
+  const confirmations = [{
+    id: 'approved-report',
+    status: 'approved',
+    payload: {
+      tool: 'write_invest_report',
+      risk: 'write',
+      input: { resultSummary: 'Earlier wording' },
+      authorizationKey: '{"jobId":"job-1","sceneId":"scene-1","tool":"write_invest_report"}',
+    },
+  }]
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('status=queued')) return response([current])
+    if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Write report' }])
+    if (url.endsWith('/confirmations/approved-report/consume')) {
+      confirmations[0]!.status = 'consumed'
+      return response(confirmations[0])
+    }
+    if (url.endsWith('/confirmations')) return response(confirmations)
+    if (url.endsWith('/checkpoint')) {
+      const body = JSON.parse(String(init?.body))
+      actions.push(body.action)
+      current.status = body.action === 'start' ? 'running' : 'idle'
+      return response(current)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-worker-'))
+  try {
+    const worker = new InvestAgentWorker({
+      gsmsUrl: 'http://gsms',
+      proxyToken: 'token',
+      workspace,
+      skills: new SkillRegistry(),
+      sessionApi: new AgentSessionApiClient('http://gsms', fetch),
+      modelFactory: () =>
+        new FakeModelAdapter([
+          {
+            content: '',
+            toolCalls: [{
+              id: '1',
+              name: 'write_invest_report',
+              input: { resultSummary: 'Regenerated wording for the same job' },
+            }],
+          },
+          {
+            content: '',
+            toolCalls: [{
+              id: '2',
+              name: 'finish',
+              input: { summary: 'Report written', evidence: ['runs/job-1/report.md'] },
+            }],
+          },
+        ]),
+    })
+
+    assert.equal(await worker.runOnce(), true)
+    assert.deepEqual(actions, ['start', 'complete'])
+    assert.equal(confirmations[0]?.status, 'consumed')
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
