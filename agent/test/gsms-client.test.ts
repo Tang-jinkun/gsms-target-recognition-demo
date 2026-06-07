@@ -92,6 +92,8 @@ test('GSMS relation tool sends a structured relation request', async () => {
   const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
     candidate => candidate.name === 'check_data_relation',
   )!
+  const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'carbon' })
   await tool.execute(
     {
       kind: 'code-coverage',
@@ -99,7 +101,7 @@ test('GSMS relation tool sends a structured relation request', async () => {
       rightAssetId: 'pools-1',
       field: 'lucode',
     },
-    context(),
+    ctx,
   )
 
   assert.deepEqual(JSON.parse(body), {
@@ -166,10 +168,12 @@ test('validation tool submits the persisted Binding Report and exposes failed va
     )
   }
   const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'carbon' })
   ctx.artifacts.create({
     type: 'binding-report',
     createdBy: 'agent',
     data: { taskSpecId: 'task-1' },
+    metadata: { modelId: 'carbon' },
   })
   const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
     candidate => candidate.name === 'validate_binding_report',
@@ -184,6 +188,60 @@ test('validation tool submits the persisted Binding Report and exposes failed va
   assert.equal(result.statePatch?.phase, 'validation-failed')
   assert.equal(result.artifacts?.[0]?.type, 'validation-report')
   assert.equal(result.diagnostics?.[0]?.severity, 'error')
+})
+
+test('selecting a different model resets stale matching and execution state', async () => {
+  const fetch = async () =>
+    new Response(JSON.stringify(gsmsCarbonSchema), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  const ctx = context()
+  ctx.domainState.applyPatch({
+    modelId: 'habitat_quality',
+    phase: 'ready-for-validation',
+    slots: { lulc_cur_path: { status: 'matched' } },
+    validationSnapshotId: 'old-snapshot',
+    jobId: 'old-job',
+  })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'get_invest_model_schema',
+  )!
+
+  const result = await tool.execute({ modelId: 'carbon' }, ctx)
+  ctx.domainState.applyPatch(result.statePatch ?? {})
+  const state = ctx.domainState.snapshot()
+
+  assert.equal(state.modelId, 'carbon')
+  assert.equal(state.phase, 'discovering-data')
+  assert.equal(state.slots, undefined)
+  assert.equal(state.validationSnapshotId, undefined)
+  assert.equal(state.jobId, undefined)
+})
+
+test('validation rejects a model different from the selected model', async () => {
+  let called = false
+  const fetch = async () => {
+    called = true
+    return new Response('{}', { status: 200 })
+  }
+  const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'habitat_quality' })
+  ctx.artifacts.create({
+    type: 'binding-report',
+    createdBy: 'agent',
+    data: { taskSpecId: 'task-carbon' },
+    metadata: { modelId: 'carbon' },
+  })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'validate_binding_report',
+  )!
+
+  await assert.rejects(
+    tool.execute({ modelId: 'carbon', sceneId: 'scene-1', parameters: {} }, ctx),
+    /does not match the selected model habitat_quality/,
+  )
+  assert.equal(called, false)
 })
 
 test('execution tool refuses an unconfirmed validation snapshot before calling GSMS', async () => {

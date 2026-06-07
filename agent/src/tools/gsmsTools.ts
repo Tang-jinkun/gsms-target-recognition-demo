@@ -138,7 +138,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
     },
     {
       name: 'get_invest_model_schema',
-      description: 'Load one authoritative model schema from GSMS',
+      description: 'Select the current InVEST model, load its authoritative GSMS schema, and reset stale state from any previously selected model',
       risk: 'read',
       inputSchema: {
         type: 'object',
@@ -166,7 +166,19 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               metadata: { modelId, source: 'gsms' },
             },
           ],
-          statePatch: { modelId, phase: 'discovering-data' },
+          statePatch: {
+            modelId,
+            phase: 'discovering-data',
+            slots: null,
+            bindingStatus: null,
+            validationStatus: null,
+            validationSnapshotId: null,
+            confirmationStatus: null,
+            jobId: null,
+            jobStatus: null,
+            outputCount: null,
+            reportPath: null,
+          },
         }
       },
     },
@@ -223,8 +235,12 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           field: { type: 'string' },
         },
       },
-      async execute(input) {
+      async execute(input, context) {
         const parsed = relationSchema.parse(input)
+        const modelId = context.domainState.snapshot().modelId
+        if (typeof modelId !== 'string') {
+          throw new Error('Select an InVEST model before checking data relations')
+        }
         const result = await client.checkRelation(parsed)
         const source = result as Record<string, unknown>
         const check = relationCheckSchema.parse({
@@ -243,10 +259,11 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           artifacts: [
             { type: 'gsms-relation-check', createdBy: 'tool', data: result },
             {
-              id: `relation-check:${check.id}`,
+              id: `relation-check:${modelId}:${check.id}`,
               type: 'relation-check',
               createdBy: 'tool',
               data: check,
+              metadata: { modelId },
             },
           ],
         }
@@ -268,7 +285,15 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       },
       async execute(input, context) {
         const parsed = validateBindingsSchema.parse(input)
-        const report = context.artifacts.list('binding-report').at(-1)
+        const state = context.domainState.snapshot()
+        if (state.modelId !== parsed.modelId) {
+          throw new Error(
+            `Validation model ${parsed.modelId} does not match the selected model ${String(state.modelId ?? 'none')}`,
+          )
+        }
+        const report = [...context.artifacts.list('binding-report')]
+          .reverse()
+          .find(artifact => artifact.metadata?.modelId === parsed.modelId)
         if (!report) throw new Error('Submit a Binding Report before validation')
         const result = await client.validateBindings({
           ...parsed,
@@ -288,7 +313,12 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           : []
         return {
           content: JSON.stringify(result),
-          artifacts: [{ type: 'validation-report', createdBy: 'tool', data: result }],
+          artifacts: [{
+            type: 'validation-report',
+            createdBy: 'tool',
+            data: result,
+            metadata: { modelId: parsed.modelId },
+          }],
           statePatch: {
             phase: canProceed ? 'awaiting-user-confirmation' : 'validation-failed',
             validationStatus: canProceed ? 'passed' : 'failed',

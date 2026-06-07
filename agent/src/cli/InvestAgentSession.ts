@@ -48,6 +48,7 @@ export class InvestAgentSession {
             .join('\n')}`
         : '',
       `Current user request:\n${message}`,
+      'The current user request overrides earlier planning state. If it names or implies a different InVEST model, select that model again before matching or validation.',
       'Act on the current request using the persisted artifacts and domain state from this session.',
     ]
       .filter(Boolean)

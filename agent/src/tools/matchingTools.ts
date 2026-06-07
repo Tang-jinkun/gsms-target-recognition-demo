@@ -13,7 +13,11 @@ import { assertReportCanProceed } from '../matching/guards.ts'
 import { buildBindingReport, retrieveCandidates } from '../matching/primitives.ts'
 
 function latestModelSchema(context: AgentContext): ModelInputSchema {
-  const artifact = context.artifacts.list('model-input-schema').at(-1)
+  const modelId = context.domainState.snapshot().modelId
+  const artifacts = context.artifacts.list('model-input-schema')
+  const artifact = typeof modelId === 'string'
+    ? [...artifacts].reverse().find(candidate => candidate.metadata?.modelId === modelId)
+    : artifacts.at(-1)
   if (!artifact) throw new Error('Load a GSMS model schema before matching data')
   return modelInputSchemaSchema.parse(artifact.data)
 }
@@ -43,7 +47,12 @@ export const retrieveInputCandidatesTool: AgentTool = {
     return {
       content: JSON.stringify(candidates),
       artifacts: [
-        { type: 'candidate-set', createdBy: 'tool', data: candidates, metadata: { slot } },
+        {
+          type: 'candidate-set',
+          createdBy: 'tool',
+          data: candidates,
+          metadata: { slot, modelId: schema.modelId },
+        },
       ],
       statePatch: {
         phase: 'matching-slots',
@@ -68,12 +77,18 @@ export const submitBindingReportTool: AgentTool = {
     const schema = latestModelSchema(context)
     const checks = context.artifacts
       .list('relation-check')
+      .filter(artifact => artifact.metadata?.modelId === schema.modelId)
       .map(artifact => relationCheckSchema.parse(artifact.data))
     assertReportCanProceed(report, schema, checks)
     const completed = report.recommendedNextAction === 'proceed-to-validation'
     return {
       content: `Binding report accepted; next action: ${report.recommendedNextAction}`,
-      artifacts: [{ type: 'binding-report', createdBy: 'agent', data: report }],
+      artifacts: [{
+        type: 'binding-report',
+        createdBy: 'agent',
+        data: report,
+        metadata: { modelId: schema.modelId },
+      }],
       statePatch: {
         phase: completed ? 'ready-for-validation' : 'resolving-ambiguity',
         bindingStatus: completed ? 'ready-for-validation' : report.recommendedNextAction,

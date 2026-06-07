@@ -104,8 +104,9 @@ export class InvestAgentWorker {
     const result = await runtime.run(
       [
         `Current GSMS scene ID: ${session.scene_id}`,
-        `Persisted domain state: ${JSON.stringify(session.domain_state)}`,
         `Current user request: ${latestUser.content}`,
+        'The current user request overrides persisted planning state. If it names or implies a different InVEST model, call get_invest_model_schema for that model before matching or validation.',
+        `Persisted domain state from earlier turns: ${JSON.stringify(session.domain_state)}`,
       ].join('\n\n'),
     )
     if (result.goal.status === 'blocked') {
