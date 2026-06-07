@@ -165,7 +165,7 @@ test('rejects an unsafe current job ID before writing a report', async () => {
   }
 })
 
-test('rejects unknown highlightMetricIds', async () => {
+test('ignores unknown highlightMetricIds without blocking report creation', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
   try {
     const artifacts = new ArtifactStore()
@@ -203,16 +203,68 @@ test('rejects unknown highlightMetricIds', async () => {
         jobStatus: 'succeeded',
       }),
     }
-    await assert.rejects(
-      writeInvestReportTool.execute(
-        {
-          highlightMetricIds: ['nonexistent.metric'],
-          contextualExplanation: 'Testing invalid metric.',
-        },
-        context,
-      ),
-      /Unknown metric ID: nonexistent\.metric/,
+    const result = await writeInvestReportTool.execute(
+      {
+        highlightMetricIds: ['nonexistent.metric'],
+        contextualExplanation: 'Testing invalid metric.',
+      },
+      context,
     )
+    assert.equal(result.statePatch?.phase, 'report-written')
+    assert.equal(result.diagnostics?.[0]?.code, 'UNKNOWN_REPORT_HIGHLIGHTS_IGNORED')
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('maps raster filename highlights to the raster total metric', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
+  try {
+    const artifacts = new ArtifactStore()
+    artifacts.create({
+      type: 'result-analysis',
+      createdBy: 'tool',
+      data: {
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        modelId: 'carbon',
+        outputFingerprints: {},
+        rasters: [{
+          id: 'c_storage_bas_mvp.tif',
+          filename: 'c_storage_bas_mvp.tif',
+          role: 'baseline-carbon-storage',
+          quantity: 'carbon storage',
+          unit: 'Mg C/pixel',
+          statistics: { validPixels: 10, total: 100 },
+        }],
+        comparisons: [],
+        warnings: [],
+      },
+      metadata: { jobId: 'job-1' },
+    })
+    const context: AgentContext = {
+      workspace,
+      goal: goal(),
+      artifacts,
+      domainState: new DomainStateStore({
+        phase: 'results-ready-for-interpretation',
+        modelId: 'carbon',
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        jobStatus: 'succeeded',
+      }),
+    }
+
+    const result = await writeInvestReportTool.execute(
+      {
+        highlightMetricIds: ['c_storage_bas_mvp.tif'],
+        contextualExplanation: 'The report highlights the baseline storage raster.',
+      },
+      context,
+    )
+    const markdown = await readFile(join(workspace, 'runs', 'job-1', 'report.md'), 'utf8')
+    assert.equal(result.statePatch?.phase, 'report-written')
+    assert.match(markdown, /\*\*c_storage_bas_mvp\.tif\*\*/)
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

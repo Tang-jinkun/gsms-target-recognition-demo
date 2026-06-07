@@ -93,11 +93,17 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
         validMetricIds.add(`${comp.kind}.${key}`)
       }
     }
-    for (const id of parsed.highlightMetricIds) {
-      if (!validMetricIds.has(id)) {
-        throw new Error(`Unknown metric ID: ${id}. Valid IDs: ${[...validMetricIds].sort().join(', ')}`)
-      }
-    }
+    const highlightMetricIds = parsed.highlightMetricIds.flatMap(id => {
+      if (validMetricIds.has(id)) return [id]
+      const raster = rasters.find(item => item.filename === id || item.id === id)
+      const mapped = raster ? `${raster.role}.total` : undefined
+      return mapped && validMetricIds.has(mapped) ? [mapped] : []
+    })
+    const ignoredHighlightMetricIds = parsed.highlightMetricIds.filter(id => {
+      if (validMetricIds.has(id)) return false
+      const raster = rasters.find(item => item.filename === id || item.id === id)
+      return !raster || !validMetricIds.has(`${raster.role}.total`)
+    })
 
     const root = await realpath(context.workspace)
     const reportDir = resolve(root, 'runs', jobId)
@@ -114,6 +120,7 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
       state,
       artifacts: context.artifacts.list(),
       ...parsed,
+      highlightMetricIds,
       contextualExplanation,
       limitations,
     })
@@ -139,14 +146,19 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
           metadata: { jobId, sceneId, modelId: state.modelId, dataHubFile: published },
         }],
         statePatch: { phase: 'report-written', reportPath: relativePath },
-        diagnostics: unsupportedNumbers.length
-          ? [{
+        diagnostics: [
+          ...(unsupportedNumbers.length ? [{
               code: 'UNSUPPORTED_REPORT_NUMBERS_OMITTED',
               message:
                 `Omitted unsupported numeric prose from the report: ${[...new Set(unsupportedNumbers)].slice(0, 20).join(', ')}`,
               severity: 'warning' as const,
-            }]
-          : [],
+            }] : []),
+          ...(ignoredHighlightMetricIds.length ? [{
+            code: 'UNKNOWN_REPORT_HIGHLIGHTS_IGNORED',
+            message: `Ignored unknown report highlights: ${ignoredHighlightMetricIds.join(', ')}`,
+            severity: 'warning' as const,
+          }] : []),
+        ],
       }
     },
   }
