@@ -11,7 +11,7 @@ import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
 import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
 import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
-import { agentSessionsRepo, type AgentConfirmation, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
+import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -40,6 +40,8 @@ const SEED_MODELS: WbModel[] = [
 const backendType = (uiType: AssetType): string => (uiType === 'vector' ? 'geojson' : uiType)
 const uiFromBackendAssetType = (bt?: string): AssetType => (bt === 'geojson' ? 'vector' : (bt as AssetType) || 'other')
 const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
+const isAgentActionEvent = (type: string) =>
+  /^(run|model|tool|state|artifact|diagnostic|loop)\./.test(type)
 
 export default function WorkbenchPage() {
   const router = useRouter()
@@ -71,6 +73,8 @@ export default function WorkbenchPage() {
   const [agentSession, setAgentSession] = React.useState<AgentSession | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
   const [agentError, setAgentError] = React.useState('')
+  const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
+  const agentEventCursorRef = React.useRef({ sessionId: '', afterId: 0 })
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
   const [defaultModel, setDefaultModel] = React.useState<ModelCfg | undefined>(undefined)
@@ -114,10 +118,15 @@ export default function WorkbenchPage() {
   }, [])
 
   const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
-    const [current, messages, confirmations] = await Promise.all([
+    if (agentEventCursorRef.current.sessionId !== session.id) {
+      agentEventCursorRef.current = { sessionId: session.id, afterId: 0 }
+      setAgentEvents([])
+    }
+    const [current, messages, confirmations, events] = await Promise.all([
       agentSessionsRepo.get(session.id),
       agentSessionsRepo.messages(session.id),
       agentSessionsRepo.confirmations(session.id),
+      agentSessionsRepo.events(session.id, agentEventCursorRef.current.afterId),
     ])
     setAgentSession(current)
     setStreaming(current.status === 'queued' || current.status === 'running')
@@ -128,6 +137,11 @@ export default function WorkbenchPage() {
       att: [],
     })))
     setAgentError(current.last_error ?? '')
+    if (events.length) {
+      agentEventCursorRef.current.afterId = events.at(-1)!.id
+      const actionEvents = events.filter(event => isAgentActionEvent(event.type))
+      setAgentEvents(previous => [...previous, ...actionEvents].slice(-500))
+    }
   }, [])
 
   React.useEffect(() => {
@@ -277,6 +291,19 @@ export default function WorkbenchPage() {
     if (l.includes('warn')) return 'l-warn'
     if (l.includes('completed') || l.includes('success') || l.includes('finished')) return 'l-ok'
     return 'l-dim'
+  }
+
+  function agentEventClass(event: AgentEvent): string {
+    if (event.data.status === 'failed' || event.type === 'loop.detected' || event.type === 'run.failed') return 'l-err'
+    if (event.type === 'run.completed' || event.type === 'tool.completed') return 'l-ok'
+    if (event.data.status === 'started' || event.data.status === 'waiting') return 'l-warn'
+    return 'l-dim'
+  }
+
+  function agentEventText(event: AgentEvent): string {
+    const turn = typeof event.data.turn === 'number' ? `turn ${event.data.turn} ` : ''
+    const duration = typeof event.data.duration_ms === 'number' ? ` (${event.data.duration_ms}ms)` : ''
+    return `${turn}${event.data.summary ?? event.type}${duration}`
   }
 
   function simulateRun(name: string) {
@@ -592,7 +619,15 @@ export default function WorkbenchPage() {
 
           {/* RIGHT */}
           <aside className="col c-right">
-            <div className="col-head"><h2>运行信息</h2></div>
+            <div className="col-head"><h2>Agent Activity</h2></div>
+            <div className="agent-activity">
+              <div className="log-out">
+                {agentEvents.length ? agentEvents.map(event => (
+                  <div key={event.id} title={event.type}><span className={agentEventClass(event)}>{agentEventText(event)}</span></div>
+                )) : <div><span className="l-dim">Waiting for Agent actions...</span></div>}
+              </div>
+            </div>
+            <div className="col-head" style={{ borderTop: '1px solid var(--border)' }}><h2>运行信息</h2></div>
             <div className="task-card">
               <div className="glabel" style={{ marginBottom: 9 }}>任务状态</div>
               <div className="task-state">
@@ -768,6 +803,8 @@ export default function WorkbenchPage() {
         .split .half { flex: 1; min-width: 0; }
         .split .half:first-child { border-right: 1px solid var(--border); background: var(--bg); }
         .log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+        .agent-activity { height: 38%; min-height: 150px; display: flex; flex-direction: column; }
+        .agent-activity .log-out { flex: 1; overflow-y: auto; }
         .log-out { flex: 1; min-height: 0; overflow-y: auto; background: oklch(26% 0.02 255); color: oklch(85% 0.02 230); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; padding: 12px 13px; }
         .log-out .l-ok { color: oklch(72% 0.13 165); }
         .log-out .l-warn { color: oklch(78% 0.13 80); }

@@ -97,6 +97,18 @@ export class InvestAgentWorker {
       artifacts,
       domainState,
       maxTurns: this.options.maxTurns ?? 30,
+      eventSink: {
+        emit: event =>
+          this.#sessionApi.appendEvent(session.id, event.eventType, {
+            run_id: event.runId,
+            turn: event.turn,
+            summary: event.summary,
+            status: event.status,
+            tool_call_id: event.toolCallId,
+            duration_ms: event.durationMs,
+            ...event.data,
+          }).then(() => undefined),
+      },
       permissions: new PermissionManager({
         approve: (tool, input) => this.#approveOrDefer(session.id, confirmations, tool, input),
       }),

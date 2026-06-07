@@ -83,6 +83,35 @@ export interface Diagnostic {
   relatedArtifactIds?: string[]
 }
 
+export interface AgentActionEvent {
+  runId: string
+  turn: number
+  eventType:
+    | 'run.started'
+    | 'model.responded'
+    | 'tool.started'
+    | 'tool.completed'
+    | 'tool.deferred'
+    | 'tool.failed'
+    | 'state.changed'
+    | 'artifact.created'
+    | 'diagnostic.created'
+    | 'loop.detected'
+    | 'run.paused'
+    | 'run.completed'
+    | 'run.failed'
+  summary: string
+  status: 'started' | 'waiting' | 'completed' | 'failed'
+  toolCallId?: string
+  data?: Record<string, unknown>
+  durationMs?: number
+  timestamp: string
+}
+
+export interface AgentEventSink {
+  emit(event: AgentActionEvent): Promise<void>
+}
+
 export interface ArtifactRepository {
   create<T>(input: ArtifactInput<T>): Artifact<T>
   createMany(inputs: readonly ArtifactInput[]): Artifact[]

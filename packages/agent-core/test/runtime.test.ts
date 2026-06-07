@@ -370,3 +370,42 @@ test('runtime persists tool artifacts, domain state patches, and diagnostics', a
   assert.ok(result.transcript.some(event => event.type === 'state'))
   assert.ok(result.transcript.some(event => event.type === 'diagnostic'))
 })
+
+test('runtime emits auditable action events without exposing sensitive tool input', async () => {
+  const events: Array<{ eventType: string; data?: Record<string, unknown> }> = []
+  const inspectTool: AgentTool = {
+    name: 'inspect_data',
+    description: 'Inspect data',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: 'Inspection completed' }
+    },
+  }
+  const model = new FakeModelAdapter([
+    {
+      content: '',
+      toolCalls: [{ id: '1', name: 'inspect_data', input: { path: 'lulc.tif', apiKey: 'secret' } }],
+    },
+    {
+      content: '',
+      toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Done', evidence: ['lulc.tif'] } }],
+    },
+  ])
+
+  await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([inspectTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    eventSink: { emit: async event => { events.push(event) } },
+  }).run('Inspect the data')
+
+  assert.deepEqual(
+    events.filter(event => event.eventType.startsWith('tool.')).map(event => event.eventType),
+    ['tool.started', 'tool.completed', 'tool.started', 'tool.completed'],
+  )
+  const input = events.find(event => event.eventType === 'tool.started')?.data?.input as Record<string, unknown>
+  assert.equal(input.apiKey, '[redacted]')
+  assert.equal(events.at(-1)?.eventType, 'run.completed')
+})

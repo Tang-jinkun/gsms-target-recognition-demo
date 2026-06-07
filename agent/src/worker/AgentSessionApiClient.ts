@@ -19,6 +19,14 @@ export interface PersistedConfirmation {
   payload: Record<string, unknown>
 }
 
+export interface PersistedAgentEvent {
+  id: number
+  session_id: string
+  type: string
+  data: Record<string, unknown>
+  created_at?: string
+}
+
 export class AgentSessionApiClient {
   readonly #baseUrl: string
 
@@ -54,6 +62,17 @@ export class AgentSessionApiClient {
     return this.#json(`/api/agent/sessions/${encodeURIComponent(sessionId)}/checkpoint`, {
       method: 'POST',
       body: JSON.stringify(payload),
+    })
+  }
+
+  appendEvent(
+    sessionId: string,
+    eventType: string,
+    data: Record<string, unknown>,
+  ): Promise<PersistedAgentEvent> {
+    return this.#json(`/api/agent/sessions/${encodeURIComponent(sessionId)}/events`, {
+      method: 'POST',
+      body: JSON.stringify({ event_type: eventType, data }),
     })
   }
 

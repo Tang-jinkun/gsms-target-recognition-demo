@@ -39,6 +39,7 @@ SSE without changing persisted event semantics.
 ```text
 GET  /api/agent/sessions?status=queued
 POST /api/agent/sessions/{id}/checkpoint
+POST /api/agent/sessions/{id}/events
 POST /api/agent/sessions/{id}/confirmations
 POST /api/agent/sessions/{id}/confirmations/{confirmation-id}/consume
 ```
@@ -50,6 +51,17 @@ The Worker uses checkpoints to persist:
 - serialized artifacts
 - assistant messages
 - failure details
+
+During a run, the Worker also appends auditable action events in real time. These
+events describe actions and outcomes without storing hidden model reasoning:
+
+- run start, pause, completion, and failure
+- selected tools and tool start/completion/failure
+- workflow state changes and created artifacts
+- diagnostics and detected tool-call loops
+
+Tool inputs are truncated and common secret fields are redacted before events
+leave the Agent runtime.
 
 Protected operations create a confirmation request instead of executing
 immediately. Approval moves the session back to `queued`, allowing a Worker to

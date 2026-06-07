@@ -7,6 +7,7 @@ import { ToolRegistry } from '../tools/ToolRegistry.ts'
 import { Transcript } from '../transcript/Transcript.ts'
 import type {
   AgentContext,
+  AgentActionEvent,
   AgentMessage,
   AgentRunResult,
   ArtifactRepository,
@@ -14,6 +15,7 @@ import type {
   DomainState,
   DomainStateRepository,
   GoalState,
+  AgentEventSink,
   ModelAdapter,
   ToolCall,
 } from '../types.ts'
@@ -29,6 +31,7 @@ export interface AgentRuntimeOptions {
   initialDomainState?: DomainState
   maxTurns?: number
   maxRepeatedToolCalls?: number
+  eventSink?: AgentEventSink
   signal?: AbortSignal
 }
 
@@ -40,6 +43,7 @@ export class AgentRuntime {
   }
 
   async run(objective: string): Promise<AgentRunResult> {
+    const runId = createRunId()
     const goal: GoalState = {
       objective,
       status: 'active',
@@ -66,6 +70,14 @@ export class AgentRuntime {
       signal: this.options.signal,
     }
     const toolCallHistory: string[] = []
+    await this.#emit({
+      runId,
+      turn: 0,
+      eventType: 'run.started',
+      summary: 'Agent run started',
+      status: 'started',
+      timestamp: new Date().toISOString(),
+    })
 
     while (goal.status === 'active' && goal.turnCount < goal.maxTurns) {
       this.options.signal?.throwIfAborted()
@@ -74,6 +86,20 @@ export class AgentRuntime {
         messages,
         tools: this.#visibleToolDefinitions(context),
         signal: this.options.signal,
+      })
+      await this.#emit({
+        runId,
+        turn: goal.turnCount,
+        eventType: 'model.responded',
+        summary: response.toolCalls?.length
+          ? `Model selected ${response.toolCalls.map(call => call.name).join(', ')}`
+          : 'Model responded without a tool call',
+        status: 'completed',
+        data: {
+          toolNames: response.toolCalls?.map(call => call.name) ?? [],
+          hasVisibleContent: Boolean(response.content.trim()),
+        },
+        timestamp: new Date().toISOString(),
       })
       const assistant: AgentMessage = {
         role: 'assistant',
@@ -106,6 +132,15 @@ export class AgentRuntime {
         }
         diagnostics.push(diagnostic)
         transcript.record('diagnostic', diagnostic)
+        await this.#emit({
+          runId,
+          turn: goal.turnCount,
+          eventType: 'loop.detected',
+          summary: diagnostic.message,
+          status: 'failed',
+          data: { code: diagnostic.code },
+          timestamp: new Date().toISOString(),
+        })
         goal.status = 'failed'
         goal.remainingIssues.push(diagnostic.message)
         break
@@ -114,7 +149,7 @@ export class AgentRuntime {
       const pendingHiddenMessages: AgentMessage[] = []
       for (const call of response.toolCalls) {
         pendingHiddenMessages.push(
-          ...(await this.#executeTool(call, context, messages, transcript, diagnostics)),
+          ...(await this.#executeTool(call, context, messages, transcript, diagnostics, runId)),
         )
         if (goal.status !== 'active') break
       }
@@ -139,7 +174,33 @@ export class AgentRuntime {
       }
       diagnostics.push(diagnostic)
       transcript.record('diagnostic', diagnostic)
+      await this.#emit({
+        runId,
+        turn: goal.turnCount,
+        eventType: 'diagnostic.created',
+        summary: diagnostic.message,
+        status: 'failed',
+        data: { code: diagnostic.code },
+        timestamp: new Date().toISOString(),
+      })
     }
+    await this.#emit({
+      runId,
+      turn: goal.turnCount,
+      summary:
+        goal.finalSummary ??
+        goal.remainingIssues.join('; ') ??
+        `Agent run ended with status ${goal.status}`,
+      eventType:
+        goal.status === 'completed'
+          ? 'run.completed'
+          : goal.status === 'blocked'
+            ? 'run.paused'
+            : 'run.failed',
+      status: goal.status === 'completed' ? 'completed' : goal.status === 'blocked' ? 'waiting' : 'failed',
+      data: { goalStatus: goal.status },
+      timestamp: new Date().toISOString(),
+    })
     transcript.record('goal', goal)
     return {
       goal,
@@ -173,11 +234,24 @@ export class AgentRuntime {
     messages: AgentMessage[],
     transcript: Transcript,
     diagnostics: Diagnostic[],
+    runId: string,
   ): Promise<AgentMessage[]> {
+    const startedAt = Date.now()
+    await this.#emit({
+      runId,
+      turn: context.goal.turnCount,
+      eventType: 'tool.started',
+      summary: `Started ${call.name}`,
+      status: 'started',
+      toolCallId: call.id,
+      data: { tool: call.name, input: sanitizeForEvent(call.input) },
+      timestamp: new Date().toISOString(),
+    })
     transcript.record('tool_call', call)
     const tool = this.options.tools.resolve(call.name)
     if (!tool) {
       this.#pushToolResult(messages, transcript, call, `Unknown tool: ${call.name}`, true)
+      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, `Unknown tool: ${call.name}`)
       return []
     }
 
@@ -193,10 +267,22 @@ export class AgentRuntime {
           `Permission deferred pending user confirmation: ${tool.name}`,
           true,
         )
+        await this.#emit({
+          runId,
+          turn: context.goal.turnCount,
+          eventType: 'tool.deferred',
+          summary: `Waiting for user confirmation before ${tool.name}`,
+          status: 'waiting',
+          toolCallId: call.id,
+          data: { tool: call.name },
+          durationMs: Date.now() - startedAt,
+          timestamp: new Date().toISOString(),
+        })
         return []
       }
       if (decision !== 'allow') {
       this.#pushToolResult(messages, transcript, call, `Permission denied: ${tool.name}`, true)
+      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, `Permission denied: ${tool.name}`)
       return []
     }
 
@@ -212,26 +298,70 @@ export class AgentRuntime {
       if (result.goalUpdate) Object.assign(context.goal, result.goalUpdate)
       if (result.artifacts?.length) {
         const created = context.artifacts.createMany(result.artifacts)
-        for (const artifact of created) transcript.record('artifact', artifact)
+        for (const artifact of created) {
+          transcript.record('artifact', artifact)
+          await this.#emit({
+            runId,
+            turn: context.goal.turnCount,
+            eventType: 'artifact.created',
+            summary: `Created ${artifact.type} artifact`,
+            status: 'completed',
+            data: { artifactId: artifact.id, artifactType: artifact.type },
+            timestamp: new Date().toISOString(),
+          })
+        }
       }
       if (result.statePatch) {
         const state = context.domainState.applyPatch(result.statePatch)
         transcript.record('state', { patch: result.statePatch, state })
+        await this.#emit({
+          runId,
+          turn: context.goal.turnCount,
+          eventType: 'state.changed',
+          summary: `Updated workflow state${typeof state.phase === 'string' ? ` to ${state.phase}` : ''}`,
+          status: 'completed',
+          data: { patch: sanitizeForEvent(result.statePatch) },
+          timestamp: new Date().toISOString(),
+        })
       }
       if (result.diagnostics?.length) {
         diagnostics.push(...result.diagnostics)
-        for (const diagnostic of result.diagnostics) transcript.record('diagnostic', diagnostic)
+        for (const diagnostic of result.diagnostics) {
+          transcript.record('diagnostic', diagnostic)
+          await this.#emit({
+            runId,
+            turn: context.goal.turnCount,
+            eventType: 'diagnostic.created',
+            summary: diagnostic.message,
+            status: diagnostic.severity === 'error' ? 'failed' : 'completed',
+            data: { code: diagnostic.code, severity: diagnostic.severity },
+            timestamp: new Date().toISOString(),
+          })
+        }
       }
       this.#pushToolResult(messages, transcript, call, result.content, false)
+      await this.#emit({
+        runId,
+        turn: context.goal.turnCount,
+        eventType: 'tool.completed',
+        summary: `Completed ${call.name}`,
+        status: 'completed',
+        toolCallId: call.id,
+        data: { tool: call.name },
+        durationMs: Date.now() - startedAt,
+        timestamp: new Date().toISOString(),
+      })
       return result.hiddenMessages ?? []
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
       this.#pushToolResult(
         messages,
         transcript,
         call,
-        error instanceof Error ? error.message : String(error),
+        message,
         true,
       )
+      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, message)
       return []
     }
   }
@@ -251,6 +381,34 @@ export class AgentRuntime {
     }
     messages.push(message)
     transcript.record('tool_result', message)
+  }
+
+  async #emit(event: AgentActionEvent): Promise<void> {
+    try {
+      await this.options.eventSink?.emit(event)
+    } catch {
+      // Observability must never prevent the Agent from completing its work.
+    }
+  }
+
+  #emitToolFailure(
+    runId: string,
+    turn: number,
+    call: ToolCall,
+    startedAt: number,
+    message: string,
+  ): Promise<void> {
+    return this.#emit({
+      runId,
+      turn,
+      eventType: 'tool.failed',
+      summary: `Failed ${call.name}: ${summarizeText(message)}`,
+      status: 'failed',
+      toolCallId: call.id,
+      data: { tool: call.name, error: summarizeText(message) },
+      durationMs: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+    })
   }
 }
 
@@ -291,4 +449,32 @@ function canonical(value: unknown): string {
       .join(',')}}`
   }
   return JSON.stringify(value)
+}
+
+function createRunId(): string {
+  return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function summarizeText(value: string, maxLength = 500): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact
+}
+
+function sanitizeForEvent(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '[truncated]'
+  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeForEvent(item, depth + 1))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 40)
+        .map(([key, item]) => [
+          key,
+          /api.?key|token|secret|password|authorization/i.test(key)
+            ? '[redacted]'
+            : sanitizeForEvent(item, depth + 1),
+        ]),
+    )
+  }
+  if (typeof value === 'string') return summarizeText(value, 1000)
+  return value
 }

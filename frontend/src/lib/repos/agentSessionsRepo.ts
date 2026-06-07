@@ -30,6 +30,21 @@ export type AgentConfirmation = {
   payload: Record<string, unknown>
 }
 
+export type AgentEvent = {
+  id: number
+  session_id: string
+  type: string
+  data: {
+    run_id?: string
+    turn?: number
+    summary?: string
+    status?: 'started' | 'waiting' | 'completed' | 'failed'
+    duration_ms?: number
+    [key: string]: unknown
+  }
+  created_at?: string | null
+}
+
 export const agentSessionsRepo = {
   list: (sceneId: string) =>
     api.get<AgentSession[]>(`/api/agent/sessions?scene_id=${encodeURIComponent(sceneId)}&limit=20`),
@@ -42,6 +57,11 @@ export const agentSessionsRepo = {
 
   messages: (sessionId: string) =>
     api.get<AgentMessage[]>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/messages`),
+
+  events: (sessionId: string, afterId = 0) =>
+    api.get<AgentEvent[]>(
+      `/api/agent/sessions/${encodeURIComponent(sessionId)}/events?after_id=${afterId}&limit=500`,
+    ),
 
   send: (sessionId: string, content: string) =>
     api.post<{ session: AgentSession; message: AgentMessage }>(

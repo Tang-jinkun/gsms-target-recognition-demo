@@ -21,12 +21,17 @@ function session(): PersistedAgentSession {
 
 test('worker claims a queued session and checkpoints a completed Agent run', async () => {
   const actions: string[] = []
+  const events: string[] = []
   const current = session()
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('status=queued')) return response([current])
     if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Assess carbon' }])
     if (url.endsWith('/confirmations')) return response([])
+    if (url.endsWith('/events') && init?.method === 'POST') {
+      events.push(JSON.parse(String(init.body)).event_type)
+      return response({ id: events.length, type: events.at(-1), data: {} }, 201)
+    }
     if (url.endsWith('/checkpoint')) {
       const body = JSON.parse(String(init?.body))
       actions.push(body.action)
@@ -54,6 +59,7 @@ test('worker claims a queued session and checkpoints a completed Agent run', asy
 
     assert.equal(await worker.runOnce(), true)
     assert.deepEqual(actions, ['start', 'complete'])
+    assert.deepEqual(events, ['run.started', 'model.responded', 'tool.started', 'tool.completed', 'run.completed'])
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

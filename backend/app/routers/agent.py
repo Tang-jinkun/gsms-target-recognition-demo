@@ -32,6 +32,21 @@ from app.models import (
 )
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+ACTION_EVENT_TYPES = {
+    "run.started",
+    "model.responded",
+    "tool.started",
+    "tool.completed",
+    "tool.deferred",
+    "tool.failed",
+    "state.changed",
+    "artifact.created",
+    "diagnostic.created",
+    "loop.detected",
+    "run.paused",
+    "run.completed",
+    "run.failed",
+}
 
 
 class SessionCreateIn(BaseModel):
@@ -59,6 +74,11 @@ class SessionCheckpointIn(BaseModel):
     artifacts: list | None = None
     assistant_message: str | None = Field(default=None, max_length=100_000)
     error: str | None = Field(default=None, max_length=20_000)
+
+
+class AgentEventCreateIn(BaseModel):
+    event_type: str = Field(min_length=1, max_length=50)
+    data: dict = Field(default_factory=dict)
 
 
 def _default_model_config(db: Session) -> dict:
@@ -261,6 +281,23 @@ def list_agent_events(
         .all()
     )
     return [_event_dict(event) for event in rows]
+
+
+@router.post("/sessions/{session_id}/events", status_code=201)
+def create_agent_event(
+    session_id: str,
+    body: AgentEventCreateIn,
+    db: Session = Depends(get_db),
+):
+    session = _require_session(session_id, db)
+    if session.status not in ("running", "awaiting_confirmation"):
+        raise HTTPException(status_code=409, detail="Agent session is not active.")
+    if body.event_type not in ACTION_EVENT_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported Agent action event type.")
+    event = _add_event(db, session.id, body.event_type, body.data)
+    db.commit()
+    db.refresh(event)
+    return _event_dict(event)
 
 
 @router.post("/sessions/{session_id}/confirmations", status_code=201)
