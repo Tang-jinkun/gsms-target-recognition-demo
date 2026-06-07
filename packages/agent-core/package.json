@@ -1,0 +1,26 @@
+{
+  "name": "@gsms/agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "clean-room-agent": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "test": "tsx --test test/artifacts.test.ts test/runtime.test.ts test/tools.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gsms/skills-core": "file:../skills-core",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

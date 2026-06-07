@@ -30,6 +30,8 @@ from app.routers import scene_files as scene_files_router
 from app.routers import jobs as scene_jobs_router
 from app.routers import skills as skills_router
 from app.routers import settings as settings_router
+from app.routers import matching as matching_router
+from app.routers import agent as agent_router
 from app.files_util import (
     infer_file_type as infer_asset_type,
     infer_file_format as infer_asset_format,
@@ -72,6 +74,8 @@ app.include_router(scene_files_router.router)
 app.include_router(scene_jobs_router.router)
 app.include_router(skills_router.router)
 app.include_router(settings_router.router)
+app.include_router(matching_router.router)
+app.include_router(agent_router.router)
 
 
 @app.on_event("startup")

@@ -11,6 +11,7 @@ import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
 import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
 import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
+import { agentSessionsRepo, type AgentConfirmation, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -38,6 +39,7 @@ const SEED_MODELS: WbModel[] = [
 
 const backendType = (uiType: AssetType): string => (uiType === 'vector' ? 'geojson' : uiType)
 const uiFromBackendAssetType = (bt?: string): AssetType => (bt === 'geojson' ? 'vector' : (bt as AssetType) || 'other')
+const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
 
 export default function WorkbenchPage() {
   const router = useRouter()
@@ -56,15 +58,19 @@ export default function WorkbenchPage() {
   const [fitNonce, setFitNonce] = React.useState(0)
 
   // chat
-  const [msgs, setMsgs] = React.useState<ChatMsg[]>([
+  const [prototypeMsgs] = React.useState<ChatMsg[]>([
     { role: 'user', html: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', att: [] },
     { role: 'agent', html: '当前项目包含 <code>landuse_2020.tif</code>（土地利用栅格）、<code>study_boundary.shp</code>（研究区边界）和 <code>carbon_pools.csv</code>（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', att: [] },
     { role: 'user', html: '好的，先把这份土地利用数据作为上下文。', att: ['landuse_2020.tif'] },
     { role: 'agent', html: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
   ])
+  const [msgs, setMsgs] = React.useState<ChatMsg[]>([])
   const [atts, setAtts] = React.useState<string[]>([])
   const [draft, setDraft] = React.useState('')
   const [streaming, setStreaming] = React.useState(false)
+  const [agentSession, setAgentSession] = React.useState<AgentSession | null>(null)
+  const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
+  const [agentError, setAgentError] = React.useState('')
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
   const [defaultModel, setDefaultModel] = React.useState<ModelCfg | undefined>(undefined)
@@ -106,6 +112,45 @@ export default function WorkbenchPage() {
     settingsRepo.defaultModel().then(model => { if (!cancelled) setDefaultModel(model) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
+
+  const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
+    const [current, messages, confirmations] = await Promise.all([
+      agentSessionsRepo.get(session.id),
+      agentSessionsRepo.messages(session.id),
+      agentSessionsRepo.confirmations(session.id),
+    ])
+    setAgentSession(current)
+    setStreaming(current.status === 'queued' || current.status === 'running')
+    setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
+    setMsgs(messages.map(message => ({
+      role: message.role === 'assistant' ? 'agent' : 'user',
+      html: escapeHtml(message.content).replace(/\n/g, '<br />'),
+      att: [],
+    })))
+    setAgentError(current.last_error ?? '')
+  }, [])
+
+  React.useEffect(() => {
+    if (!sceneId) return
+    let cancelled = false
+    let timer: number | undefined
+    const start = async () => {
+      try {
+        const sessions = await agentSessionsRepo.list(sceneId)
+        const session = sessions[0] ?? await agentSessionsRepo.create(sceneId, `${sceneName} Agent`)
+        if (cancelled) return
+        await refreshAgentSession(session)
+        timer = window.setInterval(() => refreshAgentSession(session).catch(() => {}), 1500)
+      } catch {
+        if (!cancelled) setAgentError('Agent session service is unavailable.')
+      }
+    }
+    start()
+    return () => {
+      cancelled = true
+      if (timer) window.clearInterval(timer)
+    }
+  }, [sceneId, refreshAgentSession])
 
   const refreshSceneFiles = React.useCallback(async () => {
     const next = await workbenchRepo.listFiles(sceneId || undefined)
@@ -174,9 +219,35 @@ export default function WorkbenchPage() {
   }
 
   /* ---- chat ---- */
-  const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
   function addAtt(name: string) { setAtts(prev => (prev.includes(name) ? prev : [...prev, name])); setAttOpen(false) }
-  function send() {
+  async function send() {
+    const text = draft.trim()
+    if (!text || streaming || !agentSession) return
+    const attachmentContext = atts.length ? `\n\nReferenced scene files: ${atts.join(', ')}` : ''
+    try {
+      setDraft(''); setAtts([])
+      setStreaming(true)
+      setAgentError('')
+      const result = await agentSessionsRepo.send(agentSession.id, text + attachmentContext)
+      await refreshAgentSession(result.session)
+    } catch {
+      setStreaming(false)
+      setAgentError('Could not send the message. The session may still be busy.')
+    }
+  }
+
+  async function resolveAgentConfirmation(approved: boolean) {
+    if (!agentSession || !pendingConfirmation) return
+    try {
+      const result = await agentSessionsRepo.resolveConfirmation(agentSession.id, pendingConfirmation.id, approved)
+      setPendingConfirmation(null)
+      await refreshAgentSession(result.session)
+    } catch {
+      setAgentError('Could not resolve the Agent confirmation.')
+    }
+  }
+
+  function sendPrototype() {
     const text = draft.trim()
     if (!text || streaming) return
     const userMsg: ChatMsg = { role: 'user', html: escapeHtml(text), att: atts.slice() }
@@ -456,6 +527,15 @@ export default function WorkbenchPage() {
                 <div className="chat-scroll" ref={chatScrollRef}><ChatList pad="0 24px" /></div>
                 <div className="composer">
                   <div className="composer-inner">
+                    {agentSession && <div className="meta agent-status">Agent session: {agentSession.status}</div>}
+                    {pendingConfirmation && (
+                      <div className="agent-confirm">
+                        <div><b>Agent confirmation required</b><p>{pendingConfirmation.prompt}</p></div>
+                        <button className="btn btn-sm" onClick={() => resolveAgentConfirmation(false)}>Reject</button>
+                        <button className="btn btn-sm btn-primary" onClick={() => resolveAgentConfirmation(true)}>Approve</button>
+                      </div>
+                    )}
+                    {agentError && <div className="meta agent-error">{agentError}</div>}
                     {atts.length > 0 && (
                       <div className="att-strip">
                         {atts.map(a => <span className="att-chip" key={a}><Icon name="paperclip" cls="ic-sm" />{a}<button aria-label="移除" onClick={() => setAtts(prev => prev.filter(x => x !== a))}><Icon name="x" cls="ic-sm" /></button></span>)}
@@ -660,6 +740,11 @@ export default function WorkbenchPage() {
         @keyframes blink { 50% { opacity: 0; } }
         .composer { flex: none; padding: 0 24px 18px; }
         .composer-inner { max-width: 760px; margin: 0 auto; }
+        .agent-status { margin-bottom: 7px; text-align: right; }
+        .agent-confirm { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding: 10px 11px; border: 1px solid var(--warn); border-radius: var(--r); background: var(--warn-soft); color: var(--fg); }
+        .agent-confirm div { flex: 1; min-width: 0; font-size: 12.5px; }
+        .agent-confirm p { margin: 3px 0 0; color: var(--muted); }
+        .agent-error { margin-bottom: 8px; color: var(--danger); }
         .att-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
         .att-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px 0 9px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; font-size: 12px; font-family: var(--mono); color: var(--fg); }
         .att-chip button { border: 0; background: transparent; color: var(--faint); cursor: pointer; display: grid; place-items: center; padding: 2px; border-radius: 4px; }

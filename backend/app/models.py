@@ -29,6 +29,16 @@ class Scene(Base):
 
     imports: Mapped[list["SceneImport"]] = relationship("SceneImport", back_populates="scene", cascade="all, delete-orphan")
     jobs: Mapped[list["Job"]] = relationship("Job", back_populates="scene", cascade="all, delete-orphan")
+    validation_snapshots: Mapped[list["ValidationSnapshot"]] = relationship(
+        "ValidationSnapshot",
+        back_populates="scene",
+        cascade="all, delete-orphan",
+    )
+    agent_sessions: Mapped[list["AgentSession"]] = relationship(
+        "AgentSession",
+        back_populates="scene",
+        cascade="all, delete-orphan",
+    )
 
 
 class DataFolder(Base):
@@ -111,9 +121,44 @@ class Job(Base):
     outputs_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    source_snapshot_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("validation_snapshots.id", ondelete="RESTRICT"),
+        unique=True,
+    )
 
     scene: Mapped["Scene"] = relationship("Scene", back_populates="jobs")
     outputs: Mapped[list["JobOutput"]] = relationship("JobOutput", back_populates="job", cascade="all, delete-orphan")
+    source_snapshot: Mapped["ValidationSnapshot | None"] = relationship(
+        "ValidationSnapshot",
+        back_populates="job",
+    )
+
+
+class ValidationSnapshot(Base):
+    __tablename__ = "validation_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scene_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("scenes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    model_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    can_proceed: Mapped[bool] = mapped_column(Boolean, default=False)
+    inputs: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    binding_report: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    validation: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    asset_fingerprints: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    scene: Mapped["Scene"] = relationship("Scene", back_populates="validation_snapshots")
+    job: Mapped["Job | None"] = relationship("Job", back_populates="source_snapshot", uselist=False)
 
 
 class JobOutput(Base):
@@ -166,3 +211,95 @@ class LlmProvider(Base):
     status: Mapped[str] = mapped_column(String(20), default="untested")  # connected/untested/failed
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    scene_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("scenes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(32), default="idle", index=True)
+    domain_state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    artifacts: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    model_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    scene: Mapped["Scene"] = relationship("Scene", back_populates="agent_sessions")
+    messages: Mapped[list["AgentMessage"]] = relationship(
+        "AgentMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    events: Mapped[list["AgentEvent"]] = relationship(
+        "AgentEvent",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    confirmations: Mapped[list["AgentConfirmation"]] = relationship(
+        "AgentConfirmation",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    session: Mapped["AgentSession"] = relationship("AgentSession", back_populates="messages")
+
+
+class AgentEvent(Base):
+    __tablename__ = "agent_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    session: Mapped["AgentSession"] = relationship("AgentSession", back_populates="events")
+
+
+class AgentConfirmation(Base):
+    __tablename__ = "agent_confirmations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    session: Mapped["AgentSession"] = relationship("AgentSession", back_populates="confirmations")

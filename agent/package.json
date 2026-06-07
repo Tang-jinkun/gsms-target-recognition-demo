@@ -1,0 +1,28 @@
+{
+  "name": "@gsms/invest-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "invest-agent": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "worker": "tsx src/worker.ts",
+    "test": "tsx --test test/carbon-matching.test.ts test/workspace.test.ts test/agent-workflow.test.ts test/gsms-client.test.ts test/report.test.ts test/cli.test.ts test/worker.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gsms/agent-core": "file:../packages/agent-core",
+    "@gsms/skills-core": "file:../packages/skills-core",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app import files_util
 from app.db import get_db
+from app.job_inputs import freeze_snapshot_inputs
 from app.models import DataFile, DataFolder, Job, JobOutput, Scene, SceneImport
 from app.storage import project_files_dir, scene_job_dir
 
@@ -29,6 +30,98 @@ class JobCreateIn(BaseModel):
     model_id: str | None = None
     run_mode: str = "auto"
     inputs: dict = Field(default_factory=dict)
+
+
+def create_scene_job_record(
+    scene_id: str,
+    model_id: str,
+    inputs: dict,
+    run_mode: str,
+    db: Session,
+    source_snapshot_id: str | None = None,
+    asset_fingerprints: dict | None = None,
+) -> dict:
+    job_id = uuid.uuid4().hex
+    job_dir = _job_dir(scene_id, job_id)
+    frozen_inputs = inputs
+    assets_dir = project_files_dir()
+    manifest = None
+    if source_snapshot_id:
+        try:
+            frozen_inputs, manifest = freeze_snapshot_inputs(
+                job_dir,
+                project_files_dir(),
+                inputs,
+                asset_fingerprints or {},
+            )
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        assets_dir = job_dir / "inputs"
+    job = Job(
+        id=job_id,
+        scene_id=scene_id,
+        model_id=model_id,
+        run_mode=run_mode or "auto",
+        status="running",
+        inputs=frozen_inputs,
+        results_suffix=frozen_inputs.get("results_suffix"),
+        source_snapshot_id=source_snapshot_id,
+    )
+    payload = {
+        "modelId": model_id,
+        "run_mode": job.run_mode,
+        "inputs": frozen_inputs,
+        "scene_id": scene_id,
+    }
+    if source_snapshot_id:
+        payload["source_snapshot_id"] = source_snapshot_id
+        manifest.update({
+            "source_snapshot_id": source_snapshot_id,
+            "scene_id": scene_id,
+            "model_id": model_id,
+            "inputs": frozen_inputs,
+        })
+    try:
+        (job_dir / "job.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        if manifest:
+            (job_dir / "input-manifest.json").write_text(
+                json.dumps(manifest, indent=2),
+                encoding="utf-8",
+            )
+        (job_dir / "run.log").write_text("Job created\n", encoding="utf-8")
+        db.add(job)
+        db.commit()
+    except Exception:
+        db.rollback()
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+    runner = Path(__file__).resolve().parents[2] / "run_job.py"
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(runner),
+                "--job-id",
+                job_id,
+                "--scene-id",
+                scene_id,
+                "--job-dir",
+                str(job_dir),
+                "--assets-dir",
+                str(assets_dir),
+            ],
+            cwd=str(runner.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except Exception:
+        job.status = "failed"
+        job.completed_at = datetime.utcnow()
+        db.commit()
+        raise
+    return {"job_id": job_id, "status": "running", "scene_id": scene_id, "job_dir": str(job_dir)}
 
 
 def _require_scene(scene_id: str, db: Session) -> Scene:
@@ -238,45 +331,9 @@ def _job_dict(scene_id: str, job: Job) -> dict:
 @router.post("/{scene_id}/jobs", status_code=201)
 def create_scene_job(scene_id: str, body: JobCreateIn, db: Session = Depends(get_db)):
     _require_scene(scene_id, db)
-    job_id = uuid.uuid4().hex
     model_id = body.model_id or body.modelId or "carbon"
     inputs = _normalize_inputs(scene_id, body.inputs, db)
-    job = Job(
-        id=job_id,
-        scene_id=scene_id,
-        model_id=model_id,
-        run_mode=body.run_mode or "auto",
-        status="running",
-        inputs=inputs,
-        results_suffix=inputs.get("results_suffix"),
-    )
-    db.add(job)
-    db.commit()
-
-    job_dir = _job_dir(scene_id, job_id)
-    payload = {"modelId": model_id, "run_mode": job.run_mode, "inputs": inputs, "scene_id": scene_id}
-    (job_dir / "job.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    (job_dir / "run.log").write_text("Job created\n", encoding="utf-8")
-    runner = Path(__file__).resolve().parents[2] / "run_job.py"
-    subprocess.Popen(
-        [
-            sys.executable,
-            str(runner),
-            "--job-id",
-            job_id,
-            "--scene-id",
-            scene_id,
-            "--job-dir",
-            str(job_dir),
-            "--assets-dir",
-            str(project_files_dir()),
-        ],
-        cwd=str(runner.parent),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
-    return {"job_id": job_id, "status": "running", "scene_id": scene_id, "job_dir": str(job_dir)}
+    return create_scene_job_record(scene_id, model_id, inputs, body.run_mode, db)
 
 
 @router.get("/{scene_id}/jobs")

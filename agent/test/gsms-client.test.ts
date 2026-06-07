@@ -1,0 +1,316 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { ArtifactStore, DomainStateStore, type AgentContext, type GoalState } from '@gsms/agent-core'
+import { GsmsClient, createGsmsTools } from '../src/index.ts'
+import { gsmsCarbonSchema } from './fixtures.ts'
+
+function context(): AgentContext {
+  const goal: GoalState = {
+    objective: 'match data',
+    status: 'active',
+    turnCount: 1,
+    maxTurns: 5,
+    evidence: [],
+    remainingIssues: [],
+    startedAt: new Date().toISOString(),
+  }
+  return {
+    workspace: process.cwd(),
+    goal,
+    artifacts: new ArtifactStore(),
+    domainState: new DomainStateStore(),
+  }
+}
+
+test('GSMS tools use backend schemas and data cards as authoritative artifacts', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = []
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    requests.push({ url, init })
+    const payload = url.endsWith('/schema')
+      ? gsmsCarbonSchema
+      : {
+          scene_id: 'scene-1',
+          data_cards: [
+            {
+              asset_id: 'lulc-1',
+              path: 'lulc.tif',
+              filename: 'lulc.tif',
+              asset_type: 'raster',
+              semantic_hints: ['current land cover'],
+              metadata: { band_count: 1, width: 10, height: 10 },
+              provenance: { size: 100 },
+            },
+          ],
+          diagnostics: [],
+        }
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const client = new GsmsClient({ baseUrl: 'http://localhost:8000/', fetch })
+  const tools = createGsmsTools(client)
+  const ctx = context()
+
+  const schemaResult = await tools
+    .find(tool => tool.name === 'get_invest_model_schema')!
+    .execute({ modelId: 'carbon' }, ctx)
+  const cardsResult = await tools
+    .find(tool => tool.name === 'list_scene_data_cards')!
+    .execute({ sceneId: 'scene-1' }, ctx)
+
+  assert.equal(requests[0]?.url, 'http://localhost:8000/api/models/carbon/schema')
+  assert.equal(requests[1]?.url, 'http://localhost:8000/api/scenes/scene-1/data-cards')
+  assert.equal(schemaResult.artifacts?.[0]?.type, 'gsms-model-schema')
+  assert.equal(schemaResult.artifacts?.[1]?.type, 'model-input-schema')
+  assert.equal(
+    (schemaResult.artifacts?.[1]?.data as { version: string }).version,
+    '3.19.0',
+  )
+  assert.equal(cardsResult.artifacts?.[0]?.type, 'gsms-scene-data-cards')
+  assert.equal(cardsResult.artifacts?.[1]?.type, 'data-card')
+})
+
+test('GSMS relation tool sends a structured relation request', async () => {
+  let body = ''
+  const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    body = String(init?.body)
+    return new Response(JSON.stringify({
+      id: 'code-coverage:lulc-1:pools-1:lucode',
+      kind: 'code-coverage',
+      left_asset_id: 'lulc-1',
+      right_asset_id: 'pools-1',
+      status: 'passed',
+      facts: ['Coverage passed'],
+      missing_values: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'check_data_relation',
+  )!
+  await tool.execute(
+    {
+      kind: 'code-coverage',
+      leftAssetId: 'lulc-1',
+      rightAssetId: 'pools-1',
+      field: 'lucode',
+    },
+    context(),
+  )
+
+  assert.deepEqual(JSON.parse(body), {
+    kind: 'code-coverage',
+    left_asset_id: 'lulc-1',
+    right_asset_id: 'pools-1',
+    field: 'lucode',
+  })
+})
+
+test('adapts Habitat Quality asset inputs without model-specific Agent code', async () => {
+  const fetch = async () =>
+    new Response(
+      JSON.stringify({
+        id: 'habitat_quality',
+        name: 'Habitat Quality',
+        inputs: [
+          {
+            id: 'threats_table_asset_id',
+            invest_arg: 'threats_table_path',
+            label: 'Threats table',
+            kind: 'asset',
+            asset_type: 'table',
+            required: true,
+            required_fields: ['threat', 'max_dist', 'weight', 'decay', 'cur_path'],
+          },
+        ],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'get_invest_model_schema',
+  )!
+  const result = await tool.execute({ modelId: 'habitat_quality' }, context())
+  const adapted = result.artifacts?.find(artifact => artifact.type === 'model-input-schema')?.data as {
+    slots: Array<{ name: string; requiredFields: string[] }>
+  }
+
+  assert.equal(adapted.slots[0]?.name, 'threats_table_path')
+  assert.deepEqual(adapted.slots[0]?.requiredFields, [
+    'threat',
+    'max_dist',
+    'weight',
+    'decay',
+    'cur_path',
+  ])
+})
+
+test('validation tool submits the persisted Binding Report and exposes failed validation', async () => {
+  let requestBody = ''
+  const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = String(init?.body)
+    return new Response(
+      JSON.stringify({
+        can_proceed: false,
+        snapshot_id: 'failed-snapshot',
+        validation: {
+          status: 'error',
+          errors: ['Carbon pools CSV is missing required columns'],
+          warnings: [],
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  }
+  const ctx = context()
+  ctx.artifacts.create({
+    type: 'binding-report',
+    createdBy: 'agent',
+    data: { taskSpecId: 'task-1' },
+  })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'validate_binding_report',
+  )!
+  const result = await tool.execute(
+    { modelId: 'carbon', sceneId: 'scene-1', parameters: { calc_sequestration: false } },
+    ctx,
+  )
+
+  const sent = JSON.parse(requestBody)
+  assert.deepEqual(sent.binding_report, { taskSpecId: 'task-1' })
+  assert.equal(result.statePatch?.phase, 'validation-failed')
+  assert.equal(result.artifacts?.[0]?.type, 'validation-report')
+  assert.equal(result.diagnostics?.[0]?.severity, 'error')
+})
+
+test('execution tool refuses an unconfirmed validation snapshot before calling GSMS', async () => {
+  let called = false
+  const fetch = async () => {
+    called = true
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  const ctx = context()
+  ctx.domainState.applyPatch({
+    phase: 'awaiting-user-confirmation',
+    validationSnapshotId: 'snapshot-1',
+    validationStatus: 'passed',
+  })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'execute_validated_snapshot',
+  )!
+
+  await assert.rejects(
+    tool.execute({ snapshotId: 'snapshot-1', runMode: 'real' }, ctx),
+    /has not been confirmed/,
+  )
+  assert.equal(called, false)
+})
+
+test('confirmation and execution tools use the exact current snapshot', async () => {
+  const requests: string[] = []
+  const fetch = async (input: string | URL | Request) => {
+    requests.push(String(input))
+    const payload = String(input).endsWith('/confirm')
+      ? { snapshot_id: 'snapshot-1', status: 'confirmed' }
+      : { job_id: 'job-1', status: 'running' }
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tools = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch }))
+  const ctx = context()
+  ctx.domainState.applyPatch({
+    phase: 'awaiting-user-confirmation',
+    validationSnapshotId: 'snapshot-1',
+  })
+  const confirmation = await tools
+    .find(candidate => candidate.name === 'confirm_validation_snapshot')!
+    .execute({ snapshotId: 'snapshot-1', confirmed: true }, ctx)
+  ctx.domainState.applyPatch(confirmation.statePatch ?? {})
+  const execution = await tools
+    .find(candidate => candidate.name === 'execute_validated_snapshot')!
+    .execute({ snapshotId: 'snapshot-1', runMode: 'real' }, ctx)
+
+  assert.match(requests[0]!, /validation-snapshots\/snapshot-1\/confirm$/)
+  assert.match(requests[1]!, /validation-snapshots\/snapshot-1\/jobs$/)
+  assert.equal(execution.statePatch?.jobId, 'job-1')
+})
+
+test('job status, outputs, and interpretation tools enforce the current job workflow', async () => {
+  const requests: string[] = []
+  const fetch = async (input: string | URL | Request) => {
+    const url = String(input)
+    requests.push(url)
+    if (url.endsWith('/outputs')) {
+      return new Response(JSON.stringify([{ name: 'result.tif', type: 'raster' }]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (url.endsWith('/logs')) {
+      return new Response('=== job runner finished ===', { status: 200 })
+    }
+    return new Response(JSON.stringify({ job_id: 'job-1', status: 'succeeded' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tools = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch }))
+  const ctx = context()
+  ctx.domainState.applyPatch({
+    phase: 'job-running',
+    sceneId: 'scene-1',
+    jobId: 'job-1',
+    modelId: 'carbon',
+  })
+
+  const status = await tools
+    .find(candidate => candidate.name === 'get_invest_job_status')!
+    .execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx)
+  ctx.artifacts.createMany(status.artifacts ?? [])
+  ctx.domainState.applyPatch(status.statePatch ?? {})
+  const outputs = await tools
+    .find(candidate => candidate.name === 'inspect_invest_job_outputs')!
+    .execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx)
+  ctx.artifacts.createMany(outputs.artifacts ?? [])
+  ctx.domainState.applyPatch(outputs.statePatch ?? {})
+  const interpretation = await tools
+    .find(candidate => candidate.name === 'interpret_invest_results')!
+    .execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx)
+
+  assert.equal(status.statePatch?.phase, 'job-succeeded')
+  assert.equal(outputs.statePatch?.phase, 'outputs-inspected')
+  assert.equal(interpretation.statePatch?.phase, 'results-ready-for-interpretation')
+  assert.equal(interpretation.artifacts?.[0]?.type, 'result-interpretation-context')
+  assert.match(requests[0]!, /scenes\/scene-1\/jobs\/job-1$/)
+  assert.match(requests[1]!, /scenes\/scene-1\/jobs\/job-1\/outputs$/)
+  assert.match(requests[2]!, /scenes\/scene-1\/jobs\/job-1\/logs$/)
+})
+
+test('output inspection refuses a running job without calling GSMS', async () => {
+  let called = false
+  const fetch = async () => {
+    called = true
+    return new Response('[]', { status: 200 })
+  }
+  const ctx = context()
+  ctx.domainState.applyPatch({
+    phase: 'job-running',
+    sceneId: 'scene-1',
+    jobId: 'job-1',
+    jobStatus: 'running',
+  })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'inspect_invest_job_outputs',
+  )!
+
+  await assert.rejects(
+    tool.execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx),
+    /only after the current job succeeds/,
+  )
+  assert.equal(called, false)
+})

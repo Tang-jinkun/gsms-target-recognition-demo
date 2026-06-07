@@ -26,6 +26,7 @@ REQUIRED_CARBON_COLUMNS = {"lucode", "c_above", "c_below", "c_soil", "c_dead"}
 
 MODEL_SCHEMA = {
     "id": "carbon",
+    "invest_version": "3.19.0",
     "name": "Carbon Storage and Sequestration",
     "family": "Terrestrial",
     "description": "Estimate carbon storage from a baseline LULC raster and carbon pools table. The runner uses natcap.invest when installed and falls back to explicit development stub outputs in auto mode.",
@@ -41,6 +42,7 @@ MODEL_SCHEMA = {
             "asset_type": "raster",
             "group": "Required inputs",
             "required": True,
+            "semantic_terms": ["lulc", "land cover", "land use", "baseline", "current"],
         },
         {
             "id": "carbon_pools_asset_id",
@@ -51,6 +53,8 @@ MODEL_SCHEMA = {
             "asset_type": "table",
             "group": "Required inputs",
             "required": True,
+            "semantic_terms": ["carbon pools", "carbon", "pool", "biomass"],
+            "required_fields": ["lucode", "c_above", "c_below", "c_soil", "c_dead"],
         },
         {
             "id": "calc_sequestration",
@@ -72,6 +76,7 @@ MODEL_SCHEMA = {
             "group": "Scenario analysis",
             "required_if": "calc_sequestration",
             "allowed_if": "calc_sequestration",
+            "semantic_terms": ["lulc", "land cover", "land use", "alternate", "future", "scenario"],
         },
         {
             "id": "do_valuation",
@@ -162,6 +167,20 @@ MODEL_SCHEMA = {
             "required": False,
             "default": -1,
             "hidden": True,
+        },
+    ],
+    "matching_relations": [
+        {
+            "kind": "code-coverage",
+            "left_slot": "lulc_bas_path",
+            "right_slot": "carbon_pools_path",
+            "field": "lucode",
+        },
+        {
+            "kind": "code-coverage",
+            "left_slot": "lulc_alt_path",
+            "right_slot": "carbon_pools_path",
+            "field": "lucode",
         },
     ],
     "outputs": [

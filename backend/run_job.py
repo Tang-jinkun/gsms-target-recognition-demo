@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+from app.job_inputs import verify_input_manifest
 from invest_models.registry import run_model_job
 
 
@@ -53,6 +54,13 @@ def main() -> int:
                 log(handle, f"scene: {args.scene_id}")
             log(handle, f"model: {model_id}")
             log(handle, f"run mode: {run_mode}")
+            manifest_path = job_dir / "input-manifest.json"
+            if manifest_path.exists():
+                verify_input_manifest(
+                    json.loads(manifest_path.read_text(encoding="utf-8")),
+                    assets_dir,
+                )
+                log(handle, "verified immutable input manifest")
             run_model_job(
                 model_id=model_id,
                 job_id=args.job_id,

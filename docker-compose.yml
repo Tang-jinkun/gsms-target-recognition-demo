@@ -27,6 +27,7 @@ services:
     environment:
       DATABASE_URL: "postgresql+psycopg2://gsms:gsms@db:5432/gsms"
       FERNET_KEY: ""
+      GSMS_AGENT_PROXY_TOKEN: "${GSMS_AGENT_PROXY_TOKEN:-}"
     depends_on:
       db:
         condition: service_healthy

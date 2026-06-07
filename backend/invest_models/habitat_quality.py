@@ -21,6 +21,7 @@ REQUIRED_SENSITIVITY_COLUMNS = {"lucode", "habitat"}
 
 MODEL_SCHEMA = {
     "id": "habitat_quality",
+    "invest_version": "3.19.0",
     "name": "Habitat Quality",
     "family": "Terrestrial",
     "description": "Schema-first registration for InVEST Habitat Quality. This supports workbench parameter binding and input checks; the real runner is intentionally not wired yet.",
@@ -36,6 +37,7 @@ MODEL_SCHEMA = {
             "asset_type": "raster",
             "group": "Required inputs",
             "required": True,
+            "semantic_terms": ["lulc", "land cover", "land use", "current"],
         },
         {
             "id": "threats_table_asset_id",
@@ -46,6 +48,8 @@ MODEL_SCHEMA = {
             "asset_type": "table",
             "group": "Required inputs",
             "required": True,
+            "semantic_terms": ["threats", "threat table", "pressure"],
+            "required_fields": ["threat", "max_dist", "weight", "decay", "cur_path"],
         },
         {
             "id": "sensitivity_table_asset_id",
@@ -56,6 +60,8 @@ MODEL_SCHEMA = {
             "asset_type": "table",
             "group": "Required inputs",
             "required": True,
+            "semantic_terms": ["sensitivity", "habitat sensitivity", "habitat"],
+            "required_fields": ["lucode", "habitat"],
         },
         {
             "id": "half_saturation_constant",
@@ -87,6 +93,7 @@ MODEL_SCHEMA = {
             "group": "Scenario inputs",
             "required_if": "include_future",
             "allowed_if": "include_future",
+            "semantic_terms": ["lulc", "land cover", "future", "scenario"],
         },
         {
             "id": "include_baseline",
@@ -107,6 +114,7 @@ MODEL_SCHEMA = {
             "group": "Scenario inputs",
             "required_if": "include_baseline",
             "allowed_if": "include_baseline",
+            "semantic_terms": ["lulc", "land cover", "baseline"],
         },
         {
             "id": "access_vector_asset_id",
@@ -138,6 +146,26 @@ MODEL_SCHEMA = {
             "required": False,
             "default": -1,
             "hidden": True,
+        },
+    ],
+    "matching_relations": [
+        {
+            "kind": "code-coverage",
+            "left_slot": "lulc_cur_path",
+            "right_slot": "sensitivity_table_path",
+            "field": "lucode",
+        },
+        {
+            "kind": "code-coverage",
+            "left_slot": "lulc_fut_path",
+            "right_slot": "sensitivity_table_path",
+            "field": "lucode",
+        },
+        {
+            "kind": "code-coverage",
+            "left_slot": "lulc_bas_path",
+            "right_slot": "sensitivity_table_path",
+            "field": "lucode",
         },
     ],
     "outputs": [
