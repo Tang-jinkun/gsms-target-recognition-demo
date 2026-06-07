@@ -254,12 +254,35 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           facts: source.facts ?? [],
           missingValues: source.missing_values,
         })
+        const relationArtifactId = `relation-check:${modelId}:${check.id}`
+        const existing = context.artifacts.get(relationArtifactId)
+        if (existing) {
+          const existingCheck = relationCheckSchema.parse(existing.data)
+          if (canonical(existingCheck) !== canonical(check)) {
+            throw new Error(
+              `Relation check result changed for ${check.id}; rebuild the binding evidence before proceeding`,
+            )
+          }
+          return {
+            content: JSON.stringify({
+              ...(result as Record<string, unknown>),
+              evidence_reused: true,
+              evidence_artifact_id: relationArtifactId,
+            }),
+            hiddenMessages: [{
+              role: 'user',
+              hidden: true,
+              content:
+                `The relation was freshly checked and matches persisted evidence "${relationArtifactId}". Treat status "${check.status}" as current; do not call check_data_relation again for the same assets.`,
+            }],
+          }
+        }
         return {
           content: JSON.stringify(result),
           artifacts: [
             { type: 'gsms-relation-check', createdBy: 'tool', data: result },
             {
-              id: `relation-check:${modelId}:${check.id}`,
+              id: relationArtifactId,
               type: 'relation-check',
               createdBy: 'tool',
               data: check,
@@ -563,4 +586,15 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       },
     },
   ]
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
 }

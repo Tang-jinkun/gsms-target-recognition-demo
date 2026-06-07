@@ -112,6 +112,80 @@ test('GSMS relation tool sends a structured relation request', async () => {
   })
 })
 
+test('GSMS relation tool reuses identical persisted evidence without creating duplicates', async () => {
+  let calls = 0
+  const fetch = async () => {
+    calls++
+    return new Response(JSON.stringify({
+      id: 'code-coverage:lulc-1:pools-1:lucode',
+      kind: 'code-coverage',
+      left_asset_id: 'lulc-1',
+      right_asset_id: 'pools-1',
+      status: 'passed',
+      facts: ['Coverage passed'],
+      missing_values: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'check_data_relation',
+  )!
+  const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'carbon' })
+
+  const first = await tool.execute(
+    { kind: 'code-coverage', leftAssetId: 'lulc-1', rightAssetId: 'pools-1', field: 'lucode' },
+    ctx,
+  )
+  ctx.artifacts.createMany(first.artifacts ?? [])
+  const second = await tool.execute(
+    { kind: 'code-coverage', leftAssetId: 'lulc-1', rightAssetId: 'pools-1', field: 'lucode' },
+    ctx,
+  )
+
+  assert.equal(calls, 2, 'the relation must still be freshly checked')
+  assert.equal(second.artifacts, undefined)
+  assert.equal(JSON.parse(second.content).evidence_reused, true)
+  assert.match(second.hiddenMessages?.[0]?.content ?? '', /do not call check_data_relation again/)
+  assert.equal(ctx.artifacts.list('relation-check').length, 1)
+})
+
+test('GSMS relation tool rejects changed results that conflict with persisted evidence', async () => {
+  let calls = 0
+  const fetch = async () => {
+    calls++
+    return new Response(JSON.stringify({
+      id: 'code-coverage:lulc-1:pools-1:lucode',
+      kind: 'code-coverage',
+      left_asset_id: 'lulc-1',
+      right_asset_id: 'pools-1',
+      status: calls === 1 ? 'passed' : 'failed',
+      facts: [calls === 1 ? 'Coverage passed' : 'Coverage failed'],
+      missing_values: calls === 1 ? [] : [9],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'check_data_relation',
+  )!
+  const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'carbon' })
+  const input = {
+    kind: 'code-coverage',
+    leftAssetId: 'lulc-1',
+    rightAssetId: 'pools-1',
+    field: 'lucode',
+  }
+  const first = await tool.execute(input, ctx)
+  ctx.artifacts.createMany(first.artifacts ?? [])
+
+  await assert.rejects(tool.execute(input, ctx), /result changed.*rebuild the binding evidence/)
+})
+
 test('adapts Habitat Quality asset inputs without model-specific Agent code', async () => {
   const fetch = async () =>
     new Response(
