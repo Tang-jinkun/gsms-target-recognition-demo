@@ -19,7 +19,15 @@ from app import files_util
 from app.db import get_db
 from app.job_inputs import freeze_snapshot_inputs
 from app.models import DataFile, DataFolder, Job, JobOutput, Scene, SceneImport
+from app.result_analysis import (
+    analyze_job_outputs,
+    file_sha256,
+    fingerprints_unchanged,
+    load_analysis,
+    save_analysis,
+)
 from app.storage import project_files_dir, scene_job_dir
+from invest_models.registry import get_model_schema
 
 router = APIRouter(prefix="/api/scenes", tags=["scene-jobs"])
 UNCATEGORIZED_FOLDER_ID = "uncategorized"
@@ -406,3 +414,75 @@ def scene_job_output_preview(scene_id: str, job_id: str, filename: str, request:
         return FileResponse(str(preview), media_type="image/png")
     files_util.generate_raster_preview(output_path, preview, max_size=max_size)
     return FileResponse(str(preview), media_type="image/png")
+
+
+# ---------------------------------------------------------------------------
+# Result Analysis
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{scene_id}/jobs/{job_id}/analyze-results")
+def analyze_job_results(scene_id: str, job_id: str, db: Session = Depends(get_db)):
+    """Deterministically analyze raster outputs of a completed job.
+
+    Reuses cached analysis if output fingerprints have not changed.
+    """
+    _require_scene(scene_id, db)
+    job = db.get(Job, job_id)
+    if not job or job.scene_id != scene_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "succeeded":
+        raise HTTPException(status_code=400, detail="Job has not succeeded; cannot analyze results")
+
+    job_dir = _job_dir(scene_id, job_id)
+    outputs_dir = job_dir / "outputs"
+    if not outputs_dir.exists():
+        raise HTTPException(status_code=404, detail="Job outputs directory not found")
+
+    model_schema = get_model_schema(job.model_id)
+    if not model_schema:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {job.model_id}")
+
+    # Build current fingerprints for all tif files
+    tif_files = sorted(
+        p for p in outputs_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in {".tif", ".tiff"}
+    )
+    if not tif_files:
+        raise HTTPException(status_code=400, detail="No raster outputs found to analyze")
+
+    current_fingerprints = {p.name: file_sha256(p) for p in tif_files}
+
+    # Reuse cached analysis if fingerprints match
+    if fingerprints_unchanged(job_dir, current_fingerprints):
+        cached = load_analysis(job_dir)
+        return cached
+
+    try:
+        result = analyze_job_outputs(
+            outputs_dir=outputs_dir,
+            model_schema=model_schema,
+            scene_id=scene_id,
+            job_id=job_id,
+            model_id=job.model_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    save_analysis(job_dir, result)
+    return result
+
+
+@router.get("/{scene_id}/jobs/{job_id}/result-analysis")
+def get_job_result_analysis(scene_id: str, job_id: str, db: Session = Depends(get_db)):
+    """Retrieve a previously computed result analysis, if available."""
+    _require_scene(scene_id, db)
+    job = db.get(Job, job_id)
+    if not job or job.scene_id != scene_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_dir = _job_dir(scene_id, job_id)
+    cached = load_analysis(job_dir)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Result analysis not found; call analyze-results first")
+    return cached

@@ -411,7 +411,7 @@ test('confirmation and execution tools use the exact current snapshot', async ()
   assert.equal(execution.statePatch?.jobId, 'job-1')
 })
 
-test('job status, outputs, and interpretation tools enforce the current job workflow', async () => {
+test('job status, outputs, analysis, and interpretation tools enforce the current job workflow', async () => {
   const requests: string[] = []
   const fetch = async (input: string | URL | Request) => {
     const url = String(input)
@@ -424,6 +424,20 @@ test('job status, outputs, and interpretation tools enforce the current job work
     }
     if (url.endsWith('/logs')) {
       return new Response('=== job runner finished ===', { status: 200 })
+    }
+    if (url.endsWith('/analyze-results')) {
+      return new Response(JSON.stringify({
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        modelId: 'carbon',
+        outputFingerprints: { 'result.tif': 'abc123' },
+        rasters: [{ id: 'result.tif', role: 'unified', statistics: { validPixels: 100, total: 500 } }],
+        comparisons: [],
+        warnings: [],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
     }
     return new Response(JSON.stringify({ job_id: 'job-1', status: 'succeeded' }), {
       status: 200,
@@ -449,17 +463,25 @@ test('job status, outputs, and interpretation tools enforce the current job work
     .execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx)
   ctx.artifacts.createMany(outputs.artifacts ?? [])
   ctx.domainState.applyPatch(outputs.statePatch ?? {})
+  const analysis = await tools
+    .find(candidate => candidate.name === 'analyze_invest_results')!
+    .execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx)
+  ctx.artifacts.createMany(analysis.artifacts ?? [])
+  ctx.domainState.applyPatch(analysis.statePatch ?? {})
   const interpretation = await tools
     .find(candidate => candidate.name === 'interpret_invest_results')!
     .execute({ sceneId: 'scene-1', jobId: 'job-1' }, ctx)
 
   assert.equal(status.statePatch?.phase, 'job-succeeded')
   assert.equal(outputs.statePatch?.phase, 'outputs-inspected')
+  assert.equal(analysis.statePatch?.phase, 'results-analyzed')
   assert.equal(interpretation.statePatch?.phase, 'results-ready-for-interpretation')
+  assert.equal(analysis.artifacts?.[0]?.type, 'result-analysis')
   assert.equal(interpretation.artifacts?.[0]?.type, 'result-interpretation-context')
   assert.match(requests[0]!, /scenes\/scene-1\/jobs\/job-1$/)
   assert.match(requests[1]!, /scenes\/scene-1\/jobs\/job-1\/outputs$/)
-  assert.match(requests[2]!, /scenes\/scene-1\/jobs\/job-1\/logs$/)
+  assert.match(requests[2]!, /scenes\/scene-1\/jobs\/job-1\/analyze-results$/)
+  assert.match(requests[3]!, /scenes\/scene-1\/jobs\/job-1\/logs$/)
 })
 
 test('output inspection refuses a running job without calling GSMS', async () => {

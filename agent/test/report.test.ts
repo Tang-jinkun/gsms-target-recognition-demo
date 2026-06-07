@@ -42,13 +42,47 @@ test('builds an evidence-backed Markdown report from persisted artifacts', () =>
     createdBy: 'tool',
     data: [{ name: 'c_storage_bas.tif', type: 'raster', size: 4096 }],
   })
+  artifacts.create({
+    type: 'result-analysis',
+    createdBy: 'tool',
+    data: {
+      sceneId: 'scene-1',
+      jobId: 'job-1',
+      modelId: 'carbon',
+      outputFingerprints: { 'c_storage_bas.tif': 'abc123' },
+      rasters: [
+        {
+          id: 'c_storage_bas.tif',
+          filename: 'c_storage_bas.tif',
+          role: 'baseline-carbon-storage',
+          quantity: 'carbon storage',
+          unit: 'Mg C/pixel',
+          statistics: {
+            validPixels: 1000,
+            nodataPixels: 0,
+            minimum: 0.0,
+            maximum: 150.0,
+            mean: 45.5,
+            total: 45500.0,
+            p05: 5.0,
+            median: 40.0,
+            p95: 120.0,
+            spatial: { crs: 'EPSG:4326', bounds: [0, 0, 1, 1], width: 100, height: 100, nodata: -9999 },
+          },
+        },
+      ],
+      comparisons: [],
+      warnings: [],
+    },
+    metadata: { jobId: 'job-1' },
+  })
 
   const report = buildInvestReport({
     goal: goal(),
     state: { modelId: 'carbon', sceneId: 'scene-1', jobId: 'job-1', jobStatus: 'succeeded' },
     artifacts: artifacts.list(),
-    resultSummary: 'The run produced a baseline carbon-storage raster.',
-    keyFindings: ['A carbon-storage output was produced.'],
+    highlightMetricIds: ['baseline-carbon-storage.total'],
+    contextualExplanation: 'The run produced a baseline carbon-storage raster with a total of 45,500 Mg C.',
     limitations: ['No alternate scenario was evaluated.'],
   })
 
@@ -57,15 +91,33 @@ test('builds an evidence-backed Markdown report from persisted artifacts', () =>
   assert.match(report, /Review unused codes/)
   assert.match(report, /c_storage_bas\.tif/)
   assert.match(report, /model estimates, not direct observations/)
+  assert.match(report, /45,500/)
+  assert.match(report, /Result Analysis/)
+  assert.match(report, /baseline-carbon-storage/)
 })
 
 test('writes the final report only after interpretation is ready', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
   try {
+    const artifacts = new ArtifactStore()
+    artifacts.create({
+      type: 'result-analysis',
+      createdBy: 'tool',
+      data: {
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        modelId: 'carbon',
+        outputFingerprints: {},
+        rasters: [],
+        comparisons: [],
+        warnings: [],
+      },
+      metadata: { jobId: 'job-1' },
+    })
     const context: AgentContext = {
       workspace,
       goal: goal(),
-      artifacts: new ArtifactStore(),
+      artifacts,
       domainState: new DomainStateStore({
         phase: 'results-ready-for-interpretation',
         modelId: 'carbon',
@@ -76,8 +128,7 @@ test('writes the final report only after interpretation is ready', async () => {
     }
     const result = await writeInvestReportTool.execute(
       {
-        resultSummary: 'The model run completed and exposed one raster output.',
-        keyFindings: ['The expected raster output is available.'],
+        contextualExplanation: 'The model run completed and exposed one raster output.',
         limitations: ['The output has not been compared with field observations.'],
       },
       context,
@@ -106,8 +157,61 @@ test('rejects an unsafe current job ID before writing a report', async () => {
       }),
     }
     await assert.rejects(
-      writeInvestReportTool.execute({ resultSummary: 'No report should be written.' }, context),
+      writeInvestReportTool.execute({ contextualExplanation: 'No report should be written.' }, context),
       /not safe for a report path/,
+    )
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('rejects unknown highlightMetricIds', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
+  try {
+    const artifacts = new ArtifactStore()
+    artifacts.create({
+      type: 'result-analysis',
+      createdBy: 'tool',
+      data: {
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        modelId: 'carbon',
+        outputFingerprints: {},
+        rasters: [
+          {
+            id: 'test.tif',
+            filename: 'test.tif',
+            role: 'baseline-carbon-storage',
+            quantity: 'carbon storage',
+            statistics: { validPixels: 10, total: 100 },
+          },
+        ],
+        comparisons: [],
+        warnings: [],
+      },
+      metadata: { jobId: 'job-1' },
+    })
+    const context: AgentContext = {
+      workspace,
+      goal: goal(),
+      artifacts,
+      domainState: new DomainStateStore({
+        phase: 'results-ready-for-interpretation',
+        modelId: 'carbon',
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        jobStatus: 'succeeded',
+      }),
+    }
+    await assert.rejects(
+      writeInvestReportTool.execute(
+        {
+          highlightMetricIds: ['nonexistent.metric'],
+          contextualExplanation: 'Testing invalid metric.',
+        },
+        context,
+      ),
+      /Unknown metric ID: nonexistent\.metric/,
     )
   } finally {
     await rm(workspace, { recursive: true, force: true })

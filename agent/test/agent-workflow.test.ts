@@ -90,6 +90,36 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
       ]
     } else if (url.endsWith('/api/scenes/scene-1/jobs/job-from-snapshot/logs')) {
       return new Response('=== job runner finished ===', { status: 200 })
+    } else if (url.endsWith('/api/scenes/scene-1/jobs/job-from-snapshot/analyze-results')) {
+      payload = {
+        sceneId: 'scene-1',
+        jobId: 'job-from-snapshot',
+        modelId: 'carbon',
+        outputFingerprints: { 'c_storage_bas_mvp.tif': 'abc123' },
+        rasters: [
+          {
+            id: 'c_storage_bas_mvp.tif',
+            filename: 'c_storage_bas_mvp.tif',
+            role: 'baseline-carbon-storage',
+            quantity: 'carbon storage',
+            unit: 'Mg C/pixel',
+            statistics: {
+              validPixels: 1000,
+              nodataPixels: 0,
+              minimum: 0.0,
+              maximum: 150.0,
+              mean: 45.5,
+              total: 45500.0,
+              p05: 5.0,
+              median: 40.0,
+              p95: 120.0,
+              spatial: { crs: 'EPSG:4326', bounds: [0, 0, 1, 1], width: 100, height: 100 },
+            },
+          },
+        ],
+        comparisons: [],
+        warnings: [],
+      }
     } else if (url.endsWith('/api/scenes/scene-1/jobs/job-from-snapshot')) {
       payload = {
         job_id: 'job-from-snapshot',
@@ -145,6 +175,7 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
       allowedTools: [
         'get_invest_job_status',
         'inspect_invest_job_outputs',
+        'analyze_invest_results',
         'interpret_invest_results',
         'write_invest_report',
       ],
@@ -306,6 +337,16 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
       content: '',
       toolCalls: [
         {
+          id: '13a',
+          name: 'analyze_invest_results',
+          input: { sceneId: 'scene-1', jobId: 'job-from-snapshot' },
+        },
+      ],
+    },
+    {
+      content: '',
+      toolCalls: [
+        {
           id: '14',
           name: 'interpret_invest_results',
           input: { sceneId: 'scene-1', jobId: 'job-from-snapshot' },
@@ -319,8 +360,8 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
           id: '15',
           name: 'write_invest_report',
           input: {
-            resultSummary: 'The Carbon run completed and produced its expected baseline output.',
-            keyFindings: ['A baseline carbon-storage raster was produced.'],
+            highlightMetricIds: ['baseline-carbon-storage.total'],
+            contextualExplanation: 'The Carbon run completed and produced its expected baseline output with a total of 45,500 Mg C.',
             limitations: ['The output is a model estimate and has not been field validated.'],
           },
         },
@@ -371,6 +412,7 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
   assert.equal(result.artifacts.filter(artifact => artifact.type === 'model-job').length, 1)
   assert.equal(result.artifacts.filter(artifact => artifact.type === 'job-status').length, 1)
   assert.equal(result.artifacts.filter(artifact => artifact.type === 'job-output-inventory').length, 1)
+  assert.equal(result.artifacts.filter(artifact => artifact.type === 'result-analysis').length, 1)
   assert.equal(result.artifacts.filter(artifact => artifact.type === 'result-interpretation-context').length, 1)
   assert.equal(result.artifacts.filter(artifact => artifact.type === 'invest-report').length, 1)
   assert.equal(result.domainState.phase, 'report-written')
@@ -380,9 +422,8 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
   assert.equal(result.domainState.jobStatus, 'succeeded')
   assert.equal(result.domainState.outputCount, 1)
   assert.equal(result.domainState.reportPath, 'runs/job-from-snapshot/report.md')
-  assert.match(
-    await readFile(join(workspace, 'runs', 'job-from-snapshot', 'report.md'), 'utf8'),
-    /baseline carbon-storage raster/,
-  )
+  const reportContent = await readFile(join(workspace, 'runs', 'job-from-snapshot', 'report.md'), 'utf8')
+  assert.match(reportContent, /45,500/)
+  assert.match(reportContent, /Result Analysis/)
   await rm(workspace, { recursive: true, force: true })
 })

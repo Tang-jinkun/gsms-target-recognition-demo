@@ -23,6 +23,7 @@ const boundaryTools: Record<WorkflowBoundary, Set<string>> = {
   interpretation: new Set([
     'get_invest_job_status',
     'inspect_invest_job_outputs',
+    'analyze_invest_results',
     'interpret_invest_results',
     'write_invest_report',
   ]),
@@ -70,7 +71,8 @@ function phaseAllows(toolName: string, context: AgentContext): boolean {
 
   if (state.phase === 'job-running') return toolName === 'get_invest_job_status'
   if (state.phase === 'job-succeeded') return toolName === 'inspect_invest_job_outputs'
-  if (state.phase === 'outputs-inspected') return toolName === 'interpret_invest_results'
+  if (state.phase === 'outputs-inspected') return toolName === 'analyze_invest_results'
+  if (state.phase === 'results-analyzed') return toolName === 'interpret_invest_results'
   if (state.phase === 'results-ready-for-interpretation') return toolName === 'write_invest_report'
   if (state.phase === 'report-written') return false
 

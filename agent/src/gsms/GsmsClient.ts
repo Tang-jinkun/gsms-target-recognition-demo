@@ -89,6 +89,19 @@ export class GsmsClient {
     )
   }
 
+  analyzeInvestResults(sceneId: string, jobId: string): Promise<unknown> {
+    return this.#request(
+      `/api/scenes/${encodeURIComponent(sceneId)}/jobs/${encodeURIComponent(jobId)}/analyze-results`,
+      { method: 'POST' },
+    )
+  }
+
+  getResultAnalysis(sceneId: string, jobId: string): Promise<unknown> {
+    return this.#request(
+      `/api/scenes/${encodeURIComponent(sceneId)}/jobs/${encodeURIComponent(jobId)}/result-analysis`,
+    )
+  }
+
   async #request(path: string, init?: RequestInit): Promise<unknown> {
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,

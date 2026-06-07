@@ -128,7 +128,7 @@ test('worker requests confirmation and pauses before a write tool', async () => 
               {
                 id: '1',
                 name: 'write_invest_report',
-                input: { resultSummary: 'Evidence-backed summary' },
+                input: { contextualExplanation: 'Evidence-backed summary' },
               },
             ],
           },
@@ -169,7 +169,7 @@ test('approved report permission survives regenerated report wording for the sam
     payload: {
       tool: 'write_invest_report',
       risk: 'write',
-      input: { resultSummary: 'Earlier wording' },
+      input: { contextualExplanation: 'Earlier wording' },
       authorizationKey: '{"jobId":"job-1","sceneId":"scene-1","tool":"write_invest_report"}',
     },
   }]
@@ -205,7 +205,7 @@ test('approved report permission survives regenerated report wording for the sam
             toolCalls: [{
               id: '1',
               name: 'write_invest_report',
-              input: { resultSummary: 'Regenerated wording for the same job' },
+              input: { contextualExplanation: 'Regenerated wording for the same job' },
             }],
           },
           {
@@ -280,14 +280,23 @@ test('workflow resume context continues interpretation without repeating complet
       { phase: 'outputs-inspected', modelId: 'carbon' },
       [{ id: 'outputs', type: 'job-output-inventory', metadata: { modelId: 'carbon' } }],
     ),
-    /Call interpret_invest_results directly.*Do not inspect outputs again/,
+    /Call analyze_invest_results directly/,
   )
+  const analyzedContext = buildWorkflowResumeContext(
+    { phase: 'results-analyzed', modelId: 'carbon' },
+    [
+      { id: 'outputs', type: 'job-output-inventory', metadata: { modelId: 'carbon' } },
+      { id: 'analysis', type: 'result-analysis', metadata: { modelId: 'carbon' } },
+    ],
+  )
+  assert.match(analyzedContext, /Call interpret_invest_results directly/)
+  assert.match(analyzedContext, /do not analyze results again/)
   assert.match(
     buildWorkflowResumeContext(
       { phase: 'results-ready-for-interpretation', modelId: 'carbon' },
       [{ id: 'context', type: 'result-interpretation-context', metadata: { modelId: 'carbon' } }],
     ),
-    /Call write_invest_report directly.*do not inspect outputs/,
+    /Call write_invest_report directly/,
   )
 })
 

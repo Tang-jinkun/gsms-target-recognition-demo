@@ -5,8 +5,8 @@ import type { AgentTool } from '@gsms/agent-core'
 import { buildInvestReport } from '../report/buildInvestReport.ts'
 
 const writeReportSchema = z.object({
-  resultSummary: z.string().min(1).max(8_000),
-  keyFindings: z.array(z.string().min(1).max(1_000)).max(20).default([]),
+  highlightMetricIds: z.array(z.string().min(1)).max(50).default([]),
+  contextualExplanation: z.string().min(1).max(8_000),
   limitations: z.array(z.string().min(1).max(1_000)).max(20).default([]),
 })
 
@@ -17,10 +17,10 @@ export const writeInvestReportTool: AgentTool = {
   inputSchema: {
     type: 'object',
     additionalProperties: false,
-    required: ['resultSummary'],
+    required: ['contextualExplanation'],
     properties: {
-      resultSummary: { type: 'string' },
-      keyFindings: { type: 'array', items: { type: 'string' } },
+      highlightMetricIds: { type: 'array', items: { type: 'string' } },
+      contextualExplanation: { type: 'string' },
       limitations: { type: 'array', items: { type: 'string' } },
     },
   },
@@ -32,6 +32,38 @@ export const writeInvestReportTool: AgentTool = {
     }
     const jobId = String(state.jobId ?? '')
     if (!/^[A-Za-z0-9_-]+$/.test(jobId)) throw new Error('Current job ID is not safe for a report path')
+
+    // Validate that highlightMetricIds reference real metrics in the analysis
+    const analysis = [...context.artifacts.list('result-analysis')]
+      .reverse()
+      .find(a => a.metadata?.jobId === jobId)
+    if (analysis) {
+      const analysisData = analysis.data as Record<string, unknown>
+      const validMetricIds = new Set<string>()
+      const rasters = Array.isArray(analysisData.rasters)
+        ? (analysisData.rasters as Record<string, unknown>[])
+        : []
+      for (const raster of rasters) {
+        const stats = (raster.statistics ?? {}) as Record<string, unknown>
+        for (const key of Object.keys(stats)) {
+          if (key !== 'spatial') validMetricIds.add(`${raster.role}.${key}`)
+        }
+      }
+      const comparisons = Array.isArray(analysisData.comparisons)
+        ? (analysisData.comparisons as Record<string, unknown>[])
+        : []
+      for (const comp of comparisons) {
+        for (const key of Object.keys((comp.metrics ?? {}) as Record<string, unknown>)) {
+          validMetricIds.add(`${comp.kind}.${key}`)
+        }
+      }
+      for (const id of parsed.highlightMetricIds) {
+        if (!validMetricIds.has(id)) {
+          throw new Error(`Unknown metric ID: ${id}. Valid IDs: ${[...validMetricIds].sort().join(', ')}`)
+        }
+      }
+    }
+
     const root = await realpath(context.workspace)
     const reportDir = resolve(root, 'runs', jobId)
     assertInside(root, reportDir)

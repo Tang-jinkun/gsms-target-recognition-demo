@@ -302,7 +302,10 @@ function workflowDirective(
     return 'The current job succeeded. Call inspect_invest_job_outputs once; do not invent output or workspace tools.'
   }
   if (phase === 'outputs-inspected') {
-    return 'The current output inventory is persisted. Call interpret_invest_results directly; it reads the execution log internally. Do not inspect outputs again or invent log/read tools.'
+    return 'The current output inventory is persisted. Call analyze_invest_results directly to request deterministic raster statistics. Do not inspect outputs again or invent log/read tools.'
+  }
+  if (phase === 'results-analyzed') {
+    return 'The result analysis is persisted. Call interpret_invest_results directly; it reads the execution log internally. Do not inspect outputs again, do not analyze results again, and do not invent log/read tools.'
   }
   if (phase === 'results-ready-for-interpretation') {
     return 'The output inventory and interpretation context are persisted. Call write_invest_report directly; do not inspect outputs, read logs, or rebuild interpretation.'

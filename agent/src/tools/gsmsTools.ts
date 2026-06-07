@@ -570,8 +570,8 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       },
     },
     {
-      name: 'interpret_invest_results',
-      description: 'Build an evidence-backed interpretation context from the current job outputs and logs',
+      name: 'analyze_invest_results',
+      description: 'Request deterministic raster statistics from GSMS for the current job outputs; the backend reads real GeoTIFF values',
       risk: 'read',
       inputSchema: {
         type: 'object',
@@ -586,7 +586,53 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const parsed = jobSchema.parse(input)
         const state = requireCurrentJob(context, parsed.sceneId, parsed.jobId)
         if (state.phase !== 'outputs-inspected') {
-          throw new Error('Inspect the current job outputs before interpreting results')
+          throw new Error('Inspect the current job outputs before requesting result analysis')
+        }
+        const result = await client.analyzeInvestResults(parsed.sceneId, parsed.jobId)
+        const source = result as { outputFingerprints?: unknown; jobId?: unknown }
+        return {
+          content: JSON.stringify(result),
+          artifacts: [{
+            type: 'result-analysis',
+            createdBy: 'tool',
+            data: result,
+            metadata: {
+              sceneId: parsed.sceneId,
+              jobId: parsed.jobId,
+              modelId: state.modelId,
+              outputFingerprints: source.outputFingerprints,
+            },
+          }],
+          statePatch: { phase: 'results-analyzed' },
+        }
+      },
+    },
+    {
+      name: 'interpret_invest_results',
+      description: 'Build an evidence-backed interpretation context from the current job outputs, logs, and result analysis',
+      risk: 'read',
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sceneId', 'jobId'],
+        properties: {
+          sceneId: { type: 'string' },
+          jobId: { type: 'string' },
+        },
+      },
+      async execute(input, context) {
+        const parsed = jobSchema.parse(input)
+        const state = requireCurrentJob(context, parsed.sceneId, parsed.jobId)
+        if (state.phase !== 'results-analyzed') {
+          throw new Error('Run result analysis before interpreting results')
+        }
+        const analysis = [...context.artifacts.list('result-analysis')]
+          .reverse()
+          .find(artifact =>
+            artifact.metadata?.sceneId === parsed.sceneId &&
+            artifact.metadata?.jobId === parsed.jobId)
+        if (!analysis) {
+          throw new Error('A result-analysis artifact for the current job is required before interpretation')
         }
         const inventory = context.artifacts.list('job-output-inventory').at(-1)
         if (!inventory) throw new Error('Current job output inventory is missing')
@@ -599,12 +645,15 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           jobId: parsed.jobId,
           modelId: state.modelId,
           outputs: inventory.data,
+          resultAnalysis: analysis.data,
           executionLogTail,
           executionLogTruncated: logs.length > maxLogCharacters,
           guidance: [
-            'Explain only conclusions supported by the output inventory and execution log.',
+            'Explain only conclusions supported by the result analysis, output inventory, and execution log.',
+            'All numerical values in the report must come from the result-analysis artifact.',
             'State model assumptions, validation warnings, and missing outputs explicitly.',
             'Do not infer ecological causality from model outputs alone.',
+            'Do not claim to have analyzed individual carbon pools; the current outputs represent total carbon storage.',
           ],
         }
         return {

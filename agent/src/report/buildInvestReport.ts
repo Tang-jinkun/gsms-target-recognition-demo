@@ -4,8 +4,8 @@ export interface InvestReportInput {
   goal: GoalState
   state: Record<string, unknown>
   artifacts: Artifact[]
-  resultSummary: string
-  keyFindings: string[]
+  highlightMetricIds: string[]
+  contextualExplanation: string
   limitations: string[]
 }
 
@@ -16,6 +16,7 @@ export function buildInvestReport(input: InvestReportInput): string {
   const job = latest(input.artifacts, 'model-job')
   const status = latest(input.artifacts, 'job-status')
   const inventory = latest(input.artifacts, 'job-output-inventory')
+  const analysis = latest(input.artifacts, 'result-analysis')
   const interpretation = latest(input.artifacts, 'result-interpretation-context')
   const outputs = Array.isArray(inventory) ? inventory : []
   const bindings = recordArray(binding, 'bindings')
@@ -23,6 +24,12 @@ export function buildInvestReport(input: InvestReportInput): string {
   const validationDetails = asRecord(validationRecord.validation)
   const warnings = stringArray(validationDetails.warnings)
   const errors = stringArray(validationDetails.errors)
+
+  const analysisRecord = asRecord(analysis)
+  const analysisRasters = arrayField(analysisRecord, 'rasters')
+  const analysisComparisons = arrayField(analysisRecord, 'comparisons')
+  const analysisWarnings = stringArray(analysisRecord.warnings)
+  const fingerprints = asRecord(analysisRecord.outputFingerprints)
 
   return [
     '# InVEST Assessment Report',
@@ -80,13 +87,11 @@ export function buildInvestReport(input: InvestReportInput): string {
         )
       : 'No outputs were exposed by GSMS.',
     '',
+    ...buildAnalysisSection(analysisRasters, analysisComparisons, analysisWarnings, fingerprints, input.highlightMetricIds),
+    '',
     '## Result Interpretation',
     '',
-    input.resultSummary.trim(),
-    '',
-    '### Key Findings',
-    '',
-    bullets(input.keyFindings, 'No evidence-backed findings were supplied.'),
+    input.contextualExplanation.trim(),
     '',
     '## Limitations',
     '',
@@ -94,9 +99,11 @@ export function buildInvestReport(input: InvestReportInput): string {
     '',
     '- InVEST outputs are model estimates, not direct observations.',
     '- Ecological causality must not be inferred from model outputs alone.',
+    '- All numerical statistics above are deterministic reads from GeoTIFF pixel values, not LLM estimates.',
     '',
     '## Audit Evidence',
     '',
+    `- Result analysis available: ${analysis ? 'Yes' : 'No'}`,
     `- Interpretation context persisted: ${interpretation ? 'Yes' : 'No'}`,
     `- Report artifact types used: ${[
       'binding-report',
@@ -105,10 +112,134 @@ export function buildInvestReport(input: InvestReportInput): string {
       'model-job',
       'job-status',
       'job-output-inventory',
+      'result-analysis',
       'result-interpretation-context',
     ].join(', ')}`,
     '',
   ].join('\n')
+}
+
+function buildAnalysisSection(
+  rasters: Record<string, unknown>[],
+  comparisons: Record<string, unknown>[],
+  analysisWarnings: string[],
+  fingerprints: Record<string, unknown>,
+  highlightMetricIds: string[],
+): string[] {
+  if (!rasters.length) {
+    return ['## Result Analysis', '', 'No result analysis was available.']
+  }
+
+  const lines: string[] = ['## Result Analysis', '']
+
+  // Raster statistics table
+  lines.push('### Raster Statistics')
+  lines.push('')
+  lines.push(table(
+    ['Output', 'Role', 'Quantity', 'Valid Pixels', 'Min', 'Max', 'Mean', 'Total', 'P05', 'Median', 'P95'],
+    rasters.map(r => {
+      const stats = asRecord(r.statistics)
+      const highlighted = isHighlighted(r, highlightMetricIds)
+      const prefix = highlighted ? '**' : ''
+      const suffix = highlighted ? '**' : ''
+      return [
+        `${prefix}${inline(r.filename)}${suffix}`,
+        inline(r.role),
+        inline(r.quantity),
+        formatNumber(stats.validPixels),
+        formatNumber(stats.minimum),
+        formatNumber(stats.maximum),
+        formatNumber(stats.mean),
+        formatNumber(stats.total),
+        formatNumber(stats.p05),
+        formatNumber(stats.median),
+        formatNumber(stats.p95),
+      ]
+    }),
+  ))
+  lines.push('')
+
+  // Carbon change details
+  const changeRaster = rasters.find(r => r.role === 'carbon-change')
+  if (changeRaster) {
+    const stats = asRecord(changeRaster.statistics)
+    if (typeof stats.positivePixels === 'number') {
+      lines.push('### Carbon Change Distribution')
+      lines.push('')
+      lines.push(`- Positive change pixels: ${formatNumber(stats.positivePixels)}`)
+      lines.push(`- Negative change pixels: ${formatNumber(stats.negativePixels)}`)
+      lines.push(`- Zero change pixels: ${formatNumber(stats.zeroPixels)}`)
+      lines.push(`- Positive change total: ${formatNumber(stats.positiveTotal)}`)
+      lines.push(`- Negative change total: ${formatNumber(stats.negativeTotal)}`)
+      lines.push('')
+    }
+  }
+
+  // Consistency checks
+  if (comparisons.length) {
+    lines.push('### Consistency Checks')
+    lines.push('')
+    for (const comp of comparisons) {
+      const status = comp.status === 'passed' ? '✅' : comp.status === 'warning' ? '⚠️' : '➖'
+      lines.push(`- **${inline(comp.kind)}**: ${status} ${inline(comp.explanation)}`)
+    }
+    lines.push('')
+  }
+
+  // Spatial metadata
+  lines.push('### Spatial Metadata')
+  lines.push('')
+  lines.push(table(
+    ['Output', 'CRS', 'Width', 'Height', 'Nodata'],
+    rasters.map(r => {
+      const stats = asRecord(r.statistics)
+      const spatial = asRecord(stats.spatial)
+      return [
+        inline(r.filename),
+        inline(spatial.crs),
+        formatNumber(spatial.width),
+        formatNumber(spatial.height),
+        formatNumber(spatial.nodata),
+      ]
+    }),
+  ))
+  lines.push('')
+
+  // Output fingerprints
+  const fingerprintEntries = Object.entries(fingerprints)
+  if (fingerprintEntries.length) {
+    lines.push('### Output Fingerprints')
+    lines.push('')
+    for (const [name, hash] of fingerprintEntries) {
+      lines.push(`- ${inline(name)}: \`${String(hash).slice(0, 16)}…\``)
+    }
+    lines.push('')
+  }
+
+  // Analysis warnings
+  if (analysisWarnings.length) {
+    lines.push('### Analysis Warnings')
+    lines.push('')
+    lines.push(bullets(analysisWarnings, ''))
+    lines.push('')
+  }
+
+  return lines
+}
+
+function isHighlighted(raster: Record<string, unknown>, highlightMetricIds: string[]): boolean {
+  if (!highlightMetricIds.length) return false
+  const role = String(raster.role ?? '')
+  return highlightMetricIds.some(id => id.startsWith(`${role}.`))
+}
+
+function formatNumber(value: unknown): string {
+  if (value === undefined || value === null) return 'N/A'
+  if (typeof value === 'number') {
+    if (Number.isInteger(value)) return value.toLocaleString()
+    return value.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  }
+  return String(value)
 }
 
 function latest(artifacts: Artifact[], type: string): unknown {
@@ -119,6 +250,11 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
+}
+
+function arrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const items = record[key]
+  return Array.isArray(items) ? items.map(asRecord) : []
 }
 
 function recordArray(value: unknown, key: string): Record<string, unknown>[] {
