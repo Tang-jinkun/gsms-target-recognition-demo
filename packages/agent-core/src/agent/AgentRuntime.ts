@@ -258,18 +258,21 @@ export class AgentRuntime {
   #visibleToolDefinitions(context: AgentContext) {
     return this.options.tools
       .list()
-      .filter(
-        tool =>
-          (tool.risk === 'control' ||
-            !context.skillScope ||
-            context.skillScope.allowedTools.has(tool.name)) &&
-          (this.options.toolFilter?.(tool, context) ?? true),
-      )
+      .filter(tool => this.#isToolVisible(tool, context))
       .map(({ name, description, inputSchema }) => ({
         name,
         description,
         inputSchema,
       }))
+  }
+
+  #isToolVisible(tool: ReturnType<ToolRegistry['list']>[number], context: AgentContext): boolean {
+    return (
+      (tool.risk === 'control' ||
+        !context.skillScope ||
+        context.skillScope.allowedTools.has(tool.name)) &&
+      (this.options.toolFilter?.(tool, context) ?? true)
+    )
   }
 
   async #executeTool(
@@ -294,8 +297,17 @@ export class AgentRuntime {
     transcript.record('tool_call', call)
     const tool = this.options.tools.resolve(call.name)
     if (!tool) {
-      this.#pushToolResult(messages, transcript, call, `Unknown tool: ${call.name}`, true)
-      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, `Unknown tool: ${call.name}`)
+      const visibleTools = this.#visibleToolDefinitions(context).map(tool => tool.name)
+      const message = `Unknown tool: ${call.name}. Available tools for the current workflow stage: ${visibleTools.join(', ')}`
+      this.#pushToolResult(messages, transcript, call, message, true)
+      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, message)
+      return []
+    }
+    if (!this.#isToolVisible(tool, context)) {
+      const visibleTools = this.#visibleToolDefinitions(context).map(item => item.name)
+      const message = `Tool ${call.name} is not available in the current workflow stage. Available tools: ${visibleTools.join(', ')}`
+      this.#pushToolResult(messages, transcript, call, message, true)
+      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, message)
       return []
     }
 

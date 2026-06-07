@@ -161,7 +161,7 @@ test('active skill scope denies tools outside its allowlist', async () => {
   assert.equal(result.goal.status, 'blocked')
   assert.ok(
     result.messages.some(
-      message => message.role === 'tool' && message.content.includes('Permission denied'),
+      message => message.role === 'tool' && message.content.includes('not available'),
     ),
   )
   assert.ok(!model.requests[1]!.tools.some(tool => tool.name === 'write_file'))
@@ -305,6 +305,35 @@ test('runtime pauses when tool permission is deferred', async () => {
 
   assert.equal(result.goal.status, 'blocked')
   assert.match(result.goal.remainingIssues[0]!, /Awaiting user confirmation/)
+})
+
+test('runtime refuses a registered tool hidden by the workflow filter', async () => {
+  let executed = false
+  const hiddenTool: AgentTool = {
+    name: 'hidden_execute',
+    description: 'Hidden execution tool',
+    risk: 'control',
+    inputSchema: { type: 'object' },
+    async execute() {
+      executed = true
+      return { content: 'executed' }
+    },
+  }
+  const model = new FakeModelAdapter([
+    { content: '', toolCalls: [{ id: '1', name: 'hidden_execute', input: {} }] },
+    { content: '', toolCalls: [{ id: '2', name: 'finish', input: { status: 'blocked', summary: 'Hidden tool unavailable' } }] },
+  ])
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([hiddenTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    toolFilter: tool => tool.name === 'finish',
+  }).run('Do not execute hidden tools')
+
+  assert.equal(executed, false)
+  assert.equal(result.goal.status, 'blocked')
+  assert.match(result.messages.find(message => message.role === 'tool')?.content ?? '', /not available/)
 })
 
 test('update_goal records progress without terminating the objective', async () => {

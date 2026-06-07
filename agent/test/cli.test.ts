@@ -108,7 +108,7 @@ test('GSMS bootstrap client verifies health and lists scenes', async () => {
 
 test('multi-turn session preserves domain state and artifacts between user messages', async () => {
   const rememberTool: AgentTool = {
-    name: 'remember_scene_fact',
+    name: 'list_invest_models',
     description: 'Persist a scene fact',
     risk: 'read',
     inputSchema: { type: 'object' },
@@ -123,7 +123,7 @@ test('multi-turn session preserves domain state and artifacts between user messa
   const model = new FakeModelAdapter([
     {
       content: '',
-      toolCalls: [{ id: '1', name: 'remember_scene_fact', input: {} }],
+      toolCalls: [{ id: '1', name: 'list_invest_models', input: {} }],
     },
     {
       content: '',

@@ -24,6 +24,10 @@ class AgentSessionStateTest(unittest.TestCase):
             "awaiting_confirmation",
         )
         self.assertEqual(
+            next_session_status("awaiting_confirmation", "pause"),
+            "awaiting_confirmation",
+        )
+        self.assertEqual(
             next_confirmation_status("pending", True),
             "approved",
         )

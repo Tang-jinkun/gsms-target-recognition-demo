@@ -74,13 +74,24 @@ test('worker claims a queued session and checkpoints a completed Agent run', asy
 
 test('worker requests confirmation and pauses before a write tool', async () => {
   const actions: string[] = []
+  const checkpoints: Array<Record<string, unknown>> = []
   const confirmations: Array<{ id: string; status: string; payload: Record<string, unknown> }> = []
   const current = session()
   current.domain_state = {
     sceneId: 'scene-1',
+    modelId: 'carbon',
+    matchingContextId: 'ctx-carbon',
     jobId: 'job-1',
     phase: 'results-ready-for-interpretation',
   }
+  current.artifacts = [{
+    id: 'schema',
+    type: 'model-input-schema',
+    createdBy: 'tool',
+    createdAt: new Date().toISOString(),
+    data: { modelId: 'carbon', displayName: 'Carbon', version: '3.17.2', slots: [] },
+    metadata: { modelId: 'carbon' },
+  }]
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('status=queued')) return response([current])
@@ -88,7 +99,8 @@ test('worker requests confirmation and pauses before a write tool', async () => 
     if (url.endsWith('/checkpoint')) {
       const body = JSON.parse(String(init?.body))
       actions.push(body.action)
-      current.status = 'running'
+      checkpoints.push(body)
+      current.status = body.action === 'pause' ? 'awaiting_confirmation' : 'running'
       return response(current)
     }
     if (url.endsWith('/confirmations') && init?.method === 'POST') {
@@ -124,8 +136,9 @@ test('worker requests confirmation and pauses before a write tool', async () => 
     })
 
     assert.equal(await worker.runOnce(), true)
-    assert.deepEqual(actions, ['start'])
+    assert.deepEqual(actions, ['start', 'pause'])
     assert.equal(confirmations[0]?.payload.tool, 'write_invest_report')
+    assert.equal((checkpoints[1]?.domain_state as Record<string, unknown>)?.phase, 'results-ready-for-interpretation')
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
@@ -176,6 +189,23 @@ test('workflow resume context directs validation to reuse the persisted binding 
   assert.match(context, /do not reload schemas, retrieve candidates, or submit another report/)
   assert.match(context, /"binding-report":2/)
   assert.match(context, /"currentCounts":\{"model-input-schema":1,"binding-report":1\}/)
+})
+
+test('workflow resume context continues interpretation without repeating completed stages', () => {
+  assert.match(
+    buildWorkflowResumeContext(
+      { phase: 'outputs-inspected', modelId: 'carbon' },
+      [{ id: 'outputs', type: 'job-output-inventory', metadata: { modelId: 'carbon' } }],
+    ),
+    /Call interpret_invest_results directly.*Do not inspect outputs again/,
+  )
+  assert.match(
+    buildWorkflowResumeContext(
+      { phase: 'results-ready-for-interpretation', modelId: 'carbon' },
+      [{ id: 'context', type: 'result-interpretation-context', metadata: { modelId: 'carbon' } }],
+    ),
+    /Call write_invest_report directly.*do not inspect outputs/,
+  )
 })
 
 test('worker fails a progress-only run that reaches its turn limit instead of presenting it as complete', async () => {

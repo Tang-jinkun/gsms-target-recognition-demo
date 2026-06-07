@@ -14,6 +14,7 @@ ${listing || '(none)'}
 Rules:
 - When a skill clearly matches the objective, invoke the skill tool before taking actions covered by it.
 - After loading a skill, follow its instructions and use only the tools available to you.
+- Invoke only tools present in the current tool list. Never invent aliases, file readers, log tools, or shell tools.
 - Gather evidence before modifying files.
 - Use update_goal only to record meaningful progress; it cannot finish or block the objective.
 - Call finish only when the objective is actually complete or genuinely blocked.

@@ -141,7 +141,14 @@ export class InvestAgentWorker {
     )
     if (result.goal.status === 'blocked') {
       const current = await this.#sessionApi.getConfirmations(session.id)
-      if (current.some(confirmation => confirmation.status === 'pending')) return
+      if (current.some(confirmation => confirmation.status === 'pending')) {
+        await this.#sessionApi.checkpoint(session.id, {
+          action: 'pause',
+          domain_state: result.domainState,
+          artifacts: result.artifacts,
+        })
+        return
+      }
       if (!result.goal.finalSummary) {
         const issue =
           result.goal.remainingIssues.join('; ') ||
@@ -264,6 +271,21 @@ function workflowDirective(
   }
   if (phase === 'confirmed-for-execution') {
     return 'The exact validation snapshot is confirmed. Execute it only if execution is part of the current user request.'
+  }
+  if (phase === 'job-running') {
+    return 'Refresh the current job with get_invest_job_status. Do not invent alternate status or output tools.'
+  }
+  if (phase === 'job-succeeded') {
+    return 'The current job succeeded. Call inspect_invest_job_outputs once; do not invent output or workspace tools.'
+  }
+  if (phase === 'outputs-inspected') {
+    return 'The current output inventory is persisted. Call interpret_invest_results directly; it reads the execution log internally. Do not inspect outputs again or invent log/read tools.'
+  }
+  if (phase === 'results-ready-for-interpretation') {
+    return 'The output inventory and interpretation context are persisted. Call write_invest_report directly; do not inspect outputs, read logs, or rebuild interpretation.'
+  }
+  if (phase === 'report-written') {
+    return 'The final report already exists. Finish with the persisted report path and factual evidence.'
   }
   if (phase === 'matching-slots' && counts['candidate-set']) {
     const schemaArtifact = [...artifacts].reverse().find(artifact => artifact?.type === 'model-input-schema')

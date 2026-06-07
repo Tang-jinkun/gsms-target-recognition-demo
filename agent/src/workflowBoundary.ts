@@ -68,6 +68,12 @@ function phaseAllows(toolName: string, context: AgentContext): boolean {
       artifact.type === type &&
       (!matchingContextId || artifact.metadata?.matchingContextId === matchingContextId))
 
+  if (state.phase === 'job-running') return toolName === 'get_invest_job_status'
+  if (state.phase === 'job-succeeded') return toolName === 'inspect_invest_job_outputs'
+  if (state.phase === 'outputs-inspected') return toolName === 'interpret_invest_results'
+  if (state.phase === 'results-ready-for-interpretation') return toolName === 'write_invest_report'
+  if (state.phase === 'report-written') return false
+
   if (toolName === 'get_invest_model_schema') return !matchingContextId || !current('binding-report').length
   if (!hasCurrentSchema(state.modelId, artifacts)) return false
   if (!matchingContextId) return toolName === 'list_scene_data_cards'
@@ -85,10 +91,6 @@ function phaseAllows(toolName: string, context: AgentContext): boolean {
   if (state.phase === 'ready-for-validation') return toolName === 'validate_binding_report'
   if (state.phase === 'awaiting-user-confirmation') return toolName === 'confirm_validation_snapshot'
   if (state.phase === 'confirmed-for-execution') return toolName === 'execute_validated_snapshot'
-  if (state.phase === 'job-running') return toolName === 'get_invest_job_status'
-  if (state.phase === 'job-succeeded') return toolName === 'inspect_invest_job_outputs'
-  if (state.phase === 'outputs-inspected') return toolName === 'interpret_invest_results'
-  if (state.phase === 'results-ready-for-interpretation') return toolName === 'write_invest_report'
   return true
 }
 

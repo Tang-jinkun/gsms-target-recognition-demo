@@ -15,6 +15,10 @@ def next_session_status(current: str, action: str) -> str:
         if current not in {"queued", "running"}:
             raise ValueError("Only an active Agent session can request confirmation.")
         return "awaiting_confirmation"
+    if action == "pause":
+        if current != "awaiting_confirmation":
+            raise ValueError("Only an Agent session awaiting confirmation can be paused.")
+        return "awaiting_confirmation"
     if action == "approve_confirmation":
         if current != "awaiting_confirmation":
             raise ValueError("Agent session is not awaiting confirmation.")
