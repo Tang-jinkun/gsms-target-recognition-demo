@@ -271,7 +271,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
     },
     {
       name: 'validate_binding_report',
-      description: 'Validate the latest Binding Report using the authoritative GSMS model checks',
+      description: 'Validate the latest Binding Report once using authoritative GSMS checks; after success, request user confirmation instead of repeating validation',
       risk: 'read',
       inputSchema: {
         type: 'object',
@@ -290,6 +290,24 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           throw new Error(
             `Validation model ${parsed.modelId} does not match the selected model ${String(state.modelId ?? 'none')}`,
           )
+        }
+        if (
+          state.phase === 'awaiting-user-confirmation' &&
+          typeof state.validationSnapshotId === 'string'
+        ) {
+          return {
+            content: JSON.stringify({
+              status: 'already-validated',
+              snapshot_id: state.validationSnapshotId,
+              next_action: 'call confirm_validation_snapshot to request explicit user approval',
+            }),
+            hiddenMessages: [{
+              role: 'user',
+              hidden: true,
+              content:
+                `Do not validate again. Call confirm_validation_snapshot with snapshotId "${state.validationSnapshotId}" and confirmed true. The permission system will pause and ask the user before recording approval.`,
+            }],
+          }
         }
         const report = [...context.artifacts.list('binding-report')]
           .reverse()
@@ -337,12 +355,19 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               severity: 'warning' as const,
             })),
           ],
+          hiddenMessages: [{
+            role: 'user',
+            hidden: true,
+            content: canProceed
+              ? `Validation passed for snapshot "${String(source.snapshot_id)}". To prepare execution, call confirm_validation_snapshot with this snapshotId and confirmed true now. The permission system will pause and ask the user; do not repeat validation and do not claim the user already approved.`
+              : 'Validation failed. Do not repeat validation unchanged. Finish as blocked and explain the validation errors to the user.',
+          }],
         }
       },
     },
     {
       name: 'confirm_validation_snapshot',
-      description: 'Record the user approval or rejection of the latest validated input snapshot',
+      description: 'Request explicit user approval for the latest validated snapshot; the permission system pauses before approval is recorded',
       risk: 'write',
       inputSchema: {
         type: 'object',

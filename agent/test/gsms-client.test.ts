@@ -188,6 +188,7 @@ test('validation tool submits the persisted Binding Report and exposes failed va
   assert.equal(result.statePatch?.phase, 'validation-failed')
   assert.equal(result.artifacts?.[0]?.type, 'validation-report')
   assert.equal(result.diagnostics?.[0]?.severity, 'error')
+  assert.match(result.hiddenMessages?.[0]?.content ?? '', /Do not repeat validation unchanged/)
 })
 
 test('selecting a different model resets stale matching and execution state', async () => {
@@ -242,6 +243,42 @@ test('validation rejects a model different from the selected model', async () =>
     /does not match the selected model habitat_quality/,
   )
   assert.equal(called, false)
+})
+
+test('passed validation directs the agent to request confirmation and is not repeated', async () => {
+  let calls = 0
+  const fetch = async () => {
+    calls++
+    return new Response(JSON.stringify({
+      can_proceed: true,
+      snapshot_id: 'snapshot-carbon',
+      validation: { status: 'ok', errors: [], warnings: [] },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'carbon', phase: 'ready-for-validation' })
+  ctx.artifacts.create({
+    type: 'binding-report',
+    createdBy: 'agent',
+    data: { taskSpecId: 'task-carbon' },
+    metadata: { modelId: 'carbon' },
+  })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'validate_binding_report',
+  )!
+
+  const first = await tool.execute({ modelId: 'carbon', sceneId: 'scene-1', parameters: {} }, ctx)
+  ctx.domainState.applyPatch(first.statePatch ?? {})
+  const second = await tool.execute({ modelId: 'carbon', sceneId: 'scene-1', parameters: {} }, ctx)
+
+  assert.equal(calls, 1)
+  assert.equal(first.statePatch?.phase, 'awaiting-user-confirmation')
+  assert.match(first.hiddenMessages?.[0]?.content ?? '', /call confirm_validation_snapshot/)
+  assert.match(second.content, /already-validated/)
+  assert.match(second.hiddenMessages?.[0]?.content ?? '', /Do not validate again/)
 })
 
 test('execution tool refuses an unconfirmed validation snapshot before calling GSMS', async () => {
