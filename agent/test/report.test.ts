@@ -230,7 +230,13 @@ test('rejects report text that introduces unverified numerical values', async ()
         jobId: 'job-1',
         modelId: 'carbon',
         outputFingerprints: {},
-        rasters: [],
+        rasters: [{
+          id: 'c_storage_bas.tif',
+          filename: 'c_storage_bas.tif',
+          role: 'baseline-carbon-storage',
+          quantity: 'carbon storage',
+          statistics: { total: 45500, validPixels: 1000 },
+        }],
         comparisons: [],
         warnings: [],
       },
@@ -252,8 +258,56 @@ test('rejects report text that introduces unverified numerical values', async ()
         { contextualExplanation: 'Carbon storage increased by 12 percent.' },
         context,
       ),
-      /must not introduce numerical values/,
+      /not found in result-analysis: 12/,
     )
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('allows report text to cite numbers present in result-analysis', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
+  try {
+    const artifacts = new ArtifactStore()
+    artifacts.create({
+      type: 'result-analysis',
+      createdBy: 'tool',
+      data: {
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        modelId: 'carbon',
+        outputFingerprints: {},
+        rasters: [{
+          id: 'c_storage_bas.tif',
+          filename: 'c_storage_bas.tif',
+          role: 'baseline-carbon-storage',
+          quantity: 'carbon storage',
+          statistics: { total: 45500, validPixels: 1000 },
+        }],
+        comparisons: [],
+        warnings: [],
+      },
+      metadata: { jobId: 'job-1' },
+    })
+    const context: AgentContext = {
+      workspace,
+      goal: goal(),
+      artifacts,
+      domainState: new DomainStateStore({
+        phase: 'results-ready-for-interpretation',
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+      }),
+    }
+
+    const result = await writeInvestReportTool.execute(
+      {
+        contextualExplanation: 'The deterministic analysis reports total carbon storage of 45,500.',
+        highlightMetricIds: ['baseline-carbon-storage.total'],
+      },
+      context,
+    )
+    assert.equal(result.statePatch?.phase, 'report-written')
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

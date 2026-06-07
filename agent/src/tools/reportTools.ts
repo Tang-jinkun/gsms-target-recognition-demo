@@ -57,11 +57,11 @@ export function createWriteInvestReportTool(publisher?: GeneratedFilePublisher):
     if (!analysis) {
       throw new Error('A result-analysis artifact for the current job is required before writing a report')
     }
-    assertNoUnsupportedNumbers(parsed.contextualExplanation, 'contextualExplanation')
-    parsed.limitations.forEach((limitation, index) =>
-      assertNoUnsupportedNumbers(limitation, `limitations[${index}]`))
-
     const analysisData = analysis.data as Record<string, unknown>
+    const allowedNumbers = collectAllowedNumbers(analysisData)
+    assertNoUnsupportedNumbers(parsed.contextualExplanation, 'contextualExplanation', allowedNumbers)
+    parsed.limitations.forEach((limitation, index) =>
+      assertNoUnsupportedNumbers(limitation, `limitations[${index}]`, allowedNumbers))
     const validMetricIds = new Set<string>()
     const rasters = Array.isArray(analysisData.rasters)
       ? (analysisData.rasters as Record<string, unknown>[])
@@ -152,10 +152,35 @@ function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
 }
 
-function assertNoUnsupportedNumbers(value: string, field: string): void {
-  if (/\d/.test(value)) {
+function assertNoUnsupportedNumbers(value: string, field: string, allowed: Set<string>): void {
+  const unsupported = [...value.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)]
+    .map(match => normalizeNumber(match[0]))
+    .filter(number => !allowed.has(number))
+  if (unsupported.length) {
     throw new Error(
-      `${field} must not introduce numerical values; select result-analysis metrics with highlightMetricIds instead`,
+      `${field} contains numerical values not found in result-analysis: ${[...new Set(unsupported)].join(', ')}. ` +
+      'Use only values from result-analysis or remove the unsupported numbers.',
     )
   }
+}
+
+function collectAllowedNumbers(value: unknown, result = new Set<string>()): Set<string> {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    result.add(normalizeNumber(String(value)))
+    result.add(normalizeNumber(value.toLocaleString('en-US', { maximumFractionDigits: 20 })))
+    return result
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectAllowedNumbers(item, result)
+    return result
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectAllowedNumbers(item, result)
+  }
+  return result
+}
+
+function normalizeNumber(value: string): string {
+  const parsed = Number(value.replaceAll(',', ''))
+  return Number.isFinite(parsed) ? String(parsed) : value
 }
