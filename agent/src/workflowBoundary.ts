@@ -55,10 +55,10 @@ export function workflowToolFilter(boundary: WorkflowBoundary) {
     for (const tool of boundaryTools[item]) allowed.add(tool)
   }
   return (tool: AgentTool, context: AgentContext): boolean =>
-    allowed.has(tool.name) && phaseAllows(tool.name, context)
+    allowed.has(tool.name) && phaseAllows(tool.name, context, boundary)
 }
 
-function phaseAllows(toolName: string, context: AgentContext): boolean {
+function phaseAllows(toolName: string, context: AgentContext, boundary: WorkflowBoundary): boolean {
   if (['skill', 'finish', 'update_goal', 'list_invest_models'].includes(toolName)) return true
   const state = context.domainState.snapshot()
   const artifacts = context.artifacts.list()
@@ -74,7 +74,9 @@ function phaseAllows(toolName: string, context: AgentContext): boolean {
   if (state.phase === 'outputs-inspected') return toolName === 'analyze_invest_results'
   if (state.phase === 'results-analyzed') return toolName === 'interpret_invest_results'
   if (state.phase === 'results-ready-for-interpretation') return toolName === 'write_invest_report'
-  if (state.phase === 'report-written') return false
+  if (state.phase === 'report-written') {
+    return boundary === 'interpretation' && toolName === 'get_invest_job_status'
+  }
 
   if (toolName === 'get_invest_model_schema') return !matchingContextId || !current('binding-report').length
   if (!hasCurrentSchema(state.modelId, artifacts)) return false

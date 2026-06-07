@@ -102,6 +102,29 @@ export class GsmsClient {
     )
   }
 
+  publishGeneratedFile(input: {
+    sceneId: string
+    jobId: string
+    artifactType: string
+    name: string
+    content: string
+    fileFormat: string
+    note?: string
+  }): Promise<unknown> {
+    return this.#request('/api/data/files/generated', {
+      method: 'POST',
+      body: JSON.stringify({
+        sceneId: input.sceneId,
+        jobId: input.jobId,
+        artifactType: input.artifactType,
+        name: input.name,
+        content: input.content,
+        fileFormat: input.fileFormat,
+        note: input.note ?? '',
+      }),
+    })
+  }
+
   async #request(path: string, init?: RequestInit): Promise<unknown> {
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,

@@ -89,10 +89,11 @@ export class InvestAgentWorker {
     const sessionWorkspace = resolve(this.options.workspace, 'sessions', session.id)
     await mkdir(sessionWorkspace, { recursive: true })
     const registry = new ToolRegistry()
+    const gsmsClient = new GsmsClient({ baseUrl: this.options.gsmsUrl })
     const domainTools: AgentTool[] = [
-      ...createGsmsTools(new GsmsClient({ baseUrl: this.options.gsmsUrl })),
+      ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
-      ...createReportTools(),
+      ...createReportTools(gsmsClient),
     ]
     for (const tool of domainTools) registry.register(tool)
     registerSessionControlTools(registry, this.options.skills, () => domainTools.map(tool => tool.name))
@@ -311,7 +312,7 @@ function workflowDirective(
     return 'The output inventory and interpretation context are persisted. Call write_invest_report directly; do not inspect outputs, read logs, or rebuild interpretation.'
   }
   if (phase === 'report-written') {
-    return 'The final report already exists. Finish with the persisted report path and factual evidence.'
+    return 'A previous report exists. If the current user asks for real result analysis or a new report, call get_invest_job_status and rebuild the interpretation chain from deterministic outputs; otherwise finish with the persisted report path.'
   }
   if (phase === 'matching-slots' && counts['candidate-set']) {
     const schemaArtifact = [...artifacts].reverse().find(artifact => artifact?.type === 'model-input-schema')

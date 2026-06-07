@@ -66,6 +66,10 @@ export function filesForDir(files: HubFile[], dirName: string): HubFile[] {
 }
 
 export const dataHubRepo = {
+  downloadUrl(id: string): string {
+    return apiUrl(`/api/data/files/${encodeURIComponent(id)}/download`)
+  },
+
   async listFolders(): Promise<HubFolder[]> {
     const data = await api.get<Array<{ id: string; name: string; count: number }>>('/api/data/folders')
     return Array.isArray(data) ? data : []

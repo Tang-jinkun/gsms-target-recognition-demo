@@ -10,12 +10,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import DataFile, DataFolder
+from app.models import DataFile, DataFolder, Scene, SceneImport
 from app.storage import project_files_dir, project_file_previews_dir
 from app import files_util
 
@@ -38,10 +38,32 @@ class DeleteFilesIn(BaseModel):
     fileIds: list[str]
 
 
+class GeneratedFileIn(BaseModel):
+    sceneId: str
+    jobId: str
+    artifactType: str
+    name: str
+    content: str = Field(max_length=20_000_000)
+    fileFormat: str
+    note: str = ""
+
+
+AGENT_OUTPUTS_FOLDER_ID = "agent-outputs"
+
+
 def ensure_uncategorized_folder(db: Session) -> DataFolder:
     folder = db.get(DataFolder, UNCATEGORIZED_FOLDER_ID)
     if not folder:
         folder = DataFolder(id=UNCATEGORIZED_FOLDER_ID, name="未分类")
+        db.add(folder)
+        db.flush()
+    return folder
+
+
+def ensure_agent_outputs_folder(db: Session) -> DataFolder:
+    folder = db.get(DataFolder, AGENT_OUTPUTS_FOLDER_ID)
+    if not folder:
+        folder = DataFolder(id=AGENT_OUTPUTS_FOLDER_ID, name="Agent Outputs")
         db.add(folder)
         db.flush()
     return folder
@@ -286,6 +308,67 @@ async def upload_file(file: UploadFile = File(...), folder_id: str | None = None
             pass  # geometry ingest is best-effort; file is still usable
 
     return _data_hub_dict(df)
+
+
+@router.post("/files/generated", status_code=201)
+def publish_generated_file(body: GeneratedFileIn, db: Session = Depends(get_db)):
+    """Publish an Agent-generated evidence file into Data Hub and the current scene."""
+    scene = db.get(Scene, body.sceneId)
+    if not scene:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    safe_name = Path(body.name).name
+    if safe_name != body.name or not safe_name:
+        raise HTTPException(status_code=400, detail="Generated file name must be a safe basename")
+    if not all(value and Path(value).name == value for value in (body.jobId, body.artifactType)):
+        raise HTTPException(status_code=400, detail="Job ID and artifact type must be safe names")
+
+    folder = ensure_agent_outputs_folder(db)
+    stored_name = f"{body.sceneId}-{body.jobId}-{body.artifactType}-{safe_name}"
+    destination = project_files_dir() / stored_name
+    destination.write_text(body.content, encoding="utf-8")
+    extra_meta = {
+        "enc": "UTF-8",
+        "note": body.note or f"Agent-generated {body.artifactType} for job {body.jobId}",
+        "origin": "agent",
+        "scene_id": body.sceneId,
+        "job_id": body.jobId,
+        "artifact_type": body.artifactType,
+    }
+    existing = db.query(DataFile).filter(DataFile.path == stored_name).first()
+    if existing:
+        existing.name = safe_name
+        existing.file_type = "document"
+        existing.file_format = body.fileFormat
+        existing.size = destination.stat().st_size
+        existing.folder_id = folder.id
+        existing.extra_meta = extra_meta
+        df = existing
+    else:
+        df = DataFile(
+            id=uuid.uuid4().hex,
+            name=safe_name,
+            file_type="document",
+            file_format=body.fileFormat,
+            size=destination.stat().st_size,
+            path=stored_name,
+            folder_id=folder.id,
+            extra_meta=extra_meta,
+        )
+        db.add(df)
+        db.flush()
+    if not db.get(SceneImport, {"scene_id": body.sceneId, "file_id": df.id}):
+        db.add(SceneImport(scene_id=body.sceneId, file_id=df.id))
+    db.commit()
+    db.refresh(df)
+    return _data_hub_dict(df)
+
+
+@router.get("/files/{file_id}/download")
+def download_file(file_id: str, db: Session = Depends(get_db)):
+    df = db.get(DataFile, file_id)
+    if not df:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(_resolve(df)), filename=df.name)
 
 
 @router.delete("/files/{file_id}", status_code=204)

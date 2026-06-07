@@ -281,6 +281,16 @@ export default function DataHubPage() {
                       <dt>备注</dt><dd>{file.note}</dd>
                     </dl>
                   </div>
+                  <div className="pad" style={{ paddingTop: 0 }}>
+                    <a
+                      className="btn"
+                      href={dataHubRepo.downloadUrl(file.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      下载 / 打开文件
+                    </a>
+                  </div>
                   {file.spatial && (
                     <>
                       <div className="sec-divider" />

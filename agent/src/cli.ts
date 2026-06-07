@@ -53,10 +53,11 @@ async function main(): Promise<void> {
     const workspace = resolve(config.workspace)
     const skills = await loadSkills(workspace)
     const registry = new ToolRegistry()
+    const gsmsClient = new GsmsClient({ baseUrl: config.gsmsUrl })
     const domainTools: AgentTool[] = [
-      ...createGsmsTools(new GsmsClient({ baseUrl: config.gsmsUrl })),
+      ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
-      ...createReportTools(),
+      ...createReportTools(gsmsClient),
     ]
     for (const tool of domainTools) registry.register(tool)
     registerSessionControlTools(

@@ -480,8 +480,11 @@ test('job status, outputs, analysis, and interpretation tools enforce the curren
   assert.equal(interpretation.artifacts?.[0]?.type, 'result-interpretation-context')
   assert.match(requests[0]!, /scenes\/scene-1\/jobs\/job-1$/)
   assert.match(requests[1]!, /scenes\/scene-1\/jobs\/job-1\/outputs$/)
-  assert.match(requests[2]!, /scenes\/scene-1\/jobs\/job-1\/analyze-results$/)
-  assert.match(requests[3]!, /scenes\/scene-1\/jobs\/job-1\/logs$/)
+  assert.match(requests[2]!, /api\/data\/files\/generated$/)
+  assert.match(requests[3]!, /scenes\/scene-1\/jobs\/job-1\/analyze-results$/)
+  assert.match(requests[4]!, /api\/data\/files\/generated$/)
+  assert.match(requests[5]!, /scenes\/scene-1\/jobs\/job-1\/logs$/)
+  assert.match(requests[6]!, /api\/data\/files\/generated$/)
 })
 
 test('output inspection refuses a running job without calling GSMS', async () => {

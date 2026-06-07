@@ -242,6 +242,7 @@ test('rejects report text that introduces unverified numerical values', async ()
       artifacts,
       domainState: new DomainStateStore({
         phase: 'results-ready-for-interpretation',
+        sceneId: 'scene-1',
         jobId: 'job-1',
       }),
     }

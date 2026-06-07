@@ -549,13 +549,27 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
         const outputs = await client.listSceneJobOutputs(parsed.sceneId, parsed.jobId)
         const list = Array.isArray(outputs) ? outputs : []
+        const published = await client.publishGeneratedFile({
+          sceneId: parsed.sceneId,
+          jobId: parsed.jobId,
+          artifactType: 'job-output-inventory',
+          name: 'job-output-inventory.json',
+          content: JSON.stringify(outputs, null, 2),
+          fileFormat: 'json',
+          note: 'Agent output inventory for a completed InVEST job',
+        })
         return {
           content: JSON.stringify(outputs),
           artifacts: [{
             type: 'job-output-inventory',
             createdBy: 'tool',
             data: outputs,
-            metadata: { sceneId: parsed.sceneId, jobId: parsed.jobId, outputCount: list.length },
+            metadata: {
+              sceneId: parsed.sceneId,
+              jobId: parsed.jobId,
+              outputCount: list.length,
+              dataHubFile: published,
+            },
           }],
           statePatch: { phase: 'outputs-inspected', outputCount: list.length },
           diagnostics:
@@ -590,6 +604,15 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
         const result = await client.analyzeInvestResults(parsed.sceneId, parsed.jobId)
         const source = result as { outputFingerprints?: unknown; jobId?: unknown }
+        const published = await client.publishGeneratedFile({
+          sceneId: parsed.sceneId,
+          jobId: parsed.jobId,
+          artifactType: 'result-analysis',
+          name: 'result-analysis.json',
+          content: JSON.stringify(result, null, 2),
+          fileFormat: 'json',
+          note: 'Deterministic raster statistics computed from real InVEST GeoTIFF outputs',
+        })
         return {
           content: JSON.stringify(result),
           artifacts: [{
@@ -601,6 +624,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               jobId: parsed.jobId,
               modelId: state.modelId,
               outputFingerprints: source.outputFingerprints,
+              dataHubFile: published,
             },
           }],
           statePatch: { phase: 'results-analyzed' },
@@ -656,13 +680,22 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
             'Do not claim to have analyzed individual carbon pools; the current outputs represent total carbon storage.',
           ],
         }
+        const published = await client.publishGeneratedFile({
+          sceneId: parsed.sceneId,
+          jobId: parsed.jobId,
+          artifactType: 'result-interpretation-context',
+          name: 'result-interpretation-context.json',
+          content: JSON.stringify(interpretation, null, 2),
+          fileFormat: 'json',
+          note: 'Agent interpretation context grounded in output inventory, result analysis, and logs',
+        })
         return {
           content: JSON.stringify(interpretation),
           artifacts: [{
             type: 'result-interpretation-context',
             createdBy: 'tool',
             data: interpretation,
-            metadata: { sceneId: parsed.sceneId, jobId: parsed.jobId },
+            metadata: { sceneId: parsed.sceneId, jobId: parsed.jobId, dataHubFile: published },
           }],
           statePatch: { phase: 'results-ready-for-interpretation' },
         }
