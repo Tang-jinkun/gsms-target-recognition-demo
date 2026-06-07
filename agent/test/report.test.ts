@@ -217,3 +217,43 @@ test('rejects unknown highlightMetricIds', async () => {
     await rm(workspace, { recursive: true, force: true })
   }
 })
+
+test('rejects report text that introduces unverified numerical values', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-report-'))
+  try {
+    const artifacts = new ArtifactStore()
+    artifacts.create({
+      type: 'result-analysis',
+      createdBy: 'tool',
+      data: {
+        sceneId: 'scene-1',
+        jobId: 'job-1',
+        modelId: 'carbon',
+        outputFingerprints: {},
+        rasters: [],
+        comparisons: [],
+        warnings: [],
+      },
+      metadata: { jobId: 'job-1' },
+    })
+    const context: AgentContext = {
+      workspace,
+      goal: goal(),
+      artifacts,
+      domainState: new DomainStateStore({
+        phase: 'results-ready-for-interpretation',
+        jobId: 'job-1',
+      }),
+    }
+
+    await assert.rejects(
+      writeInvestReportTool.execute(
+        { contextualExplanation: 'Carbon storage increased by 12 percent.' },
+        context,
+      ),
+      /must not introduce numerical values/,
+    )
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})

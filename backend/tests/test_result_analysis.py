@@ -99,6 +99,10 @@ class ResolveOutputRoleTest(unittest.TestCase):
         self.assertEqual(result["role"], "baseline-carbon-storage")
         self.assertEqual(result["unit"], "Mg C/pixel")
 
+    def test_baseline_storage_with_multi_segment_suffix(self):
+        result = resolve_output_role("c_storage_bas_sample_real.tif", CARBON_SCHEMA)
+        self.assertEqual(result["role"], "baseline-carbon-storage")
+
     def test_alternate_storage(self):
         result = resolve_output_role("c_storage_alt_mvp.tif", CARBON_SCHEMA)
         self.assertEqual(result["role"], "alternate-carbon-storage")
@@ -249,6 +253,7 @@ class AnalyzeJobOutputsTest(unittest.TestCase):
             self.assertEqual(result["sceneId"], "scene-1")
             self.assertEqual(result["jobId"], "job-1")
             self.assertEqual(result["modelId"], "carbon")
+            self.assertIn("generatedAt", result)
             self.assertEqual(len(result["rasters"]), 3)
             self.assertEqual(len(result["comparisons"]), 2)
             self.assertEqual(result["warnings"], [])

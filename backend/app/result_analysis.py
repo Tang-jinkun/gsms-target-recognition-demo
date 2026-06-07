@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import math
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -36,11 +37,11 @@ def resolve_output_role(
     Returns ``{"role": ..., "quantity": ..., "unit": ..., "aggregation": ...}``
     or the ``unclassified`` sentinel.
     """
-    results_suffix = _infer_results_suffix(filename)
     for output_def in model_schema.get("outputs", []):
         pattern = output_def.get("name", "")
-        # Substitute the results_suffix placeholder so we can fnmatch.
-        expanded = pattern.replace("{results_suffix}", results_suffix) if results_suffix else pattern
+        # Suffixes may contain underscores, so the schema placeholder must
+        # match the complete suffix rather than only the final name segment.
+        expanded = pattern.replace("{results_suffix}", "*")
         if fnmatch(filename, expanded):
             role = output_def.get("role")
             if role:
@@ -438,6 +439,7 @@ def analyze_job_outputs(
         "rasters": rasters,
         "comparisons": comparisons,
         "warnings": warnings,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
     }
 
     return result

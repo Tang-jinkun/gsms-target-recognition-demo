@@ -104,6 +104,8 @@ export function buildInvestReport(input: InvestReportInput): string {
     '## Audit Evidence',
     '',
     `- Result analysis available: ${analysis ? 'Yes' : 'No'}`,
+    `- Result analysis generated at: ${inline(analysisRecord.generatedAt)}`,
+    `- Result analysis path: jobs/${inline(input.state.jobId)}/analysis/result-analysis.json`,
     `- Interpretation context persisted: ${interpretation ? 'Yes' : 'No'}`,
     `- Report artifact types used: ${[
       'binding-report',
@@ -136,7 +138,7 @@ function buildAnalysisSection(
   lines.push('### Raster Statistics')
   lines.push('')
   lines.push(table(
-    ['Output', 'Role', 'Quantity', 'Valid Pixels', 'Min', 'Max', 'Mean', 'Total', 'P05', 'Median', 'P95'],
+    ['Output', 'Role', 'Quantity', 'Unit', 'Valid Pixels', 'Min', 'Max', 'Mean', 'Total', 'P05', 'Median', 'P95'],
     rasters.map(r => {
       const stats = asRecord(r.statistics)
       const highlighted = isHighlighted(r, highlightMetricIds)
@@ -146,6 +148,7 @@ function buildAnalysisSection(
         `${prefix}${inline(r.filename)}${suffix}`,
         inline(r.role),
         inline(r.quantity),
+        inline(r.unit),
         formatNumber(stats.validPixels),
         formatNumber(stats.minimum),
         formatNumber(stats.maximum),

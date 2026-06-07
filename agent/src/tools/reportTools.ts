@@ -37,30 +37,35 @@ export const writeInvestReportTool: AgentTool = {
     const analysis = [...context.artifacts.list('result-analysis')]
       .reverse()
       .find(a => a.metadata?.jobId === jobId)
-    if (analysis) {
-      const analysisData = analysis.data as Record<string, unknown>
-      const validMetricIds = new Set<string>()
-      const rasters = Array.isArray(analysisData.rasters)
-        ? (analysisData.rasters as Record<string, unknown>[])
-        : []
-      for (const raster of rasters) {
-        const stats = (raster.statistics ?? {}) as Record<string, unknown>
-        for (const key of Object.keys(stats)) {
-          if (key !== 'spatial') validMetricIds.add(`${raster.role}.${key}`)
-        }
+    if (!analysis) {
+      throw new Error('A result-analysis artifact for the current job is required before writing a report')
+    }
+    assertNoUnsupportedNumbers(parsed.contextualExplanation, 'contextualExplanation')
+    parsed.limitations.forEach((limitation, index) =>
+      assertNoUnsupportedNumbers(limitation, `limitations[${index}]`))
+
+    const analysisData = analysis.data as Record<string, unknown>
+    const validMetricIds = new Set<string>()
+    const rasters = Array.isArray(analysisData.rasters)
+      ? (analysisData.rasters as Record<string, unknown>[])
+      : []
+    for (const raster of rasters) {
+      const stats = (raster.statistics ?? {}) as Record<string, unknown>
+      for (const key of Object.keys(stats)) {
+        if (key !== 'spatial') validMetricIds.add(`${raster.role}.${key}`)
       }
-      const comparisons = Array.isArray(analysisData.comparisons)
-        ? (analysisData.comparisons as Record<string, unknown>[])
-        : []
-      for (const comp of comparisons) {
-        for (const key of Object.keys((comp.metrics ?? {}) as Record<string, unknown>)) {
-          validMetricIds.add(`${comp.kind}.${key}`)
-        }
+    }
+    const comparisons = Array.isArray(analysisData.comparisons)
+      ? (analysisData.comparisons as Record<string, unknown>[])
+      : []
+    for (const comp of comparisons) {
+      for (const key of Object.keys((comp.metrics ?? {}) as Record<string, unknown>)) {
+        validMetricIds.add(`${comp.kind}.${key}`)
       }
-      for (const id of parsed.highlightMetricIds) {
-        if (!validMetricIds.has(id)) {
-          throw new Error(`Unknown metric ID: ${id}. Valid IDs: ${[...validMetricIds].sort().join(', ')}`)
-        }
+    }
+    for (const id of parsed.highlightMetricIds) {
+      if (!validMetricIds.has(id)) {
+        throw new Error(`Unknown metric ID: ${id}. Valid IDs: ${[...validMetricIds].sort().join(', ')}`)
       }
     }
 
@@ -116,4 +121,12 @@ async function assertNoSymlink(path: string, allowMissing = false): Promise<void
 
 function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+}
+
+function assertNoUnsupportedNumbers(value: string, field: string): void {
+  if (/\d/.test(value)) {
+    throw new Error(
+      `${field} must not introduce numerical values; select result-analysis metrics with highlightMetricIds instead`,
+    )
+  }
 }

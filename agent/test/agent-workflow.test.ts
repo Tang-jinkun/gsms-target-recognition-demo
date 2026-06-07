@@ -361,7 +361,7 @@ test('agent uses the authoritative GSMS schema to produce a Carbon Binding Repor
           name: 'write_invest_report',
           input: {
             highlightMetricIds: ['baseline-carbon-storage.total'],
-            contextualExplanation: 'The Carbon run completed and produced its expected baseline output with a total of 45,500 Mg C.',
+            contextualExplanation: 'The Carbon run completed and produced its expected baseline output; the deterministic statistics table records the measured total.',
             limitations: ['The output is a model estimate and has not been field validated.'],
           },
         },

@@ -431,6 +431,7 @@ def analyze_job_results(scene_id: str, job_id: str, db: Session = Depends(get_db
     job = db.get(Job, job_id)
     if not job or job.scene_id != scene_id:
         raise HTTPException(status_code=404, detail="Job not found")
+    job = _sync_job_from_disk(scene_id, job, db)
     if job.status != "succeeded":
         raise HTTPException(status_code=400, detail="Job has not succeeded; cannot analyze results")
 
