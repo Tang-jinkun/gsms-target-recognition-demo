@@ -1,5 +1,4 @@
-import type { AgentContext, AgentTool, Artifact } from '@gsms/agent-core'
-import { modelInputSchemaSchema } from './domain/schemas.ts'
+import type { AgentContext, AgentTool } from '@gsms/agent-core'
 
 // ── Phase Group ────────────────────────────────────────────────────────────────
 // Phases are divided into two groups:
@@ -108,7 +107,7 @@ export function workflowPhaseFilter() {
     }
 
     // ── Soft boundary: matching group ───────────────────────────────────────
-    return matchingPhaseAllows(tool.name, context)
+    return matchingPhaseAllows()
   }
 }
 
@@ -131,58 +130,16 @@ function executionPhaseAllows(toolName: string, phase: string): boolean {
 }
 
 // ── Matching Phase Gate (soft) ─────────────────────────────────────────────────
-// All matching-group tools are available. Later-group tools are also available
-// so the agent can advance the workflow when the user requests it.
-// Prerequisites are still enforced within the matching group.
+// All domain tools are visible during matching-group phases.
+// The agent decides call order based on the user's request.
+// Tools internally enforce their own prerequisites (defense-in-depth):
+//   - finalize_data_matching throws if candidate sets are missing
+//   - validate_binding_report throws if no binding report exists
+//   - etc.
 
-function matchingPhaseAllows(toolName: string, context: AgentContext): boolean {
-  if (['skill', 'finish', 'update_goal', 'list_invest_models'].includes(toolName)) return true
-
-  const state = context.domainState.snapshot()
-  const artifacts = context.artifacts.list()
-  const matchingContextId =
-    typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
-  const current = (type: string) =>
-    artifacts.filter(artifact =>
-      artifact.type === type &&
-      (!matchingContextId || artifact.metadata?.matchingContextId === matchingContextId))
-
-  // Schema tool: available if no binding report yet
-  if (toolName === 'get_invest_model_schema') return !matchingContextId || !current('binding-report').length
-
-  // Need schema before anything else
-  if (!hasCurrentSchema(state.modelId, artifacts)) return false
-
-  // Need matchingContextId before slot-level tools
-  if (!matchingContextId) return toolName === 'list_scene_data_cards'
-
-  // Need candidate sets for all required slots before finalization
-  const schema = currentSchema(state.modelId, artifacts)
-  const candidateSlots = new Set(current('candidate-set').map(artifact => artifact.metadata?.slot))
-  const missingRequired = schema?.slots
-    .filter(slot => slot.required && !candidateSlots.has(slot.name))
-    .map(slot => slot.name) ?? []
-  if (missingRequired.length) return toolName === 'retrieve_input_candidates'
-
-  // Before binding report: matching + relation tools
-  if (!current('binding-report').length) {
-    return ['retrieve_input_candidates', 'check_data_relation', 'finalize_data_matching'].includes(toolName)
-  }
-
-  // After binding report: validation, confirmation, and execution tools become available
-  // This is the key difference from the old design — the agent can advance freely
+function matchingPhaseAllows(): boolean {
   return true
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-function hasCurrentSchema(modelId: unknown, artifacts: Artifact[]): boolean {
-  return Boolean(currentSchema(modelId, artifacts))
-}
-
-function currentSchema(modelId: unknown, artifacts: Artifact[]) {
-  const artifact = [...artifacts]
-    .reverse()
-    .find(item => item.type === 'model-input-schema' && (!modelId || item.metadata?.modelId === modelId))
-  return artifact ? modelInputSchemaSchema.parse(artifact.data) : undefined
-}
+// (artifact/schema helpers removed — matching group no longer needs them)
