@@ -5,7 +5,7 @@ import Icon from '../src/components/shell/Icon'
 import Modal from '../src/components/shell/Modal'
 import Select from '../src/components/shell/Select'
 import { toast } from '../src/lib/toast'
-import { settingsRepo, STATUS_META, PROVIDERS, type ModelCfg, type UserInfo } from '../src/lib/repos/settingsRepo'
+import { settingsRepo, STATUS_META, PROVIDERS, PROVIDER_DEFAULTS, type ModelCfg, type UserInfo } from '../src/lib/repos/settingsRepo'
 
 type TestState = '' | 'testing' | 'ok' | 'fail'
 
@@ -146,7 +146,10 @@ export default function SettingsPage() {
         <div className="form-grid">
           <div className="field"><label>模型名称</label><input className="input" placeholder="如：GPT-4o" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
           <div className="field"><label>供应商</label>
-            <Select value={form.provider} options={PROVIDERS.map(p => ({ value: p, label: p }))} onChange={provider => setForm({ ...form, provider })} />
+            <Select value={form.provider} options={PROVIDERS.map(p => ({ value: p, label: p }))} onChange={provider => {
+              const defaults = PROVIDER_DEFAULTS[provider]
+              setForm({ ...form, provider, url: defaults?.url ?? form.url, id: defaults?.id ?? form.id })
+            }} />
           </div>
           <div className="field full"><label>API Key</label>
             <div className="pwd-wrap">

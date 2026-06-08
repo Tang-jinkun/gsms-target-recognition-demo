@@ -30,7 +30,12 @@ export const STATUS_META: Record<ModelCfg['status'], { badge: string; label: str
   failed: { badge: 'badge-danger', label: '连接失败', dot: true },
 }
 
-export const PROVIDERS = ['OpenAI', 'Anthropic', 'DeepSeek', 'Qwen', 'Local', 'Custom']
+export const PROVIDERS = ['OpenAI', 'Anthropic', 'DeepSeek', 'Qwen', 'NVIDIA', 'Local', 'Custom']
+
+export const PROVIDER_DEFAULTS: Record<string, { url: string; id: string } | undefined> = {
+  OpenAI: { url: 'https://api.openai.com/v1', id: 'gpt-4o' },
+  NVIDIA: { url: 'https://integrate.api.nvidia.com/v1', id: 'moonshotai/kimi-k2.6' },
+}
 
 function normalizeProvider(item: BackendProvider): ModelCfg {
   return {
