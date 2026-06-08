@@ -25,7 +25,7 @@ Match data to the requested InVEST model without guessing.
 5. Keep multiple plausible candidates when evidence is ambiguous.
 6. Mark missing inputs and conflicts explicitly.
 7. Call `finalize_data_matching` with only slot decisions, confidence, reasoning, and unresolved questions. Never construct a Binding Report, evidence objects, relation checks, or conflicts yourself.
-8. Respect the current workflow boundary. At the `matching` boundary, finish immediately after matching is finalized. Validate only when the current request explicitly asks for validation.
+8. The phase filter controls tool availability. You may call tools from earlier phases if the user requests changes to previous decisions. Finish immediately after matching is finalized unless the current request explicitly asks for validation or execution.
 9. After validation passes, call `confirm_validation_snapshot` once with the exact snapshot and
    `confirmed: true`. This requests confirmation through the permission system; it does not imply
    the user has already approved. Do not repeat validation while awaiting confirmation.

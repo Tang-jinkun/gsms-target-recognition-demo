@@ -23,7 +23,7 @@ import {
   type PersistedAgentSession,
   type PersistedConfirmation,
 } from './AgentSessionApiClient.ts'
-import { inferWorkflowBoundary, workflowToolFilter } from '../workflowBoundary.ts'
+import { isExecutionPhase, workflowPhaseFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentWorkerOptions {
   gsmsUrl: string
@@ -74,18 +74,15 @@ export class InvestAgentWorker {
     const artifacts = new ArtifactStore()
     if (session.artifacts.length) artifacts.createMany(session.artifacts as ArtifactInput[])
     const domainState = new DomainStateStore(session.domain_state)
-    const workflowBoundary = inferWorkflowBoundary(latestUser.content)
-    domainState.applyPatch(
-      workflowBoundary === 'matching'
-        ? {
-            workflowBoundary,
-            phase: 'discovering-data',
-            matchingContextId: null,
-            slots: null,
-            bindingStatus: null,
-          }
-        : { workflowBoundary },
-    )
+    const currentPhase = typeof session.domain_state.phase === 'string' ? session.domain_state.phase : ''
+    if (!isExecutionPhase(currentPhase)) {
+      domainState.applyPatch({
+        phase: 'discovering-data',
+        matchingContextId: null,
+        slots: null,
+        bindingStatus: null,
+      })
+    }
     const sessionWorkspace = resolve(this.options.workspace, 'sessions', session.id)
     await mkdir(sessionWorkspace, { recursive: true })
     const registry = new ToolRegistry()
@@ -112,7 +109,7 @@ export class InvestAgentWorker {
       artifacts,
       domainState,
       maxTurns: this.options.maxTurns ?? 30,
-      toolFilter: workflowToolFilter(workflowBoundary),
+      toolFilter: workflowPhaseFilter(),
       eventSink: {
         emit: event =>
           this.#sessionApi.appendEvent(session.id, event.eventType, {
@@ -135,7 +132,8 @@ export class InvestAgentWorker {
       [
         `Current GSMS scene ID: ${session.scene_id}`,
         `Current user request: ${latestUser.content}`,
-        `Current workflow boundary: ${workflowBoundary}. Do not act beyond this boundary.`,
+        `Current phase: ${String(domainState.snapshot().phase ?? 'conversation-ready')}. ` +
+        `Execution phases enforce strict sequential order; matching phases allow rollback and revision.`,
         'The current user request overrides persisted planning state. If it names or implies a different InVEST model, call get_invest_model_schema for that model before matching or validation.',
         `Persisted domain state from earlier turns, adjusted for the current request boundary: ${JSON.stringify(resumedState)}`,
         buildWorkflowResumeContext(resumedState, session.artifacts),

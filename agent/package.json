@@ -18,7 +18,9 @@
   "dependencies": {
     "@gsms/agent-core": "file:../packages/agent-core",
     "@gsms/skills-core": "file:../packages/skills-core",
-    "zod": "^4.1.12"
+    "chokidar": "^5.0.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

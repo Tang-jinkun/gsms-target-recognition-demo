@@ -9,8 +9,8 @@ import {
   AgentSessionApiClient,
   InvestAgentWorker,
   buildWorkflowResumeContext,
-  inferWorkflowBoundary,
-  workflowToolFilter,
+  workflowPhaseFilter,
+  isExecutionPhase,
 } from '../src/index.ts'
 import { ToolRegistry, type AgentContext, type AgentTool, ArtifactStore, DomainStateStore } from '@gsms/agent-core'
 import type { PersistedAgentSession } from '../src/worker/AgentSessionApiClient.ts'
@@ -345,9 +345,10 @@ test('worker fails a progress-only run that reaches its turn limit instead of pr
   }
 })
 
-test('matching boundary hides validation, confirmation, and execution tools', () => {
-  assert.equal(inferWorkflowBoundary('为 Carbon 模型匹配当前场景数据，但不要执行。'), 'matching')
-  assert.equal(inferWorkflowBoundary('验证当前绑定，如果通过，准备执行。'), 'confirmation')
+test('phase filter allows cross-group tools in matching phase (soft boundary)', () => {
+  assert.equal(isExecutionPhase('ready-for-validation'), false)
+  assert.equal(isExecutionPhase('job-running'), true)
+
   const tools = new ToolRegistry([
     stubTool('finish'),
     stubTool('get_invest_model_schema'),
@@ -394,15 +395,49 @@ test('matching boundary hides validation, confirmation, and execution tools', ()
       phase: 'ready-for-validation',
     }),
   } satisfies AgentContext
-  const filter = workflowToolFilter('matching')
+  const filter = workflowPhaseFilter()
 
-  assert.deepEqual(
-    tools.list().filter(tool => filter(tool, context)).map(tool => tool.name),
-    ['finish'],
-    'after matching is finalized, only finish remains visible at the matching boundary',
-  )
-  assert.equal(filter(stubTool('validate_binding_report'), context), false)
-  assert.equal(filter(stubTool('execute_validated_snapshot'), context), false)
+  const visibleTools = tools.list().filter(tool => filter(tool, context)).map(tool => tool.name)
+  assert.ok(visibleTools.includes('validate_binding_report'), 'validation tool visible in matching group')
+  assert.ok(visibleTools.includes('confirm_validation_snapshot'), 'confirmation tool visible in matching group')
+  assert.ok(visibleTools.includes('execute_validated_snapshot'), 'execution tool visible in matching group')
+  assert.ok(visibleTools.includes('finish'), 'finish always visible')
+})
+
+test('phase filter enforces hard gate in execution phase', () => {
+  const artifacts = new ArtifactStore()
+  artifacts.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] },
+      metadata: { modelId: 'carbon' },
+    },
+  ])
+  const context = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'check status',
+      status: 'active' as const,
+      turnCount: 1,
+      maxTurns: 10,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts,
+    domainState: new DomainStateStore({
+      modelId: 'carbon',
+      matchingContextId: 'ctx-carbon',
+      phase: 'job-running',
+    }),
+  } satisfies AgentContext
+  const filter = workflowPhaseFilter()
+
+  assert.equal(filter(stubTool('get_invest_job_status'), context), true, 'polling allowed during job-running')
+  assert.equal(filter(stubTool('inspect_invest_job_outputs'), context), false, 'inspect blocked during job-running')
+  assert.equal(filter(stubTool('finalize_data_matching'), context), false, 'matching blocked during execution')
+  assert.equal(filter(stubTool('validate_binding_report'), context), false, 'validation blocked during execution')
 })
 
 function stubTool(name: string): AgentTool {
