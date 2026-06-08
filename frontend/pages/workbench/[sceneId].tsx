@@ -17,7 +17,7 @@ import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 type View = 'agent' | 'map' | 'split'
 type LeftTab = 'layers' | 'files' | 'invest'
 type TaskState = 'idle' | 'run' | 'done' | 'fail'
-type ChatMsg = { role: 'user' | 'agent'; html: string; att: string[] }
+type ChatMsg = { role: 'user' | 'agent'; html: string; text: string; att: string[] }
 
 const TYPE_LABEL: Record<string, string> = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹', other: '其他' }
 const TYPE_ICON: Record<string, string> = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', other: 'file' }
@@ -61,10 +61,10 @@ export default function WorkbenchPage() {
 
   // chat
   const [prototypeMsgs] = React.useState<ChatMsg[]>([
-    { role: 'user', html: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', att: [] },
-    { role: 'agent', html: '当前项目包含 <code>landuse_2020.tif</code>（土地利用栅格）、<code>study_boundary.shp</code>（研究区边界）和 <code>carbon_pools.csv</code>（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', att: [] },
-    { role: 'user', html: '好的，先把这份土地利用数据作为上下文。', att: ['landuse_2020.tif'] },
-    { role: 'agent', html: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
+    { role: 'user', html: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', text: '帮我看看当前项目里有哪些数据可以用来跑碳储量模型？', att: [] },
+    { role: 'agent', html: '当前项目包含 <code>landuse_2020.tif</code>（土地利用栅格）、<code>study_boundary.shp</code>（研究区边界）和 <code>carbon_pools.csv</code>（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', text: '当前项目包含 landuse_2020.tif（土地利用栅格）、study_boundary.shp（研究区边界）和 carbon_pools.csv（碳密度表）。这三项正好对应 Carbon Storage 模型的全部必需输入，可以直接在左栏 InVEST 标签里手动配置运行。', att: [] },
+    { role: 'user', html: '好的，先把这份土地利用数据作为上下文。', text: '好的，先把这份土地利用数据作为上下文。', att: ['landuse_2020.tif'] },
+    { role: 'agent', html: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', text: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
   ])
   const [msgs, setMsgs] = React.useState<ChatMsg[]>([])
   const [atts, setAtts] = React.useState<string[]>([])
@@ -134,6 +134,7 @@ export default function WorkbenchPage() {
     setMsgs(messages.map(message => ({
       role: message.role === 'assistant' ? 'agent' : 'user',
       html: escapeHtml(message.content).replace(/\n/g, '<br />'),
+      text: message.content,
       att: [],
     })))
     setAgentError(current.last_error ?? '')
@@ -178,7 +179,21 @@ export default function WorkbenchPage() {
     return () => { cancelled = true }
   }, [sceneId])
 
-  React.useEffect(() => { const el = chatScrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs, view])
+  const autoScrollRef = React.useRef(true)
+  React.useEffect(() => {
+    const el = chatScrollRef.current
+    if (!el) return
+    const handleScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+      autoScrollRef.current = atBottom
+    }
+    el.addEventListener('scroll', handleScroll, { passive: true })
+    return () => el.removeEventListener('scroll', handleScroll)
+  }, [view])
+  React.useEffect(() => {
+    const el = chatScrollRef.current
+    if (el && autoScrollRef.current) el.scrollTop = el.scrollHeight
+  }, [msgs, view])
   React.useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight }, [logLines])
   React.useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
 
@@ -237,6 +252,7 @@ export default function WorkbenchPage() {
   async function send() {
     const text = draft.trim()
     if (!text || streaming || !agentSession) return
+    autoScrollRef.current = true
     const attachmentContext = atts.length ? `\n\nReferenced scene files: ${atts.join(', ')}` : ''
     try {
       setDraft(''); setAtts([])
@@ -264,18 +280,19 @@ export default function WorkbenchPage() {
   function sendPrototype() {
     const text = draft.trim()
     if (!text || streaming) return
-    const userMsg: ChatMsg = { role: 'user', html: escapeHtml(text), att: atts.slice() }
+    autoScrollRef.current = true
+    const userMsg: ChatMsg = { role: 'user', html: escapeHtml(text), text, att: atts.slice() }
     setDraft(''); setAtts([])
     setStreaming(true)
     const reply = '收到。我会基于当前项目的数据回答——你可以在左栏 InVEST 标签选择模型、配置输入后手动运行，运行状态与日志会显示在右侧面板。'
-    setMsgs(prev => [...prev, userMsg, { role: 'agent', html: '<span class="cursor-blink"></span>', att: [] }])
+    setMsgs(prev => [...prev, userMsg, { role: 'agent', html: '<span class="cursor-blink"></span>', text: '', att: [] }])
     let i = 0
     const tick = () => {
       i += 2
       const done = i >= reply.length
       setMsgs(prev => {
         const next = prev.slice()
-        next[next.length - 1] = { role: 'agent', html: escapeHtml(reply.slice(0, i)) + (done ? '' : '<span class="cursor-blink"></span>'), att: [] }
+        next[next.length - 1] = { role: 'agent', html: escapeHtml(reply.slice(0, i)) + (done ? '' : '<span class="cursor-blink"></span>'), text: reply.slice(0, i), att: [] }
         return next
       })
       if (done) { setStreaming(false) } else { window.setTimeout(tick, 18) }
@@ -416,15 +433,28 @@ export default function WorkbenchPage() {
   }, new Map<string, WbFile[]>()))
 
   function ChatList({ pad }: { pad: string }) {
+    const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null)
+    function copyText(text: string, idx: number) {
+      if (!text) return
+      navigator.clipboard.writeText(text).then(() => {
+        setCopiedIdx(idx)
+        setTimeout(() => setCopiedIdx(null), 1500)
+      }).catch(() => {})
+    }
     return (
       <div className="chat-inner" style={{ padding: pad }}>
         {msgs.map((m, i) => (
           <div className={`msg ${m.role}`} key={i}>
             <span className="who">{m.role === 'user' ? '我' : 'AI'}</span>
-            <div className="bubble"><div className="body">
-              <p dangerouslySetInnerHTML={{ __html: m.html }} />
-              {m.att.length > 0 && <div className="att-tags">{m.att.map(a => <span className="att-chip" key={a} style={{ height: 24 }}><Icon name="paperclip" cls="ic-sm" />{a}</span>)}</div>}
-            </div></div>
+            <div className="bubble">
+              <div className="body">
+                <p dangerouslySetInnerHTML={{ __html: m.html }} />
+                {m.att.length > 0 && <div className="att-tags">{m.att.map(a => <span className="att-chip" key={a} style={{ height: 24 }}><Icon name="paperclip" cls="ic-sm" />{a}</span>)}</div>}
+              </div>
+              <button className="copy-btn" title="复制" aria-label="复制消息" onClick={() => copyText(m.text, i)}>
+                <Icon name={copiedIdx === i ? 'check' : 'copy'} cls="ic-sm" />
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -770,6 +800,12 @@ export default function WorkbenchPage() {
         .msg.agent .body code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
         .msg.user .body code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,.18); padding: 1px 5px; border-radius: 4px; }
         .msg .att-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+        .msg .bubble { position: relative; }
+        .msg .copy-btn { display: flex; align-items: center; justify-content: center; position: absolute; bottom: -28px; width: 26px; height: 26px; border: 0; border-radius: 4px; background: transparent; color: var(--faint); cursor: pointer; opacity: 0; transition: opacity .15s, color .1s, background .1s; padding: 0; }
+        .msg.user .copy-btn { right: 0; }
+        .msg.agent .copy-btn { left: 0; }
+        .msg:hover .copy-btn, .msg .copy-btn:focus { opacity: 1; }
+        .msg .copy-btn:hover { color: var(--fg-strong); background: var(--inset); }
         .msg.user .att-chip { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.28); color: #fff; }
         .cursor-blink { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; animation: blink 1s step-end infinite; border-radius: 1px; }
         @keyframes blink { 50% { opacity: 0; } }
