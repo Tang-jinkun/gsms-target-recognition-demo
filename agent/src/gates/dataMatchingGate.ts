@@ -77,8 +77,10 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
   // ── Load current-context evidence ─────────────────────────────────────────
   // Filter by matchingContextId to prevent reuse of stale evidence from
   // a previous scene/model/data combination.
+  // Strict: artifact must have matchingContextId AND it must match current context.
+  // Artifacts without matchingContextId are stale/unscoped and cannot satisfy the gate.
   const ctxFilter = (a: { metadata?: Record<string, unknown> }) =>
-    !matchingContextId || !a.metadata?.matchingContextId || a.metadata.matchingContextId === matchingContextId
+    matchingContextId && a.metadata?.matchingContextId === matchingContextId
 
   const schemaArtifact = [...artifacts]
     .reverse()
