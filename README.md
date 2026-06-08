@@ -89,18 +89,27 @@ or fabricate output statistics.
 
 ## Design Philosophy
 
-### 1. Skills Guide, Tools Execute, Runtime Is Agnostic
+### 1. Agent Decides, Skills Guide, Tools Execute, Gates Protect
 
 This is the most important architectural decision in the project:
 
-- **Skills** (`SKILL.md` files): encode domain workflow knowledge. They tell
-  the Agent *what to do, in what order, and what evidence is needed*.
-- **Tools**: enforce only generic safety boundaries — permissions, evidence
-  availability, workflow phase limits, path safety. They do not encode
-  InVEST-specific reasoning.
+- **Agent / LLM**: chooses business judgments and investigation paths.
+- **Skills** (`SKILL.md` files): encode domain methods, procedures, examples,
+  and recovery guidance. They recommend how to investigate without defining a
+  mandatory tool-call sequence.
+- **Tools / Primitives**: obtain deterministic facts or perform local actions.
+- **Artifacts**: preserve auditable evidence produced by tools and stages.
+- **Gates**: validate critical conclusions and stage transitions using current
+  evidence. They do not replace the Agent's business judgment.
+- **Workflow Boundary**: enforces only non-bypassable prerequisites and
+  current-request restrictions.
 - **agent-core Runtime**: completely model-agnostic. Contains no InVEST-specific
   logic. Swapping the LLM model or even the domain requires no changes to
   Runtime or Tools.
+
+The governing rule is **flexible exploration, strict transitions**. The Agent
+may choose how to investigate, but cannot claim readiness or cross a protected
+stage without sufficient current-context evidence.
 
 ### 2. Validation Snapshot Immutability
 
@@ -123,16 +132,19 @@ The Agent Worker **never sees the raw API key**. The backend stores
 Fernet-encrypted provider keys; the Worker authenticates with a proxy token
 only. Model selection happens in the frontend Agent chat dropdown.
 
-### 5. Workflow Boundary Enforcement
+### 5. Workflow Boundary and Evidence Gates
 
-`workflowBoundary.ts` infers the current workflow phase from the user's
-natural-language request and restricts which tools are available at each phase:
+`workflowBoundary.ts` limits non-bypassable transitions and prevents actions
+that conflict with the current request:
 
 ```
 matching → validation → confirmation → execution → interpretation
 ```
 
-This prevents the Agent from jumping ahead or repeating completed stages.
+The boundary must not prescribe one fixed investigation sequence. Concrete
+evidence Gates validate whether matching, validation, execution, and reporting
+transitions are supported by current Artifacts. See
+`docs/evidence-gated-agent-development-plan.md`.
 
 ### 6. Data Hub as Global File Store
 
@@ -142,15 +154,21 @@ not by copy. Job outputs are automatically registered into Data Hub under
 task-named folders. Agent-produced intermediate artifacts (`result-analysis.json`,
 etc.) are also visible to users.
 
-## Current Branch Focus
+## Current Development Focus
 
-The active feature branch is:
+The current architecture work is being developed on:
 
 ```text
-feat/deterministic-result-analysis
+refactor/flexible-workflow-boundary
 ```
 
-This branch adds and hardens the result interpretation chain:
+The result interpretation chain is operational. Current work is separating
+Skill guidance, deterministic Tools, auditable Artifacts, evidence Gates, and
+Workflow Boundary responsibilities. The immediate milestone is a Carbon
+`DataMatchingGate` that validates a completed Binding Report without forcing
+the Agent through a fixed tool-call sequence.
+
+The operational result interpretation chain is:
 
 ```text
 inspect_invest_job_outputs
@@ -481,6 +499,7 @@ docker compose up -d --build backend agent-worker frontend
 
 - `docs/agent-development-guidelines.md`
 - `docs/agent-integration-architecture.md`
+- `docs/evidence-gated-agent-development-plan.md`
 - `docs/agent-session-api.md`
 - `docs/docker-one-click.md`
 - `docs/invest-agent-cli.md`
