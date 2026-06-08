@@ -432,14 +432,27 @@ export default function WorkbenchPage() {
     return map
   }, new Map<string, WbFile[]>()))
 
+  function fallbackCopy(text: string): boolean {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;left:-9999px;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  }
+
   function ChatList({ pad }: { pad: string }) {
     const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null)
     function copyText(text: string, idx: number) {
       if (!text) return
-      navigator.clipboard.writeText(text).then(() => {
-        setCopiedIdx(idx)
-        setTimeout(() => setCopiedIdx(null), 1500)
-      }).catch(() => {})
+      const done = () => { setCopiedIdx(idx); setTimeout(() => setCopiedIdx(null), 1500) }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text) && done())
+      } else {
+        fallbackCopy(text) && done()
+      }
     }
     return (
       <div className="chat-inner" style={{ padding: pad }}>
