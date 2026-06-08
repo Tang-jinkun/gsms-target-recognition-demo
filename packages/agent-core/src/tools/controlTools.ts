@@ -66,7 +66,7 @@ export const finishTool: AgentTool = {
         )
         if (domainArtifacts.length === 0) {
           return {
-            content: 'Cannot finish: no domain evidence produced. Call domain tools (list_scene_data_cards, get_invest_model_schema, etc.) first.',
+            content: 'Cannot finish: no evidence artifacts produced. Gather domain evidence before finishing.',
           }
         }
       }

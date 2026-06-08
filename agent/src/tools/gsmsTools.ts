@@ -370,6 +370,26 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
             artifact.metadata?.modelId === parsed.modelId &&
             artifact.metadata?.matchingContextId === state.matchingContextId)
         if (!report) throw new Error('Submit a Binding Report before validation')
+
+        // DataMatchingGate: check the gate result stored in binding report metadata.
+        // The gate ran inside finalize_data_matching; we just verify the status.
+        // If no gate result exists (older reports), allow validation to proceed.
+        const gatePassed = report.metadata?.gatePassed
+        const gateStatus = report.metadata?.gateStatus
+        if (gatePassed === false) {
+          return {
+            content: JSON.stringify({
+              status: 'gate-blocked',
+              gateStatus,
+              instruction: `Cannot validate: DataMatchingGate status is '${String(gateStatus)}'. Fix the issues and re-finalize.`,
+            }),
+            diagnostics: [{
+              code: 'DATA_MATCHING_GATE_BLOCKED',
+              message: `Binding report gate status is '${String(gateStatus)}' — must be 'ready_for_validation' to validate.`,
+              severity: 'error' as const,
+            }],
+          }
+        }
         const result = await client.validateBindings({
           ...parsed,
           bindingReport: report.data,
@@ -392,7 +412,11 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
             type: 'validation-report',
             createdBy: 'tool',
             data: result,
-            metadata: { modelId: parsed.modelId },
+            metadata: {
+              modelId: parsed.modelId,
+              sceneId: parsed.sceneId,
+              matchingContextId: typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined,
+            },
           }],
           statePatch: {
             phase: canProceed ? 'awaiting-user-confirmation' : 'validation-failed',

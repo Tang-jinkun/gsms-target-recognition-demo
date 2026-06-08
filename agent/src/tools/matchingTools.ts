@@ -14,6 +14,7 @@ import {
 } from '../domain/schemas.ts'
 import { assertReportCanProceed } from '../matching/guards.ts'
 import { buildBindingReport, retrieveCandidates } from '../matching/primitives.ts'
+import { checkDataMatchingGate } from '../gates/dataMatchingGate.ts'
 
 function latestModelSchema(context: AgentContext): ModelInputSchema {
   const modelId = context.domainState.snapshot().modelId
@@ -295,38 +296,60 @@ export const finalizeDataMatchingTool: AgentTool = {
       recommendedNextAction,
     }))
     assertReportCanProceed(report, schema, checks)
-    const completed = recommendedNextAction === 'proceed-to-validation'
     const artifactId = `binding-report:${matchingContextId}:${createHash('sha256')
       .update(JSON.stringify(report.bindings))
       .digest('hex')
       .slice(0, 12)}`
     const existing = context.artifacts.get(artifactId)
+
+    // Run DataMatchingGate with the report passed directly (not yet persisted to context)
+    const gate = checkDataMatchingGate(context, report)
+
+    // Persist the artifact with gate result in metadata
+    const artifactResult = existing ? [] : [{
+      id: artifactId,
+      type: 'binding-report',
+      createdBy: 'agent' as const,
+      data: report,
+      metadata: {
+        modelId: schema.modelId,
+        sceneId: context.domainState.snapshot().sceneId,
+        matchingContextId,
+        gateStatus: gate.status,
+        gatePassed: gate.passed,
+      },
+    }]
+
+    const phase = gate.status === 'ready_for_validation' ? 'ready-for-validation'
+      : gate.status === 'needs_review' ? 'resolving-ambiguity'
+      : 'resolving-ambiguity'
+
     return {
       content: JSON.stringify({
         status: 'matching-finalized',
+        gate: {
+          status: gate.status,
+          passed: gate.passed,
+          blockingReasons: gate.blockingReasons,
+          slotStatuses: gate.slotStatuses,
+        },
         recommendedNextAction,
         bindingReport: report,
-        instruction: 'Finish and present the matching result. Do not validate unless the current request explicitly asks for validation.',
+        instruction: gate.passed
+          ? 'Matching is complete and gate passed. Finish with the result, or validate if the user asked for it.'
+          : `Matching finalized but gate status is '${gate.status}'. Explain the issues and ask the user how to proceed.`,
       }),
-      artifacts: existing ? [] : [{
-        id: artifactId,
-        type: 'binding-report',
-        createdBy: 'agent',
-        data: report,
-        metadata: {
-          modelId: schema.modelId,
-          sceneId: context.domainState.snapshot().sceneId,
-          matchingContextId,
-        },
-      }],
+      artifacts: artifactResult,
       statePatch: {
-        phase: completed ? 'ready-for-validation' : 'resolving-ambiguity',
-        bindingStatus: completed ? 'ready-for-validation' : report.recommendedNextAction,
+        phase,
+        bindingStatus: gate.status,
       },
       hiddenMessages: [{
         role: 'user',
         hidden: true,
-        content: 'Matching is finalized. Finish now with candidates, evidence, confidence, missing items, risks, and the recommended next step. Do not validate unless the current request explicitly asks for validation.',
+        content: gate.passed
+          ? 'Matching is finalized and passed the evidence gate. Finish now with candidates, evidence, confidence, missing items, risks, and the recommended next step. Do not validate unless the current request explicitly asks for validation.'
+          : `Matching is finalized but the gate found issues: ${gate.blockingReasons.join('; ')}. Explain these to the user and ask how to proceed.`,
       }],
     }
   },

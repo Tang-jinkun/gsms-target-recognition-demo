@@ -407,17 +407,15 @@ test('phase filter: matching group tools gated by evidence', () => {
   const filter = workflowPhaseFilter()
 
   const visibleTools = tools.list().filter(tool => filter(tool, context)).map(tool => tool.name)
-  // Schema and data cards always visible in matching group
-  assert.ok(visibleTools.includes('get_invest_model_schema'), 'schema tool always visible')
-  assert.ok(visibleTools.includes('list_scene_data_cards'), 'data cards tool always visible')
-  // With evidence, matching tools become visible
-  assert.ok(visibleTools.includes('retrieve_input_candidates'), 'candidates tool visible with schema+datacards')
-  assert.ok(visibleTools.includes('finalize_data_matching'), 'finalize visible with schema+datacards+candidates')
-  assert.ok(visibleTools.includes('validate_binding_report'), 'validation visible with binding report')
+  // In matching group, all domain tools are visible (gates enforce quality inside tools)
+  assert.ok(visibleTools.includes('get_invest_model_schema'), 'schema tool visible')
+  assert.ok(visibleTools.includes('list_scene_data_cards'), 'data cards tool visible')
+  assert.ok(visibleTools.includes('retrieve_input_candidates'), 'candidates tool visible')
+  assert.ok(visibleTools.includes('finalize_data_matching'), 'finalize visible')
+  assert.ok(visibleTools.includes('validate_binding_report'), 'validation visible')
+  assert.ok(visibleTools.includes('confirm_validation_snapshot'), 'confirmation visible (gate inside tool)')
+  assert.ok(visibleTools.includes('execute_validated_snapshot'), 'execution visible (gate inside tool)')
   assert.ok(visibleTools.includes('finish'), 'finish visible when evidence exists')
-  // Without their required evidence, downstream tools are hidden
-  assert.ok(!visibleTools.includes('confirm_validation_snapshot'), 'confirmation hidden without validation-report')
-  assert.ok(!visibleTools.includes('execute_validated_snapshot'), 'execution hidden without confirmation-record')
 })
 
 test('phase filter enforces hard gate in execution phase', () => {

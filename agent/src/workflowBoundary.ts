@@ -151,48 +151,18 @@ function executionPhaseAllows(toolName: string, phase: string): boolean {
   return true
 }
 
-// ── Matching Phase Gate (evidence-gated) ───────────────────────────────────────
-// The model chooses tool order, but visibility narrows based on what evidence
-// has been produced. This prevents "answer without doing work" while preserving
-// freedom of exploration path.
+// ── Matching Phase Gate (tool-visibility) ──────────────────────────────────────
+// All domain tools are visible in the matching group. The model chooses its own
+// investigation path. Gates inside tools (DataMatchingGate, etc.) enforce evidence
+// quality — the boundary layer does not encode a fixed tool sequence.
+//
+// This is the correct separation:
+//   - Workflow Boundary: controls which phase group the agent is in (matching vs execution)
+//   - Tools: enforce their own prerequisites via internal gates
+//   - Skills: teach the model how to investigate
+//   - finish: gated by finishPassesEvidenceGate (needs at least one domain artifact)
 
-function matchingPhaseAllows(toolName: string, context: AgentContext): boolean {
-  // Always-visible tools in matching group
-  if (['list_invest_models', 'get_invest_model_schema', 'list_scene_data_cards'].includes(toolName)) {
-    return true
-  }
-
-  const artifacts = context.artifacts.list()
-  const hasSchema = artifacts.some(a => a.type === 'model-input-schema')
-  const hasDataCards = artifacts.some(a => a.type === 'gsms-scene-data-cards')
-  const hasCandidates = artifacts.some(a => a.type === 'candidate-set')
-  const hasBindingReport = artifacts.some(a => a.type === 'binding-report')
-
-  // retrieve_input_candidates: needs schema + data cards
-  if (toolName === 'retrieve_input_candidates') return hasSchema && hasDataCards
-
-  // check_data_relation: needs schema + data cards
-  if (toolName === 'check_data_relation') return hasSchema && hasDataCards
-
-  // finalize_sufficiency_assessment: needs schema + data cards + candidates
-  if (toolName === 'finalize_sufficiency_assessment') return hasSchema && hasDataCards && hasCandidates
-
-  // finalize_data_matching: needs schema + data cards + candidates
-  if (toolName === 'finalize_data_matching') return hasSchema && hasDataCards && hasCandidates
-
-  // validate_binding_report: needs binding report
-  if (toolName === 'validate_binding_report') return hasBindingReport
-
-  // confirm_validation_snapshot: needs validation report
-  if (toolName === 'confirm_validation_snapshot') {
-    return artifacts.some(a => a.type === 'validation-report')
-  }
-
-  // execute_validated_snapshot: needs confirmation record
-  if (toolName === 'execute_validated_snapshot') {
-    return artifacts.some(a => a.type === 'confirmation-record')
-  }
-
+function matchingPhaseAllows(): boolean {
   return true
 }
 
