@@ -328,10 +328,37 @@ function workflowDirective(
     }
     return 'Reuse the persisted candidate sets and relation checks, then call finalize_data_matching. Do not construct a Binding Report manually.'
   }
+  if (phase === 'sufficiency-assessed') {
+    return 'Sufficiency assessment is complete. Call finish with the report findings.'
+  }
   if (phase === 'validation-failed') {
     return 'Explain the persisted validation errors and stop unless the user changed bindings or parameters.'
   }
-  return 'Continue from the persisted phase and reuse existing evidence where applicable.'
+  if (phase === 'discovering-data' || phase === 'matching-slots') {
+    const hasSchema = counts['model-input-schema']
+    const hasDataCards = counts['gsms-scene-data-cards']
+    const hasCandidates = counts['candidate-set']
+    const hasSufficiencyReport = counts['sufficiency-report']
+    const hasBindingReport = counts['binding-report']
+
+    if (hasSufficiencyReport || hasBindingReport) {
+      return 'Assessment or matching complete. Call finish with the findings.'
+    }
+    if (hasSchema && hasDataCards && hasCandidates) {
+      return 'Schema, data cards, and candidates are loaded. If assessing sufficiency, call finalize_sufficiency_assessment. If matching, call finalize_data_matching.'
+    }
+    if (hasSchema && hasDataCards) {
+      return 'Schema and data cards loaded. Call retrieve_input_candidates for required slots to check data availability.'
+    }
+    if (hasDataCards) {
+      return 'Data cards loaded. Call get_invest_model_schema for the target model, then retrieve_input_candidates.'
+    }
+    if (hasSchema) {
+      return 'Schema loaded. Call list_scene_data_cards to load scene data, then retrieve_input_candidates.'
+    }
+    return 'Start by calling list_scene_data_cards and/or get_invest_model_schema to gather evidence.'
+  }
+  return 'If the user question is answered by available evidence, call finish. Otherwise continue gathering evidence.'
 }
 
 function isArtifact(value: unknown): value is {

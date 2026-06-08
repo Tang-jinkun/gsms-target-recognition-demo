@@ -701,6 +701,78 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
       },
     },
+    {
+      name: 'finalize_sufficiency_assessment',
+      description: 'Generate a deterministic sufficiency report: can this scene run this model? Reports available/missing/ambiguous slots with evidence.',
+      risk: 'read',
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['modelId', 'sceneId', 'slotAssessments'],
+        properties: {
+          modelId: { type: 'string' },
+          sceneId: { type: 'string' },
+          slotAssessments: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['slot', 'status', 'reasoning'],
+              properties: {
+                slot: { type: 'string' },
+                status: { type: 'string', enum: ['available', 'missing', 'ambiguous'] },
+                selectedAssetIds: { type: 'array', items: { type: 'string' } },
+                reasoning: { type: 'string' },
+                confidence: { type: 'number', minimum: 0, maximum: 1 },
+              },
+            },
+          },
+        },
+      },
+      async execute(input, context) {
+        const parsed = z.object({
+          modelId: z.string().min(1),
+          sceneId: z.string().min(1),
+          slotAssessments: z.array(z.object({
+            slot: z.string(),
+            status: z.enum(['available', 'missing', 'ambiguous']),
+            selectedAssetIds: z.array(z.string()).optional(),
+            reasoning: z.string(),
+            confidence: z.number().min(0).max(1).optional(),
+          })),
+        }).parse(input)
+
+        const allAvailable = parsed.slotAssessments.every(s => s.status === 'available')
+        const hasMissing = parsed.slotAssessments.some(s => s.status === 'missing')
+        const hasAmbiguous = parsed.slotAssessments.some(s => s.status === 'ambiguous')
+
+        const overallStatus = allAvailable ? 'all-available' : hasMissing ? 'has-missing' : 'has-ambiguous'
+
+        const report = {
+          modelId: parsed.modelId,
+          sceneId: parsed.sceneId,
+          slotAssessments: parsed.slotAssessments,
+          overallStatus,
+          runnable: allAvailable,
+          summary: allAvailable
+            ? `All required inputs for ${parsed.modelId} are available in scene ${parsed.sceneId}.`
+            : hasMissing
+              ? `Missing required inputs for ${parsed.modelId}: ${parsed.slotAssessments.filter(s => s.status === 'missing').map(s => s.slot).join(', ')}.`
+              : `Some inputs for ${parsed.modelId} have ambiguous matches and need user decision.`,
+          timestamp: new Date().toISOString(),
+        }
+
+        return {
+          content: JSON.stringify(report, null, 2),
+          artifacts: [{
+            type: 'sufficiency-report',
+            createdBy: 'tool',
+            data: report,
+            metadata: { modelId: parsed.modelId, sceneId: parsed.sceneId },
+          }],
+          statePatch: { phase: 'sufficiency-assessed' },
+        }
+      },
+    },
   ]
 }
 

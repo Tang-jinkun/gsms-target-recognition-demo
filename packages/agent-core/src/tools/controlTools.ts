@@ -50,10 +50,26 @@ export const finishTool: AgentTool = {
       remainingIssues: { type: 'array', items: { type: 'string' } },
     },
   },
-  async execute(input) {
+  async execute(input, context) {
     const parsed = finishSchema.parse(input)
     if (parsed.status === 'completed' && parsed.evidence.length === 0) {
       return { content: 'Cannot finish as completed without evidence' }
+    }
+    // Evidence gate: if any artifacts exist, at least one must be a domain artifact.
+    // This prevents finishing after calling only control tools (update_goal) in a
+    // domain session, while allowing non-domain sessions to finish freely.
+    if (parsed.status === 'completed' && context) {
+      const allArtifacts = context.artifacts.list()
+      if (allArtifacts.length > 0) {
+        const domainArtifacts = allArtifacts.filter(
+          a => !['goal-progress'].includes(a.type),
+        )
+        if (domainArtifacts.length === 0) {
+          return {
+            content: 'Cannot finish: no domain evidence produced. Call domain tools (list_scene_data_cards, get_invest_model_schema, etc.) first.',
+          }
+        }
+      }
     }
     return {
       content: `Goal marked ${parsed.status}`,

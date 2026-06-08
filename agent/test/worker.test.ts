@@ -345,13 +345,15 @@ test('worker fails a progress-only run that reaches its turn limit instead of pr
   }
 })
 
-test('phase filter allows cross-group tools in matching phase (soft boundary)', () => {
+test('phase filter: matching group tools gated by evidence', () => {
   assert.equal(isExecutionPhase('ready-for-validation'), false)
   assert.equal(isExecutionPhase('job-running'), true)
 
   const tools = new ToolRegistry([
     stubTool('finish'),
     stubTool('get_invest_model_schema'),
+    stubTool('list_scene_data_cards'),
+    stubTool('retrieve_input_candidates'),
     stubTool('finalize_data_matching'),
     stubTool('validate_binding_report'),
     stubTool('confirm_validation_snapshot'),
@@ -362,13 +364,20 @@ test('phase filter allows cross-group tools in matching phase (soft boundary)', 
     {
       type: 'model-input-schema',
       createdBy: 'tool',
-      data: {
-        modelId: 'carbon',
-        displayName: 'Carbon',
-        version: '3.19.0',
-        slots: [],
-      },
+      data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] },
       metadata: { modelId: 'carbon' },
+    },
+    {
+      type: 'gsms-scene-data-cards',
+      createdBy: 'tool',
+      data: {},
+      metadata: { sceneId: 'scene-1', modelId: 'carbon' },
+    },
+    {
+      type: 'candidate-set',
+      createdBy: 'tool',
+      data: {},
+      metadata: { slot: 'lulc_bas' },
     },
     {
       type: 'binding-report',
@@ -398,10 +407,17 @@ test('phase filter allows cross-group tools in matching phase (soft boundary)', 
   const filter = workflowPhaseFilter()
 
   const visibleTools = tools.list().filter(tool => filter(tool, context)).map(tool => tool.name)
-  assert.ok(visibleTools.includes('validate_binding_report'), 'validation tool visible in matching group')
-  assert.ok(visibleTools.includes('confirm_validation_snapshot'), 'confirmation tool visible in matching group')
-  assert.ok(visibleTools.includes('execute_validated_snapshot'), 'execution tool visible in matching group')
-  assert.ok(visibleTools.includes('finish'), 'finish always visible')
+  // Schema and data cards always visible in matching group
+  assert.ok(visibleTools.includes('get_invest_model_schema'), 'schema tool always visible')
+  assert.ok(visibleTools.includes('list_scene_data_cards'), 'data cards tool always visible')
+  // With evidence, matching tools become visible
+  assert.ok(visibleTools.includes('retrieve_input_candidates'), 'candidates tool visible with schema+datacards')
+  assert.ok(visibleTools.includes('finalize_data_matching'), 'finalize visible with schema+datacards+candidates')
+  assert.ok(visibleTools.includes('validate_binding_report'), 'validation visible with binding report')
+  assert.ok(visibleTools.includes('finish'), 'finish visible when evidence exists')
+  // Without their required evidence, downstream tools are hidden
+  assert.ok(!visibleTools.includes('confirm_validation_snapshot'), 'confirmation hidden without validation-report')
+  assert.ok(!visibleTools.includes('execute_validated_snapshot'), 'execution hidden without confirmation-record')
 })
 
 test('phase filter enforces hard gate in execution phase', () => {
