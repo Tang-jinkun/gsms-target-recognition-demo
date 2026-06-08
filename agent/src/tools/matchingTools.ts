@@ -346,13 +346,13 @@ function toolFailure(
 
 export function computeMatchingContextId(
   sceneId: string,
-  schema: ModelInputSchema,
+  schema: ModelInputSchema | undefined,
   cards: readonly DataCard[],
 ): string {
   const payload = {
     sceneId,
-    modelId: schema.modelId,
-    version: schema.version,
+    modelId: schema?.modelId ?? 'none',
+    version: schema?.version ?? '0',
     assets: cards
       .map(card => ({ assetId: card.assetId, fingerprint: card.provenance.fingerprint }))
       .sort((left, right) => left.assetId.localeCompare(right.assetId)),

@@ -203,7 +203,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const { sceneId } = sceneSchema.parse(input)
         const result = await client.listSceneDataCards(sceneId)
         const cards = normalizeDataCards(result)
-        const schemaArtifact = contextModelSchema(context)
+        const schemaArtifact = tryContextModelSchema(context)
         const matchingContextId = computeMatchingContextId(sceneId, schemaArtifact, cards)
         return {
           content: JSON.stringify(result),
@@ -212,7 +212,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               type: 'gsms-scene-data-cards',
               createdBy: 'tool',
               data: result,
-              metadata: { sceneId, modelId: schemaArtifact.modelId, matchingContextId },
+              metadata: { sceneId, modelId: schemaArtifact?.modelId, matchingContextId },
             },
             ...cards.map(card => ({
               type: 'data-card',
@@ -220,7 +220,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               data: card,
               metadata: {
                 sceneId,
-                modelId: schemaArtifact.modelId,
+                modelId: schemaArtifact?.modelId,
                 matchingContextId,
                 assetId: card.assetId,
               },
@@ -711,6 +711,14 @@ function contextModelSchema(context: Parameters<AgentTool['execute']>[1]) {
     .find(candidate => !modelId || candidate.metadata?.modelId === modelId)
   if (!artifact) throw new Error('Load a GSMS model schema before loading scene data')
   return modelInputSchemaSchema.parse(artifact.data)
+}
+
+function tryContextModelSchema(context: Parameters<AgentTool['execute']>[1]) {
+  const modelId = context.domainState.snapshot().modelId
+  const artifact = [...context.artifacts.list('model-input-schema')]
+    .reverse()
+    .find(candidate => !modelId || candidate.metadata?.modelId === modelId)
+  return artifact ? modelInputSchemaSchema.parse(artifact.data) : undefined
 }
 
 function canonical(value: unknown): string {
