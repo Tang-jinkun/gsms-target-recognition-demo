@@ -80,8 +80,18 @@ export const retrieveInputCandidatesTool: AgentTool = {
     const matchingContextId = currentMatchingContext(context)
     const inputSlot = schema.slots.find(candidate => candidate.name === slot)
     if (!inputSlot) {
-      const validSlots = schema.slots.map(s => `${s.name}${s.required ? ' (required)' : ''}`).join(', ')
-      throw new Error(`Unknown input slot for ${schema.modelId}: '${slot}'. Valid slots: ${validSlots}`)
+      const required = schema.slots.filter(s => s.required).map(s => s.name)
+      const optional = schema.slots.filter(s => !s.required).map(s => s.name)
+      throw toolFailure(
+        'UNKNOWN_SLOT',
+        `Unknown input slot '${slot}' for ${schema.modelId}. Required slots: ${required.join(', ')}${optional.length ? `. Optional: ${optional.join(', ')}` : ''}`,
+        {
+          invalidSlot: slot,
+          requiredSlots: required,
+          optionalSlots: optional,
+          nextAction: { tool: 'retrieve_input_candidates', input: { slot: required[0] } },
+        },
+      )
     }
     const candidates = retrieveCandidates(inputSlot, dataCards(context))
     const artifactId = `candidate-set:${matchingContextId}:${slot}`

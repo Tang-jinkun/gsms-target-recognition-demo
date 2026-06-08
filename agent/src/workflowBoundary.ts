@@ -167,31 +167,44 @@ function matchingPhaseAllows(): boolean {
 }
 
 // ── Finish Evidence Gate ───────────────────────────────────────────────────────
-// finish is only visible when the current intent's minimum evidence exists.
-// This is the core mechanism that prevents "answer without doing work".
+// finish is only visible when sufficient evidence exists for the work attempted.
+// The gate is intent-aware: if the agent started matching (has candidates), it
+// must complete the binding report. If it only explored, lighter evidence suffices.
+//
+// Evidence is filtered by current matchingContextId where applicable — stale
+// evidence from a previous scene/model combination cannot satisfy the gate.
 
 function finishPassesEvidenceGate(context: AgentContext): boolean {
   const artifacts = context.artifacts.list()
-  const domainArtifacts = artifacts.filter(a =>
-    !['goal-progress'].includes(a.type)
-  )
-  // Minimum: at least one domain artifact must exist
+  const state = context.domainState.snapshot()
+  const matchingContextId =
+    typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
+
+  const domainArtifacts = artifacts.filter(a => !['goal-progress'].includes(a.type))
   if (domainArtifacts.length === 0) return false
 
-  // If sufficiency-report or binding-report exists, finish is allowed
-  if (domainArtifacts.some(a =>
-    a.type === 'sufficiency-report' ||
-    a.type === 'binding-report' ||
-    a.type === 'invest-report'
-  )) return true
+  // Current-context artifacts (matching scope)
+  const currentArtifacts = matchingContextId
+    ? domainArtifacts.filter(a => !a.metadata?.matchingContextId || a.metadata.matchingContextId === matchingContextId)
+    : domainArtifacts
 
-  // If we have data cards + schema, finish is allowed (exploration complete)
-  const hasSchema = domainArtifacts.some(a => a.type === 'model-input-schema')
-  const hasDataCards = domainArtifacts.some(a => a.type === 'gsms-scene-data-cards')
-  if (hasSchema && hasDataCards) return true
+  const has = (type: string) => currentArtifacts.some(a => a.type === type)
 
-  // If we only have model list, finish is allowed (basic exploration)
-  if (domainArtifacts.some(a => a.type === 'gsms-model-list')) return true
+  // Terminal evidence: always allows finish
+  if (has('sufficiency-report') || has('binding-report') || has('invest-report')) return true
+
+  // If the agent started matching (has candidate-sets), it MUST complete the
+  // binding report. Cannot finish with just candidates — that's an incomplete workflow.
+  if (has('candidate-set')) return false
+
+  // If schema + data-cards exist, finish is allowed (exploration/assessment complete)
+  if (has('model-input-schema') && has('gsms-scene-data-cards')) return true
+
+  // Model list only: basic exploration
+  if (has('gsms-model-list')) return true
+
+  // Data cards only (no schema): basic scene exploration
+  if (has('gsms-scene-data-cards')) return true
 
   return false
 }

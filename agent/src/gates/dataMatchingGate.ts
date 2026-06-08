@@ -51,6 +51,8 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
   const state = context.domainState.snapshot()
   const artifacts = context.artifacts.list()
   const modelId = typeof state.modelId === 'string' ? state.modelId : undefined
+  const matchingContextId =
+    typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
 
   // ── Check 1: Binding Report exists ────────────────────────────────────────
   let report: BindingReport
@@ -72,26 +74,31 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
     report = parsed.data
   }
 
-  // ── Load current evidence ─────────────────────────────────────────────────
+  // ── Load current-context evidence ─────────────────────────────────────────
+  // Filter by matchingContextId to prevent reuse of stale evidence from
+  // a previous scene/model/data combination.
+  const ctxFilter = (a: { metadata?: Record<string, unknown> }) =>
+    !matchingContextId || !a.metadata?.matchingContextId || a.metadata.matchingContextId === matchingContextId
+
   const schemaArtifact = [...artifacts]
     .reverse()
     .find(a => a.type === 'model-input-schema' && (!modelId || a.metadata?.modelId === modelId))
   const schema = schemaArtifact ? modelInputSchemaSchema.safeParse(schemaArtifact.data) : undefined
 
   const dataCards = artifacts
-    .filter(a => a.type === 'data-card')
+    .filter(a => a.type === 'data-card' && ctxFilter(a))
     .map(a => dataCardSchema.safeParse(a.data))
     .filter(r => r.success)
     .map(r => r.data)
 
   const candidateSets = artifacts
-    .filter(a => a.type === 'candidate-set')
+    .filter(a => a.type === 'candidate-set' && ctxFilter(a))
     .map(a => candidateSetSchema.safeParse(a.data))
     .filter(r => r.success)
     .map(r => r.data)
 
   const relationChecks = artifacts
-    .filter(a => a.type === 'relation-check')
+    .filter(a => a.type === 'relation-check' && ctxFilter(a))
     .map(a => relationCheckSchema.safeParse(a.data))
     .filter(r => r.success)
     .map(r => r.data)
