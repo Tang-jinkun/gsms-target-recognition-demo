@@ -22,7 +22,7 @@ function latestModelSchema(context: AgentContext): ModelInputSchema {
   const artifact = typeof modelId === 'string'
     ? [...artifacts].reverse().find(candidate => candidate.metadata?.modelId === modelId)
     : artifacts.at(-1)
-  if (!artifact) throw new Error('Load a GSMS model schema before matching data')
+  if (!artifact) throw new Error('No model schema loaded. Call get_invest_model_schema first to see available input slots.')
   return modelInputSchemaSchema.parse(artifact.data)
 }
 
@@ -79,7 +79,10 @@ export const retrieveInputCandidatesTool: AgentTool = {
     const schema = latestModelSchema(context)
     const matchingContextId = currentMatchingContext(context)
     const inputSlot = schema.slots.find(candidate => candidate.name === slot)
-    if (!inputSlot) throw new Error(`Unknown input slot for ${schema.modelId}: ${slot}`)
+    if (!inputSlot) {
+      const validSlots = schema.slots.map(s => `${s.name}${s.required ? ' (required)' : ''}`).join(', ')
+      throw new Error(`Unknown input slot for ${schema.modelId}: '${slot}'. Valid slots: ${validSlots}`)
+    }
     const candidates = retrieveCandidates(inputSlot, dataCards(context))
     const artifactId = `candidate-set:${matchingContextId}:${slot}`
     const existing = context.artifacts.get(artifactId)

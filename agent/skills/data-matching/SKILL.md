@@ -19,14 +19,18 @@ execution: inline
 
 Match data to the requested InVEST model without guessing.
 
+**Critical: Always call `get_invest_model_schema` BEFORE `retrieve_input_candidates`.**
+The schema tells you the exact slot names (e.g. `lulc_bas_path`, not `lulc_cur_path`).
+Guessing slot names will fail and waste turns.
+
 ## Mode A: Data Exploration (explore-data / assess-sufficiency)
 
 When the user asks "what data exists" or "can this model run":
 
 1. Call `list_scene_data_cards` to load factual Data Cards for the current scene.
 2. Call `list_invest_models` to see available models.
-3. Call `get_invest_model_schema` for the target model.
-4. Call `retrieve_input_candidates` for each required slot to check availability.
+3. Call `get_invest_model_schema` for the target model — **this gives you the exact slot names**.
+4. Call `retrieve_input_candidates` for each required slot listed in the schema.
 5. Call `finalize_sufficiency_assessment` with per-slot status (available/missing/ambiguous).
 6. Call `finish` with the sufficiency report findings.
 
@@ -34,8 +38,8 @@ When the user asks "what data exists" or "can this model run":
 
 When the user requests to match data or configure a run:
 
-1. Load the authoritative model schema from GSMS.
-2. Load factual Data Cards for the current GSMS scene.
+1. Call `get_invest_model_schema` — **this gives you the exact slot names and constraints**.
+2. Call `list_scene_data_cards` to load factual Data Cards for the current scene.
 3. Retrieve candidates for every required slot. Do not finalize until every required slot has a persisted candidate set.
 4. Ask GSMS to compare cross-file relations when a slot declares them.
 5. Keep multiple plausible candidates when evidence is ambiguous.
