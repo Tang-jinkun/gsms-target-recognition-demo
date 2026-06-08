@@ -152,10 +152,28 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         required: ['modelId'],
         properties: { modelId: { type: 'string' } },
       },
-      async execute(input) {
+      async execute(input, context) {
         const { modelId } = modelSchema.parse(input)
         const schema = await client.getModelSchema(modelId)
         const adapted = adaptGsmsModelSchema(schema)
+
+        // If data cards are already loaded, recompute matchingContextId with the new schema.
+        // This allows the agent to call list_scene_data_cards then get_invest_model_schema
+        // in any order without losing the matching context.
+        const existingCards = context.artifacts.list('data-card')
+        const sceneId = context.domainState.snapshot().sceneId
+        let matchingContextId: string | null = null
+        if (existingCards.length && typeof sceneId === 'string') {
+          const cards = existingCards
+            .filter(a => a.metadata?.sceneId === sceneId)
+            .map(a => dataCardSchema.safeParse(a.data))
+            .filter(r => r.success)
+            .map(r => r.data)
+          if (cards.length) {
+            matchingContextId = computeMatchingContextId(sceneId, adapted, cards)
+          }
+        }
+
         return {
           content: JSON.stringify(schema),
           artifacts: [
@@ -175,7 +193,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           statePatch: {
             modelId,
             phase: 'discovering-data',
-            matchingContextId: null,
+            matchingContextId,
             slots: null,
             bindingStatus: null,
             validationStatus: null,
