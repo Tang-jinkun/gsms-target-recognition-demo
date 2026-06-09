@@ -287,6 +287,21 @@ export class AgentRuntime {
     let content = ''
     const toolCallAccumulator = new Map<number, { id: string; name: string; arguments: string }>()
     let lastCompletedId: string | undefined
+    let streamBuffer = ''
+
+    const flushStreamBuffer = async () => {
+      if (!streamBuffer) return
+      await this.#emit({
+        runId,
+        turn,
+        eventType: 'model.streaming',
+        summary: streamBuffer,
+        status: 'completed',
+        data: { text: streamBuffer },
+        timestamp: new Date().toISOString(),
+      })
+      streamBuffer = ''
+    }
 
     const finalizeToolCall = () => {
       if (lastCompletedId === undefined) return
@@ -305,17 +320,13 @@ export class AgentRuntime {
       switch (chunk.type) {
         case 'text':
           content += chunk.text
-          await this.#emit({
-            runId,
-            turn,
-            eventType: 'model.streaming',
-            summary: chunk.text,
-            status: 'completed',
-            data: { text: chunk.text },
-            timestamp: new Date().toISOString(),
-          })
+          streamBuffer += chunk.text
+          if (/[.!?]\s/.test(streamBuffer) || /\n/.test(streamBuffer) || streamBuffer.length >= 100) {
+            await flushStreamBuffer()
+          }
           break
         case 'tool_call_start':
+          await flushStreamBuffer()
           // Finalize previous tool call if any
           finalizeToolCall()
           toolCallAccumulator.set(toolCallAccumulator.size, {
@@ -335,6 +346,9 @@ export class AgentRuntime {
           break
       }
     }
+
+    // Flush remaining streaming text buffer
+    await flushStreamBuffer()
 
     // Finalize any remaining tool call (stream ended without 'done')
     finalizeToolCall()

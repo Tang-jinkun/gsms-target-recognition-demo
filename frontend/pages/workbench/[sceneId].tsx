@@ -74,6 +74,8 @@ export default function WorkbenchPage() {
   const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
   const [agentError, setAgentError] = React.useState('')
   const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
+  const [streamingText, setStreamingText] = React.useState('')
+  const [activeTools, setActiveTools] = React.useState<Array<{ id: string; name: string; status: string; message?: string; percentage?: number }>>([])
   const agentEventCursorRef = React.useRef({ sessionId: '', afterId: 0 })
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -142,6 +144,40 @@ export default function WorkbenchPage() {
       agentEventCursorRef.current.afterId = events.at(-1)!.id
       const actionEvents = events.filter(event => isAgentActionEvent(event.type))
       setAgentEvents(previous => [...previous, ...actionEvents].slice(-500))
+
+      // Derive streaming text from model.streaming events
+      const streamingEvents = events.filter(e => e.type === 'model.streaming' && e.data.text)
+      if (streamingEvents.length) {
+        setStreamingText(prev => prev + streamingEvents.map(e => e.data.text).join(''))
+      }
+
+      // Derive active tools from tool events
+      const toolEvents = events.filter(e =>
+        e.type === 'tool.started' || e.type === 'tool.progress' || e.type === 'tool.completed' || e.type === 'tool.failed')
+      if (toolEvents.length) {
+        setActiveTools(prev => {
+          const tools = new Map(prev.map(t => [t.id, t]))
+          for (const ev of toolEvents) {
+            const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
+            if (ev.type === 'tool.started') {
+              tools.set(toolId, { id: toolId, name: ev.data.tool ?? 'tool', status: 'running' })
+            } else if (ev.type === 'tool.progress') {
+              const existing = tools.get(toolId)
+              if (existing) { existing.message = ev.data.message; existing.percentage = ev.data.percentage }
+            } else {
+              const existing = tools.get(toolId)
+              if (existing) existing.status = ev.type === 'tool.completed' ? 'completed' : 'failed'
+            }
+          }
+          return [...tools.values()]
+        })
+      }
+    }
+
+    // Clear streaming state when session becomes idle
+    if (current.status !== 'running' && current.status !== 'queued') {
+      setStreamingText('')
+      setActiveTools([])
     }
   }, [])
 
@@ -193,7 +229,7 @@ export default function WorkbenchPage() {
   React.useEffect(() => {
     const el = chatScrollRef.current
     if (el && autoScrollRef.current) el.scrollTop = el.scrollHeight
-  }, [msgs, view])
+  }, [msgs, streamingText, activeTools, view])
   React.useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight }, [logLines])
   React.useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
 
@@ -257,6 +293,8 @@ export default function WorkbenchPage() {
     try {
       setDraft(''); setAtts([])
       setStreaming(true)
+      setStreamingText('')
+      setActiveTools([])
       setAgentError('')
       const result = await agentSessionsRepo.send(agentSession.id, text + attachmentContext)
       await refreshAgentSession(result.session)
@@ -470,6 +508,34 @@ export default function WorkbenchPage() {
             </div>
           </div>
         ))}
+        {streaming && (streamingText || activeTools.length > 0) && (
+          <div className="msg agent">
+            <span className="who">AI</span>
+            <div className="bubble">
+              <div className="body">
+                {streamingText && <p dangerouslySetInnerHTML={{ __html: escapeHtml(streamingText) + '<span class="cursor-blink"></span>' }} />}
+                {activeTools.length > 0 && (
+                  <div className="tool-cards">
+                    {activeTools.map(tool => (
+                      <div className={`tool-card ${tool.status}`} key={tool.id}>
+                        <span className="tool-icon">
+                          {tool.status === 'running' ? <span className="spinner" /> : tool.status === 'completed' ? <Icon name="check" cls="ic-sm" /> : <Icon name="alert-circle" cls="ic-sm" />}
+                        </span>
+                        <div className="tool-info">
+                          <span className="tool-name">{tool.name}</span>
+                          {tool.message && <span className="tool-msg">{tool.message}</span>}
+                        </div>
+                        {typeof tool.percentage === 'number' && (
+                          <div className="tool-progress"><div className="tool-progress-bar" style={{ width: `${tool.percentage}%` }} /></div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -822,6 +888,17 @@ export default function WorkbenchPage() {
         .msg.user .att-chip { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.28); color: #fff; }
         .cursor-blink { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; animation: blink 1s step-end infinite; border-radius: 1px; }
         @keyframes blink { 50% { opacity: 0; } }
+        .tool-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+        .tool-card { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--inset); border: 1px solid var(--border); font-size: 12px; }
+        .tool-card.running { border-color: var(--accent-line); background: var(--accent-soft); }
+        .tool-card.completed { border-color: var(--ok); }
+        .tool-card.failed { border-color: var(--danger); }
+        .tool-icon { flex: none; display: flex; align-items: center; }
+        .tool-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .tool-name { font-weight: 600; font-family: var(--mono); font-size: 11.5px; color: var(--fg-strong); }
+        .tool-msg { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tool-progress { width: 48px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; flex: none; }
+        .tool-progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
         .composer { flex: none; padding: 0 24px 18px; }
         .composer-inner { max-width: 760px; margin: 0 auto; }
         .agent-status { margin-bottom: 7px; text-align: right; }

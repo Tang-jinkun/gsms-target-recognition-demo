@@ -40,6 +40,11 @@ export type AgentEvent = {
     summary?: string
     status?: 'started' | 'waiting' | 'completed' | 'failed'
     duration_ms?: number
+    text?: string
+    message?: string
+    percentage?: number
+    tool?: string
+    tool_call_id?: string
     [key: string]: unknown
   }
   created_at?: string | null

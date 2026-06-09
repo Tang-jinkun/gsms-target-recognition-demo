@@ -35,7 +35,9 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 ACTION_EVENT_TYPES = {
     "run.started",
     "model.responded",
+    "model.streaming",
     "tool.started",
+    "tool.progress",
     "tool.completed",
     "tool.deferred",
     "tool.failed",
