@@ -300,6 +300,67 @@ test('workflow resume context continues interpretation without repeating complet
   )
 })
 
+test('worker resets mid-execution phase (results-analyzed) on new run', async () => {
+  const checkpoints: Array<Record<string, unknown>> = []
+  const current = session()
+  current.domain_state = {
+    sceneId: 'scene-1',
+    modelId: 'carbon',
+    matchingContextId: 'ctx-carbon',
+    jobId: 'job-1',
+    phase: 'results-analyzed', // mid-execution, should be reset
+  }
+  current.artifacts = [{
+    id: 'analysis',
+    type: 'result-analysis',
+    createdBy: 'tool',
+    createdAt: new Date().toISOString(),
+    data: {},
+    metadata: { modelId: 'carbon', jobId: 'job-1' },
+  }]
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('status=queued')) return response([current])
+    if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Run carbon model' }])
+    if (url.endsWith('/confirmations')) return response([])
+    if (url.endsWith('/checkpoint')) {
+      const body = JSON.parse(String(init?.body))
+      checkpoints.push(body)
+      current.status = body.action === 'start' ? 'running' : 'idle'
+      return response(current)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-worker-'))
+  try {
+    const worker = new InvestAgentWorker({
+      gsmsUrl: 'http://gsms',
+      proxyToken: 'token',
+      workspace,
+      skills: new SkillRegistry(),
+      sessionApi: new AgentSessionApiClient('http://gsms', fetch),
+      modelFactory: () =>
+        new FakeModelAdapter([
+          {
+            content: '',
+            toolCalls: [{ id: '1', name: 'finish', input: { summary: 'Done', evidence: ['scene-1'] } }],
+          },
+        ]),
+    })
+
+    await worker.runOnce()
+    // checkpoints[0] = 'start' (no domain_state), checkpoints[1] = 'complete'
+    const complete = checkpoints.find(c => c.action === 'complete')
+    // Phase should be reset to discovering-data, not stuck at results-analyzed
+    assert.equal((complete?.domain_state as Record<string, unknown>)?.phase, 'discovering-data')
+    // Stale execution artifacts should be cleared
+    const remaining = complete?.artifacts as Array<{ type: string }> | undefined
+    assert.equal(remaining?.some(a => a.type === 'result-analysis'), false)
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
 test('worker fails a progress-only run that reaches its turn limit instead of presenting it as complete', async () => {
   const actions: string[] = []
   const current = session()

@@ -82,7 +82,20 @@ export class InvestAgentWorker {
       'confirmation-rejected',
       'ready-for-validation',
     ])
-    if (!isExecutionPhase(currentPhase) && !WAITING_PHASES.has(currentPhase)) {
+    // Execution phases that must persist across runs:
+    //   - Active: job-running (polling), confirmed-for-execution (user confirmed, ready to run)
+    //   - Terminal: results-ready-for-interpretation, report-written (execution complete,
+    //     user may ask to write/revise the report)
+    // Earlier execution phases (job-succeeded, outputs-inspected, results-analyzed) are
+    // mid-execution and reset so the model doesn't skip steps on a fresh request.
+    const PERSISTED_EXECUTION_PHASES = new Set([
+      'job-running', 'confirmed-for-execution',
+      'results-ready-for-interpretation', 'report-written',
+    ])
+    const shouldResetPhase =
+      !WAITING_PHASES.has(currentPhase) &&
+      (!isExecutionPhase(currentPhase) || !PERSISTED_EXECUTION_PHASES.has(currentPhase))
+    if (shouldResetPhase) {
       // Preserve matchingContextId if scene hasn't changed — allows "继续" / "验证刚才的绑定" to work
       const previousSceneId = typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined
       if (previousSceneId && previousSceneId !== session.scene_id) {
@@ -91,6 +104,18 @@ export class InvestAgentWorker {
       } else {
         // Same scene — preserve context, just reset phase for re-discovery
         domainState.applyPatch({ phase: 'discovering-data' })
+      }
+      // Clear stale execution artifacts from previous completed run so the model
+      // does not skip execution steps when the user requests a fresh run.
+      // Matching artifacts (schema, candidates, bindings) are preserved.
+      const staleExecutionTypes = [
+        'job-execution-log', 'output-inventory', 'result-interpretation-context',
+        'invest-report', 'raster-statistics', 'result-analysis', 'job-output-inventory',
+      ]
+      for (const type of staleExecutionTypes) {
+        for (const a of artifacts.list(type)) {
+          artifacts.delete(a.id)
+        }
       }
     }
     const sessionWorkspace = resolve(this.options.workspace, 'sessions', session.id)

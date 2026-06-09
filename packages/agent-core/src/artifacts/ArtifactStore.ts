@@ -46,4 +46,8 @@ export class ArtifactStore {
       .filter(artifact => !type || artifact.type === type)
       .map(clone)
   }
+
+  delete(id: string): boolean {
+    return this.#artifacts.delete(id)
+  }
 }
