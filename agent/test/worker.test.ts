@@ -310,14 +310,14 @@ test('worker resets mid-execution phase (results-analyzed) on new run', async ()
     jobId: 'job-1',
     phase: 'results-analyzed', // mid-execution, should be reset
   }
-  current.artifacts = [{
-    id: 'analysis',
-    type: 'result-analysis',
-    createdBy: 'tool',
-    createdAt: new Date().toISOString(),
-    data: {},
-    metadata: { modelId: 'carbon', jobId: 'job-1' },
-  }]
+  current.artifacts = [
+    { id: 'schema', type: 'model-input-schema', createdBy: 'tool', createdAt: new Date().toISOString(), data: { modelId: 'carbon' }, metadata: { modelId: 'carbon' } },
+    { id: 'job', type: 'model-job', createdBy: 'tool', createdAt: new Date().toISOString(), data: { job_id: 'job-1' }, metadata: { modelId: 'carbon' } },
+    { id: 'status', type: 'job-status', createdBy: 'tool', createdAt: new Date().toISOString(), data: { status: 'succeeded' }, metadata: { modelId: 'carbon' } },
+    { id: 'validation', type: 'validation-report', createdBy: 'tool', createdAt: new Date().toISOString(), data: { status: 'passed' }, metadata: { modelId: 'carbon' } },
+    { id: 'confirmation', type: 'confirmation-record', createdBy: 'tool', createdAt: new Date().toISOString(), data: { status: 'confirmed' }, metadata: { modelId: 'carbon' } },
+    { id: 'analysis', type: 'result-analysis', createdBy: 'tool', createdAt: new Date().toISOString(), data: {}, metadata: { modelId: 'carbon', jobId: 'job-1' } },
+  ]
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('status=queued')) return response([current])
@@ -353,9 +353,13 @@ test('worker resets mid-execution phase (results-analyzed) on new run', async ()
     const complete = checkpoints.find(c => c.action === 'complete')
     // Phase should be reset to discovering-data, not stuck at results-analyzed
     assert.equal((complete?.domain_state as Record<string, unknown>)?.phase, 'discovering-data')
-    // Stale execution artifacts should be cleared
     const remaining = complete?.artifacts as Array<{ type: string }> | undefined
-    assert.equal(remaining?.some(a => a.type === 'result-analysis'), false)
+    // Matching artifacts preserved
+    assert.ok(remaining?.some(a => a.type === 'model-input-schema'), 'schema preserved')
+    // Execution artifacts cleared
+    for (const type of ['model-job', 'job-status', 'validation-report', 'confirmation-record', 'result-analysis']) {
+      assert.equal(remaining?.some(a => a.type === type), false, `${type} should be cleared`)
+    }
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

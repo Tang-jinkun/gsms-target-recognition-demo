@@ -107,10 +107,15 @@ export class InvestAgentWorker {
       }
       // Clear stale execution artifacts from previous completed run so the model
       // does not skip execution steps when the user requests a fresh run.
-      // Matching artifacts (schema, candidates, bindings) are preserved.
+      // Matching artifacts (schema, candidates, bindings, data cards) are preserved.
       const staleExecutionTypes = [
-        'job-execution-log', 'output-inventory', 'result-interpretation-context',
-        'invest-report', 'raster-statistics', 'result-analysis', 'job-output-inventory',
+        // job lifecycle
+        'model-job', 'job-status',
+        // validation & confirmation
+        'validation-report', 'confirmation-record',
+        // results & interpretation
+        'job-output-inventory', 'result-analysis', 'result-interpretation-context',
+        'invest-report', 'raster-statistics', 'job-execution-log', 'output-inventory',
       ]
       for (const type of staleExecutionTypes) {
         for (const a of artifacts.list(type)) {
