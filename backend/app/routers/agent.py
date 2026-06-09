@@ -534,8 +534,11 @@ def proxy_chat_completions(
             raise HTTPException(status_code=502, detail=f"Provider HTTP {resp.status_code}: {detail}")
         if is_streaming:
             from fastapi.responses import StreamingResponse
+            def sse_stream():
+                for line in resp.iter_lines():
+                    yield line + "\n"
             return StreamingResponse(
-                resp.iter_lines(),
+                sse_stream(),
                 media_type="text/event-stream",
                 headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
             )
