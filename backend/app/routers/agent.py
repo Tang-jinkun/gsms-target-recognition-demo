@@ -519,18 +519,28 @@ def proxy_chat_completions(
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Could not decrypt the default Provider API key.") from exc
 
-    request = Request(
-        target,
-        data=json.dumps(forwarded).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
+    is_streaming = bool(payload.get("stream"))
     try:
-        with urlopen(request, timeout=120) as response:
-            body = json.loads(response.read().decode("utf-8"))
-            return JSONResponse(content=body, status_code=response.status)
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=502, detail=f"Provider HTTP {exc.code}: {detail[:2000]}") from exc
-    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        import requests as req_lib
+        resp = req_lib.post(
+            target,
+            json=forwarded,
+            headers=headers,
+            timeout=120,
+            stream=is_streaming,
+        )
+        if resp.status_code >= 400:
+            detail = resp.text[:2000]
+            raise HTTPException(status_code=502, detail=f"Provider HTTP {resp.status_code}: {detail}")
+        if is_streaming:
+            from fastapi.responses import StreamingResponse
+            return StreamingResponse(
+                resp.iter_lines(),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+            )
+        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Provider request failed: {exc}") from exc
