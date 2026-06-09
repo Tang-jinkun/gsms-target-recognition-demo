@@ -553,6 +553,7 @@ export default function WorkbenchPage() {
 
   function ChatList({ pad }: { pad: string }) {
     const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null)
+    const [collapsedCards, setCollapsedCards] = React.useState<Set<number>>(new Set())
     function copyText(text: string, idx: number) {
       if (!text) return
       const done = () => { setCopiedIdx(idx); setTimeout(() => setCopiedIdx(null), 1500) }
@@ -562,48 +563,109 @@ export default function WorkbenchPage() {
         fallbackCopy(text) && done()
       }
     }
+    function toggleCard(turnIdx: number) {
+      setCollapsedCards(prev => {
+        const next = new Set(prev)
+        if (next.has(turnIdx)) next.delete(turnIdx); else next.add(turnIdx)
+        return next
+      })
+    }
 
-    // Agent mode: render unified turns with blocks
     if (turns.length > 0) {
       return (
         <div className="chat-inner" style={{ padding: pad }}>
-          {turns.map((turn, i) => (
-            <div className={`msg ${turn.role === 'assistant' ? 'agent' : 'user'}`} key={i}>
-              <span className="who">{turn.role === 'user' ? '我' : 'AI'}</span>
-              <div className="bubble">
-                <div className="body">
-                  {turn.blocks.map((block, j) => {
-                    if (block.type === 'text') {
-                      const html = escapeHtml(block.text).replace(/\n/g, '<br />') + (block.status === 'streaming' ? '<span class="cursor-blink"></span>' : '')
-                      return <p key={j} dangerouslySetInnerHTML={{ __html: html }} />
-                    }
-                    if (block.type === 'tool') {
-                      return (
-                        <div className={`tool-card ${block.status}`} key={j}>
-                          <span className="tool-icon">
-                            {block.status === 'running' ? <span className="spinner" /> : block.status === 'completed' ? <Icon name="check" cls="ic-sm" /> : <Icon name="alert-circle" cls="ic-sm" />}
-                          </span>
-                          <div className="tool-info">
-                            <span className="tool-name">{block.name}</span>
-                            {block.message && <span className="tool-msg">{block.message}</span>}
-                          </div>
-                          {typeof block.percentage === 'number' && (
-                            <div className="tool-progress"><div className="tool-progress-bar" style={{ width: `${block.percentage}%` }} /></div>
-                          )}
+          {turns.map((turn, i) => {
+            if (turn.role === 'user') {
+              const text = turn.blocks.map(b => b.type === 'text' ? b.text : '').join('')
+              return (
+                <div className="msg user" key={i}>
+                  <span className="who">我</span>
+                  <div className="bubble">
+                    <div className="body"><p dangerouslySetInnerHTML={{ __html: escapeHtml(text).replace(/\n/g, '<br />') }} /></div>
+                    <button className="copy-btn" title="复制" onClick={() => copyText(text, i)}>
+                      <Icon name={copiedIdx === i ? 'check' : 'copy'} cls="ic-sm" />
+                    </button>
+                  </div>
+                </div>
+              )
+            }
+
+            // Assistant turn: split into activity blocks + response block
+            const isStreaming = turn.blocks.some(b => (b.type === 'text' && b.status === 'streaming') || (b.type === 'tool' && b.status === 'running'))
+            const lastTextIdx = [...turn.blocks].reverse().findIndex(b => b.type === 'text')
+            const responseIdx = lastTextIdx >= 0 ? turn.blocks.length - 1 - lastTextIdx : -1
+            const activityBlocks = turn.blocks.filter((_, j) => j !== responseIdx)
+            const responseBlock = responseIdx >= 0 ? turn.blocks[responseIdx] : null
+            const hasActivity = activityBlocks.length > 0
+            const isDone = !isStreaming
+            const isCollapsed = isDone && hasActivity && collapsedCards.has(i)
+            const toolCount = activityBlocks.filter(b => b.type === 'tool').length
+
+            return (
+              <div className="msg agent" key={i}>
+                <span className="who">AI</span>
+                <div>
+                  {hasActivity && (
+                    <div className={`activity-card ${isDone ? 'done' : 'active'} ${isCollapsed ? 'collapsed' : ''}`}>
+                      <button className="activity-toggle" onClick={() => toggleCard(i)}>
+                        <span className="activity-icon">
+                          {isStreaming ? <span className="spinner" /> : <Icon name="check" cls="ic-sm" />}
+                        </span>
+                        <span className="activity-label">
+                          {isStreaming ? '思考中…' : `已思考 · 使用了 ${toolCount} 个工具`}
+                        </span>
+                        {isDone && <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} cls="ic-sm" />}
+                      </button>
+                      {!isCollapsed && (
+                        <div className="activity-body">
+                          {activityBlocks.map((block, j) => {
+                            if (block.type === 'text') {
+                              return <p key={j} className="activity-text" dangerouslySetInnerHTML={{ __html: escapeHtml(block.text).replace(/\n/g, '<br />') }} />
+                            }
+                            if (block.type === 'tool') {
+                              return (
+                                <div className={`tool-card ${block.status}`} key={j}>
+                                  <span className="tool-icon">
+                                    {block.status === 'running' ? <span className="spinner" /> : block.status === 'completed' ? <Icon name="check" cls="ic-sm" /> : <Icon name="alert-circle" cls="ic-sm" />}
+                                  </span>
+                                  <div className="tool-info">
+                                    <span className="tool-name">{block.name}</span>
+                                    {block.message && <span className="tool-msg">{block.message}</span>}
+                                  </div>
+                                  {typeof block.percentage === 'number' && (
+                                    <div className="tool-progress"><div className="tool-progress-bar" style={{ width: `${block.percentage}%` }} /></div>
+                                  )}
+                                </div>
+                              )
+                            }
+                            return null
+                          })}
                         </div>
-                      )
-                    }
-                    return null
-                  })}
+                      )}
+                    </div>
+                  )}
+
+                  {responseBlock && responseBlock.type === 'text' && (responseBlock.text || responseBlock.status === 'streaming') && (
+                    <div className="bubble">
+                      <div className="body">
+                        <p dangerouslySetInnerHTML={{ __html: escapeHtml(responseBlock.text).replace(/\n/g, '<br />') + (responseBlock.status === 'streaming' ? '<span class="cursor-blink"></span>' : '') }} />
+                      </div>
+                      {responseBlock.status === 'done' && (
+                        <button className="copy-btn" title="复制" onClick={() => copyText(responseBlock.text, i)}>
+                          <Icon name={copiedIdx === i ? 'check' : 'copy'} cls="ic-sm" />
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )
     }
 
-    // Prototype/fallback mode: render legacy msgs
+    // Prototype/fallback mode
     return (
       <div className="chat-inner" style={{ padding: pad }}>
         {msgs.map((m, i) => (
@@ -983,6 +1045,15 @@ export default function WorkbenchPage() {
         .tool-msg { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tool-progress { width: 48px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; flex: none; }
         .tool-progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
+        .activity-card { margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+        .activity-card.active { border-color: var(--accent-line); }
+        .activity-card.done { border-color: var(--border); }
+        .activity-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: 0; background: transparent; cursor: pointer; font-size: 12px; color: var(--muted); text-align: left; }
+        .activity-toggle:hover { background: var(--inset); }
+        .activity-icon { flex: none; display: flex; align-items: center; }
+        .activity-label { flex: 1; min-width: 0; }
+        .activity-body { padding: 0 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+        .activity-text { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5; }
         .composer { flex: none; padding: 0 24px 18px; }
         .composer-inner { max-width: 760px; margin: 0 auto; }
         .agent-status { margin-bottom: 7px; text-align: right; }
