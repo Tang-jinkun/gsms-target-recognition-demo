@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { AgentTool } from '@gsms/agent-core'
+import { buildTool } from './buildTool.ts'
 import { GsmsClient } from '../gsms/GsmsClient.ts'
 import { adaptGsmsModelSchema } from '../gsms/modelSchemaAdapter.ts'
 import {
@@ -8,7 +9,9 @@ import {
   relationCheckSchema,
   type DataCard,
 } from '../domain/schemas.ts'
-import { computeMatchingContextId } from './matchingTools.ts'
+import { computeMatchingContextId, computeSceneDataContextId } from './matchingTools.ts'
+import { retrieveCandidates } from '../matching/primitives.ts'
+import { checkDataMatchingGate } from '../gates/dataMatchingGate.ts'
 
 const modelSchema = z.object({ modelId: z.string().min(1) })
 const sceneSchema = z.object({ sceneId: z.string().min(1) })
@@ -129,10 +132,10 @@ function normalizeDataCards(result: unknown): DataCard[] {
 
 export function createGsmsTools(client: GsmsClient): AgentTool[] {
   return [
-    {
+    buildTool({
       name: 'list_invest_models',
       description: 'List model schemas registered by the GSMS scientific runtime',
-      risk: 'read',
+      persistResultAboveBytes: 8_000,
       inputSchema: { type: 'object', additionalProperties: false },
       async execute() {
         const models = await client.listModels()
@@ -141,11 +144,11 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           artifacts: [{ type: 'gsms-model-list', createdBy: 'tool', data: models }],
         }
       },
-    },
-    {
+    }),
+    buildTool({
       name: 'get_invest_model_schema',
       description: 'Select the current InVEST model, load its authoritative GSMS schema, and reset stale state from any previously selected model',
-      risk: 'read',
+      persistResultAboveBytes: 8_000,
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -157,9 +160,9 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const schema = await client.getModelSchema(modelId)
         const adapted = adaptGsmsModelSchema(schema)
 
-        // If data cards are already loaded, recompute matchingContextId with the new schema.
-        // This allows the agent to call list_scene_data_cards then get_invest_model_schema
-        // in any order without losing the matching context.
+        // Data cards are keyed by sceneDataContextId (model-independent), so they
+        // survive model switches. Compute matchingContextId (model-specific) for
+        // candidate-set / binding-report scoping, using existing data cards if loaded.
         const existingCards = context.artifacts.list('data-card')
         const sceneId = context.domainState.snapshot().sceneId
         let matchingContextId: string | null = null
@@ -206,11 +209,11 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           },
         }
       },
-    },
-    {
+    }),
+    buildTool({
       name: 'list_scene_data_cards',
       description: 'Load factual data cards for files imported into a GSMS scene',
-      risk: 'read',
+      persistResultAboveBytes: 6_000,
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -221,7 +224,11 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const { sceneId } = sceneSchema.parse(input)
         const result = await client.listSceneDataCards(sceneId)
         const cards = normalizeDataCards(result)
+        // Data cards are keyed by sceneDataContextId (model-independent) so they
+        // survive model switches. matchingContextId is still computed for backward
+        // compat (e.g. old artifacts in flight) but NOT used to filter data cards.
         const schemaArtifact = tryContextModelSchema(context)
+        const sceneDataContextId = computeSceneDataContextId(sceneId, cards)
         const matchingContextId = computeMatchingContextId(sceneId, schemaArtifact, cards)
         return {
           content: JSON.stringify(result),
@@ -230,7 +237,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               type: 'gsms-scene-data-cards',
               createdBy: 'tool',
               data: result,
-              metadata: { sceneId, modelId: schemaArtifact?.modelId, matchingContextId },
+              metadata: { sceneId, modelId: schemaArtifact?.modelId, sceneDataContextId },
             },
             ...cards.map(card => ({
               type: 'data-card',
@@ -239,7 +246,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               metadata: {
                 sceneId,
                 modelId: schemaArtifact?.modelId,
-                matchingContextId,
+                sceneDataContextId,
                 assetId: card.assetId,
               },
             })),
@@ -247,11 +254,12 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           statePatch: {
             sceneId,
             assetIds: cards.map(card => card.assetId),
+            sceneDataContextId,
             matchingContextId,
           },
         }
       },
-    },
+    }),
     {
       name: 'check_data_relation',
       description: 'Ask GSMS to deterministically check a relation between two data assets',
@@ -392,18 +400,41 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         // The gate ran inside finalize_data_matching; we just verify the status.
         // If no gate result exists (older reports), allow validation to proceed.
         const gatePassed = report.metadata?.gatePassed
-        const gateStatus = report.metadata?.gateStatus
         if (gatePassed === false) {
+          // Re-run the gate against current evidence to get precise, actionable
+          // reasons (the report only stores a coarse status in metadata).
+          const gate = checkDataMatchingGate(context)
+          const ambiguousSlots = gate.slotStatuses
+            .filter(s => s.required && s.decisionStatus === 'ambiguous')
+            .map(s => s.slot)
+          const needsUserChoice = gate.status === 'needs_review' || ambiguousSlots.length > 0
+
+          // Guide the model toward the SINGLE correct next action instead of
+          // letting it loop validate → finalize → sufficiency. When the block is
+          // an unresolved ambiguity, the only way forward is a user decision.
+          const guidance = needsUserChoice
+            ? `Cannot validate: ${gate.blockingReasons.join('; ') || 'matching has unresolved ambiguity'}. Stop validating. Ask the user to choose for the ambiguous slot(s): ${ambiguousSlots.join(', ') || '(see reasons)'}. Do not call validate_binding_report, confirm_validation_snapshot, or finalize_sufficiency_assessment again until the user answers.`
+            : `Cannot validate: ${gate.blockingReasons.join('; ') || `gate status is '${gate.status}'`}. Gather the missing evidence (retrieve candidates / run the required relation checks), then re-finalize. Do not re-validate unchanged.`
+
           return {
             content: JSON.stringify({
               status: 'gate-blocked',
-              gateStatus,
-              instruction: `Cannot validate: DataMatchingGate status is '${String(gateStatus)}'. Fix the issues and re-finalize.`,
+              gateStatus: gate.status,
+              blockingReasons: gate.blockingReasons,
+              ambiguousSlots,
+              instruction: guidance,
             }),
             diagnostics: [{
               code: 'DATA_MATCHING_GATE_BLOCKED',
-              message: `Binding report gate status is '${String(gateStatus)}' — must be 'ready_for_validation' to validate.`,
+              message: `Binding report gate status is '${gate.status}' — must be 'ready_for_validation' to validate.`,
               severity: 'error' as const,
+            }],
+            hiddenMessages: [{
+              role: 'user',
+              hidden: true,
+              content: needsUserChoice
+                ? `Validation is blocked by an unresolved ambiguity in slot(s) ${ambiguousSlots.join(', ') || '(see reasons)'}. Present the competing candidates to the user and ask which one to use. Then re-run finalize_data_matching for that slot with the chosen asset and userConfirmed:true. Do NOT validate, confirm, or run sufficiency until the user has chosen.`
+                : `Validation is blocked: ${gate.blockingReasons.join('; ')}. Collect the missing evidence and re-finalize before validating again. Do not repeat validation unchanged.`,
             }],
           }
         }
@@ -686,10 +717,10 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
       },
     },
-    {
+    buildTool({
       name: 'interpret_invest_results',
       description: 'Build an evidence-backed interpretation context from the current job outputs, logs, and result analysis',
-      risk: 'read',
+      persistResultAboveBytes: 12_000,
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -755,7 +786,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           statePatch: { phase: 'results-ready-for-interpretation' },
         }
       },
-    },
+    }),
     {
       name: 'finalize_sufficiency_assessment',
       description: 'Generate a deterministic sufficiency report: can this scene run this model? Reports available/missing/ambiguous slots with evidence.',
@@ -828,6 +859,115 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
       },
     },
+    buildTool({
+      name: 'assess_scene_runnable_models',
+      description: 'One-shot assessment: which registered InVEST models can this scene run? Returns per-model data-sufficiency and runner availability.',
+      persistResultAboveBytes: 8_000,
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sceneId'],
+        properties: { sceneId: { type: 'string' } },
+      },
+      async execute(input) {
+        const { sceneId } = sceneSchema.parse(input)
+        const [rawModels, rawCards] = await Promise.all([
+          client.listModels(),
+          client.listSceneDataCards(sceneId),
+        ])
+        const models = z.array(z.object({
+          id: z.string(),
+          name: z.string(),
+          status: z.string().optional(),
+          runner: z.string().nullable().optional(),
+          inputs: z.array(z.unknown()).optional(),
+        })).parse(rawModels)
+        const cards = normalizeDataCards(rawCards)
+
+        const assessments: Array<{
+          modelId: string
+          displayName: string
+          runnerAvailable: boolean
+          runnerStatus: string
+          dataSufficient: boolean
+          slots: Array<{ slot: string; required: boolean; status: 'available' | 'missing'; candidateCount: number }>
+          runnable: boolean
+        }> = []
+
+        for (const model of models) {
+          const runnerStatus = model.status ?? 'unknown'
+          const runnerAvailable = runnerStatus !== 'planned' && model.runner != null
+
+          // planned models have no inputs — can't assess data sufficiency
+          if (runnerStatus === 'planned' || !model.inputs?.length) {
+            assessments.push({
+              modelId: model.id,
+              displayName: model.name,
+              runnerAvailable,
+              runnerStatus,
+              dataSufficient: false,
+              slots: [],
+              runnable: false,
+            })
+            continue
+          }
+
+          let adapted
+          try {
+            adapted = adaptGsmsModelSchema(rawModels.find((m: any) => m.id === model.id))
+          } catch {
+            assessments.push({
+              modelId: model.id,
+              displayName: model.name,
+              runnerAvailable,
+              runnerStatus,
+              dataSufficient: false,
+              slots: [],
+              runnable: false,
+            })
+            continue
+          }
+
+          const slotResults = adapted.slots
+            .filter(s => s.required)
+            .map(slot => {
+              const candidates = retrieveCandidates(slot, cards)
+              return {
+                slot: slot.name,
+                required: true,
+                status: candidates.candidates.length > 0 ? 'available' as const : 'missing' as const,
+                candidateCount: candidates.candidates.length,
+              }
+            })
+
+          const dataSufficient = slotResults.every(s => s.status === 'available')
+          assessments.push({
+            modelId: model.id,
+            displayName: model.name,
+            runnerAvailable,
+            runnerStatus,
+            dataSufficient,
+            slots: slotResults,
+            runnable: dataSufficient && runnerAvailable,
+          })
+        }
+
+        const runnableModels = assessments.filter(a => a.runnable)
+        const summary = runnableModels.length
+          ? `Runnable models: ${runnableModels.map(a => a.displayName).join(', ')}.`
+          : 'No models are currently runnable with the available scene data.'
+
+        return {
+          content: JSON.stringify({ summary, sceneId, assessments }, null, 2),
+          artifacts: [{
+            type: 'scene-runnable-assessment',
+            createdBy: 'tool',
+            data: { sceneId, assessments, runnableModels: runnableModels.map(a => a.modelId) },
+            metadata: { sceneId },
+          }],
+        }
+      },
+    }),
   ]
 }
 

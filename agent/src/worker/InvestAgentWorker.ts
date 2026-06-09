@@ -16,6 +16,7 @@ import { GsmsClient } from '../gsms/GsmsClient.ts'
 import { createGsmsTools } from '../tools/gsmsTools.ts'
 import { createMatchingTools } from '../tools/matchingTools.ts'
 import { createReportTools } from '../tools/reportTools.ts'
+import { createReconTool } from '../tools/reconTools.ts'
 import { modelInputSchemaSchema } from '../domain/schemas.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import {
@@ -23,7 +24,7 @@ import {
   type PersistedAgentSession,
   type PersistedConfirmation,
 } from './AgentSessionApiClient.ts'
-import { isExecutionPhase, workflowPhaseFilter } from '../workflowBoundary.ts'
+import { isExecutionPhase, WAITING_PHASES, workflowPhaseFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentWorkerOptions {
   gsmsUrl: string
@@ -75,13 +76,6 @@ export class InvestAgentWorker {
     if (session.artifacts.length) artifacts.createMany(session.artifacts as ArtifactInput[])
     const domainState = new DomainStateStore(session.domain_state)
     const currentPhase = typeof session.domain_state.phase === 'string' ? session.domain_state.phase : ''
-    // Phases that must persist across runs (user interaction in progress)
-    const WAITING_PHASES = new Set([
-      'awaiting-user-confirmation',
-      'validation-failed',
-      'confirmation-rejected',
-      'ready-for-validation',
-    ])
     // Execution phases that must persist across runs:
     //   - Active: job-running (polling), confirmed-for-execution (user confirmed, ready to run)
     //   - Terminal: results-ready-for-interpretation, report-written (execution complete,
@@ -127,22 +121,26 @@ export class InvestAgentWorker {
     await mkdir(sessionWorkspace, { recursive: true })
     const registry = new ToolRegistry()
     const gsmsClient = new GsmsClient({ baseUrl: this.options.gsmsUrl })
-    const domainTools: AgentTool[] = [
+    const model = this.options.modelFactory?.(session) ??
+      new OpenAICompatibleAdapter({
+        apiKey: this.options.proxyToken,
+        model: String(session.model_config.model_id ?? 'gsms-default'),
+        baseUrl: `${this.options.gsmsUrl.replace(/\/+$/, '')}/api/agent`,
+      })
+    const coreTools: AgentTool[] = [
       ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
+    ]
+    const domainTools: AgentTool[] = [
+      ...coreTools,
+      createReconTool(coreTools, () => model),
     ]
     for (const tool of domainTools) registry.register(tool)
     registerSessionControlTools(registry, this.options.skills, () => domainTools.map(tool => tool.name))
 
     const runtime = new AgentRuntime({
-      model:
-        this.options.modelFactory?.(session) ??
-        new OpenAICompatibleAdapter({
-          apiKey: this.options.proxyToken,
-          model: String(session.model_config.model_id ?? 'gsms-default'),
-          baseUrl: `${this.options.gsmsUrl.replace(/\/+$/, '')}/api/agent`,
-        }),
+      model,
       tools: registry,
       skills: this.options.skills,
       workspace: sessionWorkspace,

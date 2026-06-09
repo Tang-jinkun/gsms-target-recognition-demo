@@ -21,12 +21,93 @@ type ChatMsg = { role: 'user' | 'agent'; html: string; text: string; att: string
 
 type TurnBlock =
   | { type: 'text'; text: string; status: 'streaming' | 'done' }
-  | { type: 'tool'; id: string; name: string; status: 'running' | 'completed' | 'failed'; message?: string; percentage?: number }
+  | { type: 'tool'; id: string; name: string; status: 'running' | 'completed' | 'failed'; message?: string; percentage?: number; archived?: boolean }
+  | { type: 'notice'; level: 'warn' | 'stop'; text: string }
 
-type Turn = { role: 'user' | 'assistant'; blocks: TurnBlock[] }
+type Turn = { role: 'user' | 'assistant'; blocks: TurnBlock[]; streaming?: boolean }
+
+/** Apply one streaming/tool event to a run's accumulating activity blocks (mutates in place). */
+function applyEventToBlocks(blocks: TurnBlock[], ev: AgentEvent) {
+  if (ev.type === 'model.streaming') {
+    if (ev.data.text) {
+      const last = blocks[blocks.length - 1]
+      if (last && last.type === 'text' && last.status === 'streaming') {
+        last.text += ev.data.text
+      } else {
+        blocks.push({ type: 'text', text: ev.data.text, status: 'streaming' })
+      }
+    } else if (ev.data.tool) {
+      const id = ev.data.tool_call_id ?? ev.data.tool
+      if (!blocks.some(b => b.type === 'tool' && b.id === id)) {
+        blocks.push({ type: 'tool', id, name: ev.data.tool, status: 'running' })
+      }
+    }
+  } else if (ev.type === 'tool.started') {
+    const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
+    if (!blocks.some(b => b.type === 'tool' && b.id === id)) {
+      blocks.push({ type: 'tool', id, name: ev.data.tool ?? 'tool', status: 'running' })
+    }
+  } else if (ev.type === 'tool.progress') {
+    const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
+    const tb = blocks.find(b => b.type === 'tool' && b.id === id)
+    if (tb && tb.type === 'tool') { tb.message = ev.data.message; tb.percentage = ev.data.percentage }
+  } else if (ev.type === 'tool.completed' || ev.type === 'tool.failed') {
+    const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
+    const tb = blocks.find(b => b.type === 'tool' && b.id === id)
+    if (tb && tb.type === 'tool') tb.status = ev.type === 'tool.completed' ? 'completed' : 'failed'
+  } else if (ev.type === 'artifact.created' && ev.data.artifactType === 'tool-result') {
+    // Large tool output was persisted as an artifact. The artifactId encodes the
+    // tool name as `tool-result:<toolName>:<input>`; flag the matching block.
+    const artifactId = typeof ev.data.artifactId === 'string' ? ev.data.artifactId : ''
+    const toolName = artifactId.split(':')[1]
+    if (toolName) {
+      const tb = [...blocks].reverse().find(b => b.type === 'tool' && b.name === toolName)
+      if (tb && tb.type === 'tool') tb.archived = true
+    }
+  } else if (ev.type === 'diagnostic.created') {
+    const code = typeof ev.data.code === 'string' ? ev.data.code : ''
+    if (code === 'AGENT_NO_PROGRESS') {
+      blocks.push({ type: 'notice', level: 'stop', text: '智能体连续多轮未产生新证据，已自动停止以避免空转。' })
+    }
+  }
+}
+
+/** Mark all of a run's blocks as settled (text done, running tools completed). */
+function finalizeBlocks(blocks: TurnBlock[]) {
+  for (const b of blocks) {
+    if (b.type === 'text' && b.status === 'streaming') b.status = 'done'
+    if (b.type === 'tool' && b.status === 'running') b.status = 'completed'
+  }
+}
 
 const TYPE_LABEL: Record<string, string> = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹', other: '其他' }
 const TYPE_ICON: Record<string, string> = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', other: 'file' }
+
+/* Human-readable Chinese labels for agent tool names shown in the thinking timeline. */
+const TOOL_LABEL: Record<string, string> = {
+  list_invest_models: '列出可用模型',
+  get_invest_model_schema: '加载模型输入要求',
+  list_scene_data_cards: '读取场景数据',
+  retrieve_input_candidates: '匹配候选数据',
+  retrieve_required_input_candidates: '匹配必需输入',
+  check_data_relation: '校验数据关系',
+  finalize_data_matching: '生成绑定方案',
+  finalize_sufficiency_assessment: '评估数据充分性',
+  assess_scene_runnable_models: '普查可运行模型',
+  run_reconnaissance: '深度侦察',
+  validate_binding_report: '验证绑定方案',
+  confirm_validation_snapshot: '请求用户确认',
+  execute_validated_snapshot: '执行模型计算',
+  get_invest_job_status: '查询任务状态',
+  inspect_invest_job_outputs: '检视输出清单',
+  analyze_invest_results: '分析栅格统计',
+  interpret_invest_results: '解释计算结果',
+  write_invest_report: '撰写分析报告',
+  finish: '完成',
+  update_goal: '更新目标',
+  skill: '调用技能',
+}
+const toolLabel = (name: string) => TOOL_LABEL[name] ?? name
 
 /* fallback seeds (used when backend offline) — mirror prototype */
 const SEED_FILES: WbFile[] = [
@@ -124,16 +205,22 @@ export default function WorkbenchPage() {
     return () => { cancelled = true }
   }, [])
 
-  // Persist the streaming turn across polls so incremental deltas accumulate correctly
-  const streamingTurnRef = React.useRef<Turn | null>(null)
-  const prevMsgCountRef = React.useRef(0)
+  // Durable per-run activity (reasoning text + tool calls), keyed by run_id and
+  // accumulated from the event stream. Survives polls AND the moment the final
+  // message is persisted, so the think card never disappears. Runs are ordered
+  // by first-seen so they map onto assistant messages chronologically.
+  const runBlocksRef = React.useRef<Map<string, TurnBlock[]>>(new Map())
+  const runOrderRef = React.useRef<string[]>([])
+  // Guard against overlapping refreshes: two in-flight calls would both read the
+  // same event cursor and fold the same streaming deltas, duplicating text N times.
+  const refreshInFlightRef = React.useRef(false)
 
-  const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
+  const runRefresh = React.useCallback(async (session: AgentSession) => {
     if (agentEventCursorRef.current.sessionId !== session.id) {
       agentEventCursorRef.current = { sessionId: session.id, afterId: 0 }
       setAgentEvents([])
-      streamingTurnRef.current = null
-      prevMsgCountRef.current = 0
+      runBlocksRef.current = new Map()
+      runOrderRef.current = []
     }
     const [current, messages, confirmations, events] = await Promise.all([
       agentSessionsRepo.get(session.id),
@@ -142,100 +229,100 @@ export default function WorkbenchPage() {
       agentSessionsRepo.events(session.id, agentEventCursorRef.current.afterId),
     ])
     setAgentSession(current)
-    setStreaming(current.status === 'queued' || current.status === 'running')
+    const isRunning = current.status === 'queued' || current.status === 'running'
+    setStreaming(isRunning)
     setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
     setAgentError(current.last_error ?? '')
 
-    // When a new message arrives, the streaming turn is now persisted — clear the ref
-    if (messages.length > prevMsgCountRef.current) {
-      streamingTurnRef.current = null
-    }
-    prevMsgCountRef.current = messages.length
-
-    // Build base turns from persisted messages
-    const baseTurns: Turn[] = messages.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' as const : 'user' as const,
-      blocks: [{ type: 'text' as const, text: msg.content, status: 'done' as const }],
-    }))
-
-    // If session is running and no new message yet, attach the streaming turn
-    const isRunning = current.status === 'running' || current.status === 'queued'
-    if (isRunning && streamingTurnRef.current) {
-      baseTurns.push(streamingTurnRef.current)
-    }
-
+    // Fold new events into their run's activity blocks
     if (events.length) {
       agentEventCursorRef.current.afterId = events.at(-1)!.id
       const actionEvents = events.filter(event => isAgentActionEvent(event.type))
-      setAgentEvents(previous => [...previous, ...actionEvents].slice(-500))
+      if (actionEvents.length) setAgentEvents(previous => [...previous, ...actionEvents].slice(-500))
 
-      // Accumulate streaming blocks into the streaming turn
-      const streamingEvents = events.filter(e => e.type === 'model.streaming' || e.type === 'tool.started' || e.type === 'tool.progress' || e.type === 'tool.completed' || e.type === 'tool.failed')
-
-      if (streamingEvents.length && isRunning) {
-        // Create streaming turn if needed
-        if (!streamingTurnRef.current) {
-          streamingTurnRef.current = { role: 'assistant', blocks: [] }
-          baseTurns.push(streamingTurnRef.current)
+      for (const ev of events) {
+        if (
+          ev.type !== 'model.streaming' && ev.type !== 'tool.started' &&
+          ev.type !== 'tool.progress' && ev.type !== 'tool.completed' &&
+          ev.type !== 'tool.failed' && ev.type !== 'artifact.created' &&
+          ev.type !== 'diagnostic.created'
+        ) continue
+        const runId = (ev.data.run_id as string) ?? 'run'
+        let blocks = runBlocksRef.current.get(runId)
+        if (!blocks) {
+          blocks = []
+          runBlocksRef.current.set(runId, blocks)
+          runOrderRef.current.push(runId)
         }
-        const st = streamingTurnRef.current
-
-        for (const ev of streamingEvents) {
-          if (ev.type === 'model.streaming') {
-            if (ev.data.text) {
-              const lastBlock = st.blocks[st.blocks.length - 1]
-              if (lastBlock && lastBlock.type === 'text' && lastBlock.status === 'streaming') {
-                lastBlock.text += ev.data.text
-              } else {
-                st.blocks.push({ type: 'text', text: ev.data.text, status: 'streaming' })
-              }
-            } else if (ev.data.tool) {
-              const toolId = ev.data.tool_call_id ?? ev.data.tool
-              st.blocks.push({ type: 'tool', id: toolId, name: ev.data.tool, status: 'running' })
-            }
-          } else if (ev.type === 'tool.started') {
-            const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-            const existing = st.blocks.find(b => b.type === 'tool' && b.id === toolId)
-            if (!existing) {
-              st.blocks.push({ type: 'tool', id: toolId, name: ev.data.tool ?? 'tool', status: 'running' })
-            }
-          } else if (ev.type === 'tool.progress') {
-            const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-            const toolBlock = st.blocks.find(b => b.type === 'tool' && b.id === toolId)
-            if (toolBlock && toolBlock.type === 'tool') {
-              toolBlock.message = ev.data.message
-              toolBlock.percentage = ev.data.percentage
-            }
-          } else if (ev.type === 'tool.completed' || ev.type === 'tool.failed') {
-            const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-            const toolBlock = st.blocks.find(b => b.type === 'tool' && b.id === toolId)
-            if (toolBlock && toolBlock.type === 'tool') {
-              toolBlock.status = ev.type === 'tool.completed' ? 'completed' : 'failed'
-            }
-          }
-        }
+        applyEventToBlocks(blocks, ev)
       }
     }
 
-    // Mark streaming text as done when session is idle
+    // When the run is finished, settle its blocks (stop spinners, drop cursor)
     if (!isRunning) {
-      if (streamingTurnRef.current) {
-        for (const block of streamingTurnRef.current.blocks) {
-          if (block.type === 'text' && block.status === 'streaming') block.status = 'done'
-        }
+      for (const blocks of runBlocksRef.current.values()) finalizeBlocks(blocks)
+    }
+
+    // Assistant messages are the persisted final answers; user messages are echoed.
+    // Each assistant message gets the activity blocks of the run that produced it,
+    // mapped by chronological order. The think card (activity) is kept separate
+    // from the answer (the persisted message text).
+    const runOrder = runOrderRef.current
+    let assistantSeen = 0
+    const baseTurns: Turn[] = messages.map(msg => {
+      if (msg.role !== 'assistant') {
+        return { role: 'user' as const, blocks: [{ type: 'text' as const, text: msg.content, status: 'done' as const }] }
+      }
+      const runId = runOrder[assistantSeen]
+      assistantSeen++
+      const activity = (runId && runBlocksRef.current.get(runId)) || []
+      return {
+        role: 'assistant' as const,
+        blocks: [
+          ...activity.map(b => ({ ...b })),
+          { type: 'text' as const, text: msg.content, status: 'done' as const },
+        ],
+      }
+    })
+
+    // A run is in flight when its activity has no persisted answer yet — show it
+    // as a live streaming turn (think card only; the answer arrives on completion).
+    if (isRunning && runOrder.length > assistantSeen) {
+      const liveBlocks = runBlocksRef.current.get(runOrder[assistantSeen])
+      if (liveBlocks && liveBlocks.length) {
+        baseTurns.push({ role: 'assistant', blocks: liveBlocks.map(b => ({ ...b })), streaming: true })
       }
     }
 
     setTurns(baseTurns)
   }, [])
 
-  // Dynamic polling: 500ms when streaming, 1500ms when idle
+  const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
+    if (refreshInFlightRef.current) return
+    refreshInFlightRef.current = true
+    try {
+      await runRefresh(session)
+    } finally {
+      refreshInFlightRef.current = false
+    }
+  }, [runRefresh])
+
+  // Dynamic polling: a SINGLE self-scheduling loop. The interval is read from a
+  // ref each tick so the cadence adapts to streaming state without ever spawning
+  // a second concurrent loop (which would double-apply events and duplicate text).
   const pollTimerRef = React.useRef<number | undefined>(undefined)
   const pollSessionRef = React.useRef<AgentSession | null>(null)
+  const streamingRef = React.useRef(false)
+  React.useEffect(() => { streamingRef.current = streaming }, [streaming])
 
   React.useEffect(() => {
     if (!sceneId) return
     let cancelled = false
+    const poll = () => {
+      if (cancelled || !pollSessionRef.current) return
+      refreshAgentSession(pollSessionRef.current).catch(() => {})
+      pollTimerRef.current = window.setTimeout(poll, streamingRef.current ? 500 : 1500)
+    }
     const start = async () => {
       try {
         const sessions = await agentSessionsRepo.list(sceneId)
@@ -243,13 +330,8 @@ export default function WorkbenchPage() {
         if (cancelled) return
         pollSessionRef.current = session
         await refreshAgentSession(session)
-        const poll = () => {
-          if (cancelled || !pollSessionRef.current) return
-          refreshAgentSession(pollSessionRef.current).catch(() => {})
-          const interval = streaming ? 500 : 1500
-          pollTimerRef.current = window.setTimeout(poll, interval)
-        }
-        pollTimerRef.current = window.setTimeout(poll, streaming ? 500 : 1500)
+        if (cancelled) return
+        pollTimerRef.current = window.setTimeout(poll, streamingRef.current ? 500 : 1500)
       } catch {
         if (!cancelled) setAgentError('Agent session service is unavailable.')
       }
@@ -260,20 +342,6 @@ export default function WorkbenchPage() {
       if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
     }
   }, [sceneId, refreshAgentSession])
-
-  // Restart polling with new interval when streaming state changes
-  React.useEffect(() => {
-    if (!pollSessionRef.current) return
-    if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
-    const poll = () => {
-      if (!pollSessionRef.current) return
-      refreshAgentSession(pollSessionRef.current).catch(() => {})
-      const interval = streaming ? 500 : 1500
-      pollTimerRef.current = window.setTimeout(poll, interval)
-    }
-    pollTimerRef.current = window.setTimeout(poll, streaming ? 500 : 1500)
-    return () => { if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current) }
-  }, [streaming, refreshAgentSession])
 
   const refreshSceneFiles = React.useCallback(async () => {
     const next = await workbenchRepo.listFiles(sceneId || undefined)
@@ -590,11 +658,12 @@ export default function WorkbenchPage() {
               )
             }
 
-            // Assistant turn: split into activity blocks + response block
-            const isStreaming = turn.blocks.some(b => (b.type === 'text' && b.status === 'streaming') || (b.type === 'tool' && b.status === 'running'))
-            const lastTextIdx = [...turn.blocks].reverse().findIndex(b => b.type === 'text')
-            const responseIdx = lastTextIdx >= 0 ? turn.blocks.length - 1 - lastTextIdx : -1
-            const activityBlocks = turn.blocks.filter((_, j) => j !== responseIdx)
+            // Assistant turn: a finished turn carries [...activity, finalAnswerText].
+            // A live streaming turn carries activity only (the answer is not yet
+            // persisted) — so all of its blocks are thinking activity, never answer.
+            const isStreaming = !!turn.streaming
+            const responseIdx = isStreaming ? -1 : turn.blocks.length - 1
+            const activityBlocks = isStreaming ? turn.blocks : turn.blocks.slice(0, responseIdx)
             const responseBlock = responseIdx >= 0 ? turn.blocks[responseIdx] : null
             const hasActivity = activityBlocks.length > 0
             const isDone = !isStreaming
@@ -604,59 +673,95 @@ export default function WorkbenchPage() {
             return (
               <div className="msg agent" key={i}>
                 <span className="who">AI</span>
-                <div>
-                  {hasActivity && (
-                    <div className={`activity-card ${isDone ? 'done' : 'active'} ${isCollapsed ? 'collapsed' : ''}`}>
-                      <button className="activity-toggle" onClick={() => toggleCard(i)}>
-                        <span className="activity-icon">
-                          {isStreaming ? <span className="spinner" /> : <Icon name="check" cls="ic-sm" />}
-                        </span>
-                        <span className="activity-label">
-                          {isStreaming ? '思考中…' : `已思考 · 使用了 ${toolCount} 个工具`}
-                        </span>
-                        {isDone && <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} cls="ic-sm" />}
-                      </button>
-                      {!isCollapsed && (
-                        <div className="activity-body">
-                          {activityBlocks.map((block, j) => {
-                            if (block.type === 'text') {
-                              return <p key={j} className="activity-text" dangerouslySetInnerHTML={{ __html: escapeHtml(block.text).replace(/\n/g, '<br />') }} />
-                            }
-                            if (block.type === 'tool') {
-                              return (
-                                <div className={`tool-card ${block.status}`} key={j}>
-                                  <span className="tool-icon">
-                                    {block.status === 'running' ? <span className="spinner" /> : block.status === 'completed' ? <Icon name="check" cls="ic-sm" /> : <Icon name="alert-circle" cls="ic-sm" />}
-                                  </span>
-                                  <div className="tool-info">
-                                    <span className="tool-name">{block.name}</span>
-                                    {block.message && <span className="tool-msg">{block.message}</span>}
+                <div className="bubble">
+                  <div className="turn">
+                    {/* Think block: timeline of thinking steps + tool calls */}
+                    {hasActivity && (
+                      <div className={`think ${isDone ? '' : 'running'} ${!isCollapsed ? 'open' : ''}`}>
+                        <button className="think-head" onClick={() => toggleCard(i)}>
+                          <Icon name="chevron-right" cls="chev ic-sm" />
+                          <span className="tlabel"><Icon name="brain" cls="ic-sm" />思考过程</span>
+                          <span className="tsum">
+                            {isStreaming
+                              ? <><span className="spinner" />思考中…</>
+                              : `已思考 · ${toolCount} 步`}
+                          </span>
+                        </button>
+                        <div className="think-body">
+                          <div className="timeline">
+                            {activityBlocks.map((block, j) => {
+                              if (block.type === 'text') {
+                                const lines = block.text.split('\n').filter(Boolean)
+                                return (
+                                  <div className={`tl-step ${block.status === 'streaming' ? 'run' : 'done'}`} key={j}>
+                                    <span className="tl-dot">
+                                      {block.status === 'streaming'
+                                        ? <span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }} />
+                                        : <Icon name="check" cls="ic-sm" />}
+                                    </span>
+                                    <div className="tl-lines">
+                                      {lines.map((line, k) => (
+                                        <div className="tl-line" key={k} dangerouslySetInnerHTML={{ __html: escapeHtml(line) }} />
+                                      ))}
+                                    </div>
                                   </div>
-                                  {typeof block.percentage === 'number' && (
-                                    <div className="tool-progress"><div className="tool-progress-bar" style={{ width: `${block.percentage}%` }} /></div>
-                                  )}
-                                </div>
-                              )
-                            }
-                            return null
-                          })}
+                                )
+                              }
+                              if (block.type === 'tool') {
+                                return (
+                                  <div className={`tl-step ${block.status === 'running' ? 'run' : block.status === 'completed' ? 'done' : 'pending'}`} key={j}>
+                                    <span className="tl-dot">
+                                      {block.status === 'running'
+                                        ? <span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }} />
+                                        : block.status === 'completed'
+                                          ? <Icon name="check" cls="ic-sm" />
+                                          : <Icon name="alert-circle" cls="ic-sm" />}
+                                    </span>
+                                    <div className="tl-title">{toolLabel(block.name)}</div>
+                                    <div className="tl-lines">
+                                      <div className="tool-chip">
+                                        <span className="tk"><Icon name="cpu" cls="ic-sm" />{block.name}</span>
+                                        {block.message && <span className="arg">{block.message}</span>}
+                                        {block.archived && <span className="arg" title="完整结果已存档，模型可按需取回"><Icon name="box" cls="ic-sm" />结果已存档</span>}
+                                        {block.status === 'completed' && <span className="ok"><Icon name="check" cls="ic-sm" /></span>}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              if (block.type === 'notice') {
+                                return (
+                                  <div className={`tl-step ${block.level === 'stop' ? 'pending' : 'run'}`} key={j}>
+                                    <span className="tl-dot"><Icon name="alert-circle" cls="ic-sm" /></span>
+                                    <div className="tl-lines">
+                                      <div className="tl-line" style={{ color: 'var(--warn, #b45309)' }}>{block.text}</div>
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              return null
+                            })}
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                    )}
 
-                  {responseBlock && responseBlock.type === 'text' && (responseBlock.text || responseBlock.status === 'streaming') && (
-                    <div className="bubble">
-                      <div className="body">
+                    {/* Answer: plain text response */}
+                    {responseBlock && responseBlock.type === 'text' && (responseBlock.text || responseBlock.status === 'streaming') && (
+                      <div className="answer">
                         <p dangerouslySetInnerHTML={{ __html: escapeHtml(responseBlock.text).replace(/\n/g, '<br />') + (responseBlock.status === 'streaming' ? '<span class="cursor-blink"></span>' : '') }} />
                       </div>
-                      {responseBlock.status === 'done' && (
-                        <button className="copy-btn" title="复制" onClick={() => copyText(responseBlock.text, i)}>
+                    )}
+
+                    {/* Turn actions (visible on hover) */}
+                    {isDone && responseBlock && responseBlock.type === 'text' && responseBlock.text && (
+                      <div className="turn-actions">
+                        <button className="icon-btn sm" title="复制回答" onClick={() => copyText(responseBlock.text, i)}>
                           <Icon name={copiedIdx === i ? 'check' : 'copy'} cls="ic-sm" />
                         </button>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )
@@ -1009,14 +1114,15 @@ export default function WorkbenchPage() {
         .model-search input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
         .chat-wrap { height: 100%; display: flex; flex-direction: column; }
         .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 0 8px; }
-        .chat-inner { width: 100%; max-width: none; margin: 0; padding: 0 24px; display: flex; flex-direction: column; gap: 16px; }
-        .msg { display: flex; align-items: flex-end; gap: 9px; }
+        .chat-inner { width: 100%; max-width: none; margin: 0; padding: 0 24px; display: flex; flex-direction: column; gap: 26px; }
+        .msg { display: flex; align-items: flex-start; gap: 11px; }
         .msg.agent { justify-content: flex-start; }
-        .msg.user { flex-direction: row-reverse; justify-content: flex-start; }
-        .msg .who { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
+        .msg.user { flex-direction: row-reverse; justify-content: flex-start; align-items: flex-end; }
+        .msg .who { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; margin-top: 2px; }
         .msg.user .who { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent-line); }
         .msg.agent .who { background: var(--accent); color: #fff; }
-        .msg .bubble { max-width: 76%; min-width: 0; }
+        .msg .bubble { min-width: 0; max-width: calc(100% - 40px); }
+        .msg.user .bubble { max-width: 72%; }
         .msg .body { font-size: 13.5px; line-height: 1.62; padding: 9px 13px; border-radius: 14px; }
         .msg.agent .body { background: var(--surface); border: 1px solid var(--border); color: var(--fg); border-bottom-left-radius: 4px; }
         .msg.user .body { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
@@ -1034,26 +1140,53 @@ export default function WorkbenchPage() {
         .msg.user .att-chip { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.28); color: #fff; }
         .cursor-blink { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; animation: blink 1s step-end infinite; border-radius: 1px; }
         @keyframes blink { 50% { opacity: 0; } }
-        .tool-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-        .tool-card { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--inset); border: 1px solid var(--border); font-size: 12px; }
-        .tool-card.running { border-color: var(--accent-line); background: var(--accent-soft); }
-        .tool-card.completed { border-color: var(--ok); }
-        .tool-card.failed { border-color: var(--danger); }
-        .tool-icon { flex: none; display: flex; align-items: center; }
-        .tool-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-        .tool-name { font-weight: 600; font-family: var(--mono); font-size: 11.5px; color: var(--fg-strong); }
-        .tool-msg { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .tool-progress { width: 48px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; flex: none; }
-        .tool-progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
-        .activity-card { margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); overflow: hidden; }
-        .activity-card.active { border-color: var(--accent-line); }
-        .activity-card.done { border-color: var(--border); }
-        .activity-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: 0; background: transparent; cursor: pointer; font-size: 12px; color: var(--muted); text-align: left; }
-        .activity-toggle:hover { background: var(--inset); }
-        .activity-icon { flex: none; display: flex; align-items: center; }
-        .activity-label { flex: 1; min-width: 0; }
-        .activity-body { padding: 0 10px 8px; display: flex; flex-direction: column; gap: 6px; }
-        .activity-text { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5; }
+        /* turn wrapper */
+        .turn { min-width: 0; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+        /* think block */
+        .think { border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+        .think.running { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .think-head { display: flex; align-items: center; gap: 9px; width: 100%; border: 0; background: transparent; cursor: pointer; padding: 10px 12px; text-align: left; color: var(--fg); transition: background .1s; }
+        .think-head:hover { background: var(--surface-2); }
+        .think-head .chev { color: var(--faint); transition: transform .18s; }
+        .think.open .think-head .chev { transform: rotate(90deg); }
+        .think-head .tlabel { font-size: 12.5px; font-weight: 600; color: var(--fg-strong); display: inline-flex; align-items: center; gap: 7px; }
+        .think-head .tlabel .ic { color: var(--accent); }
+        .think-head .tsum { font-size: 12px; color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 7px; }
+        .think-body { display: none; border-top: 1px solid var(--border); padding: 6px 14px 14px; }
+        .think.open .think-body { display: block; }
+        /* timeline */
+        .timeline { position: relative; margin-top: 8px; }
+        .tl-step { position: relative; padding: 0 0 16px 26px; }
+        .tl-step:last-child { padding-bottom: 2px; }
+        .tl-step::before { content: ""; position: absolute; left: 7px; top: 18px; bottom: 0; width: 1.5px; background: var(--border); }
+        .tl-step:last-child::before { display: none; }
+        .tl-dot { position: absolute; left: 0; top: 2px; width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); border: 2px solid var(--border-strong); }
+        .tl-step.done .tl-dot { border-color: var(--ok); background: var(--ok); color: #fff; }
+        .tl-step.done .tl-dot .ic { width: 9px; height: 9px; stroke-width: 3; }
+        .tl-step.run .tl-dot { border-color: var(--accent); padding: 0; }
+        .tl-step.pending .tl-dot { border-style: dashed; }
+        .tl-title { font-size: 12.5px; font-weight: 600; color: var(--fg-strong); display: flex; align-items: center; gap: 8px; min-height: 16px; }
+        .tl-step.pending .tl-title { color: var(--faint); font-weight: 500; }
+        .tl-lines { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+        .tl-line { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+        .tl-line code { font-family: var(--mono); font-size: 11.5px; background: var(--inset); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+        /* tool-chip inside a step */
+        .tool-chip { display: inline-flex; align-items: center; gap: 7px; margin-top: 7px; padding: 5px 9px 5px 7px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); font-size: 11.5px; color: var(--fg); font-family: var(--mono); }
+        .tool-chip .tk { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-ink); font-weight: 600; }
+        .tool-chip .tk .ic { width: 13px; height: 13px; }
+        .tool-chip .arg { color: var(--muted); }
+        .tool-chip .ok { color: var(--ok); margin-left: 2px; display: inline-flex; align-items: center; gap: 3px; }
+        .tool-chip .ok .ic { width: 12px; height: 12px; }
+        /* answer */
+        .answer { font-size: 13.8px; line-height: 1.68; color: var(--fg); }
+        .answer p { margin: 0 0 11px; } .answer p:last-child { margin-bottom: 0; }
+        .answer strong { color: var(--fg-strong); font-weight: 650; }
+        .answer code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+        .answer ul { margin: 0 0 11px; padding-left: 18px; } .answer li { margin: 3px 0; }
+        /* turn actions */
+        .turn-actions { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity .12s; }
+        .turn:hover .turn-actions, .turn:focus-within .turn-actions { opacity: 1; }
+        .turn-actions .icon-btn { color: var(--faint); } .turn-actions .icon-btn:hover { color: var(--accent-ink); }
         .composer { flex: none; padding: 0 24px 18px; }
         .composer-inner { max-width: 760px; margin: 0 auto; }
         .agent-status { margin-bottom: 7px; text-align: right; }

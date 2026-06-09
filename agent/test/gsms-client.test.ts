@@ -375,7 +375,7 @@ test('execution tool refuses an unconfirmed validation snapshot before calling G
 
   await assert.rejects(
     tool.execute({ snapshotId: 'snapshot-1', runMode: 'real' }, ctx),
-    /has not been confirmed/,
+    /No confirmation record found/,
   )
   assert.equal(called, false)
 })
@@ -397,11 +397,22 @@ test('confirmation and execution tools use the exact current snapshot', async ()
   ctx.domainState.applyPatch({
     phase: 'awaiting-user-confirmation',
     validationSnapshotId: 'snapshot-1',
+    matchingContextId: 'test-matching-ctx',
+  })
+  // The tool now gates on validation-report artifact, not phase
+  ctx.artifacts.create({
+    type: 'validation-report',
+    createdBy: 'tool',
+    data: { can_proceed: true, snapshot_id: 'snapshot-1' },
+    metadata: { matchingContextId: 'test-matching-ctx' },
   })
   const confirmation = await tools
     .find(candidate => candidate.name === 'confirm_validation_snapshot')!
     .execute({ snapshotId: 'snapshot-1', confirmed: true }, ctx)
   ctx.domainState.applyPatch(confirmation.statePatch ?? {})
+  // In the real runtime, StreamingToolExecutor stores result artifacts.
+  // In this direct-call test we must do it manually.
+  if (confirmation.artifacts?.length) ctx.artifacts.createMany(confirmation.artifacts)
   const execution = await tools
     .find(candidate => candidate.name === 'execute_validated_snapshot')!
     .execute({ snapshotId: 'snapshot-1', runMode: 'real' }, ctx)

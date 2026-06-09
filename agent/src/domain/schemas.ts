@@ -114,6 +114,10 @@ export const bindingDecisionSchema = z.object({
   facts: z.array(evidenceSchema),
   agentReasoning: z.string().min(1),
   userEvidence: z.array(evidenceSchema).optional(),
+  /** Set true only when the user explicitly chose this asset among equally-scored
+   *  candidates. Lets the deterministic tie-break guard trust a 'matched' status
+   *  that would otherwise be forced to 'ambiguous'. */
+  userConfirmed: z.boolean().optional(),
 })
 
 export const bindingReportSchema = z.object({

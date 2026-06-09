@@ -39,7 +39,11 @@ export class SkillRegistry {
     )
 
     return skills
-      .map(skill => `- ${skill.name}: ${truncate(skill.description, perDescription)}`)
+      .map(skill => {
+        const base = `- ${skill.name}: ${truncate(skill.description, perDescription)}`
+        if (skill.whenToUse) return `${base} — ${truncate(skill.whenToUse, perDescription)}`
+        return base
+      })
       .join('\n')
       .slice(0, charBudget)
   }
@@ -47,9 +51,10 @@ export class SkillRegistry {
   #list(predicate: (skill: SkillDefinition) => boolean): SkillSummary[] {
     return [...this.#skills.values()]
       .filter(predicate)
-      .map(({ name, description, source, execution }) => ({
+      .map(({ name, description, whenToUse, source, execution }) => ({
         name,
         description,
+        whenToUse,
         source,
         execution,
       }))

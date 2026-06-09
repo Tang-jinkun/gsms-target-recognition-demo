@@ -1,0 +1,939 @@
+<!doctype html>
+<html lang="zh-CN"><head><script data-od-sandbox-shim="">(function(){
+  function makeStore(){
+    var data = {};
+    var api = {
+      getItem: function(k){ return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+      setItem: function(k, v){ data[k] = String(v); },
+      removeItem: function(k){ delete data[k]; },
+      clear: function(){ data = {}; },
+      key: function(i){ return Object.keys(data)[i] || null; }
+    };
+    Object.defineProperty(api, 'length', { get: function(){ return Object.keys(data).length; } });
+    return api;
+  }
+  function tryShim(name){
+    var works = false;
+    try { works = !!window[name] && typeof window[name].getItem === 'function'; void window[name].length; }
+    catch (_) { works = false; }
+    if (works) return;
+    try { Object.defineProperty(window, name, { configurable: true, value: makeStore() }); }
+    catch (_) { try { window[name] = makeStore(); } catch (__) {} }
+  }
+  tryShim('localStorage');
+  tryShim('sessionStorage');
+  document.addEventListener('click', (e) => {
+    if (!e.target || !(e.target instanceof Element)) return;
+    var link = e.target.closest('a[href]');
+    if (!link) return;
+    var href = link.getAttribute('href');
+    if (href === null) return;
+    var isAnchor = href.startsWith('#') || href === '';
+    if (isAnchor) {
+      e.preventDefault();
+      if (href === '' || href === '#') {
+        window.scrollTo({ top: 0 });
+        history.replaceState(null, '', ' ');
+      } else {
+        var targetId = href.slice(1);
+        var target = targetId ? document.getElementById(targetId) : null;
+        if (target) {
+          target.scrollIntoView();
+          location.hash === href && history.replaceState(null, '', ' ');
+          location.hash = href;
+        }
+      }
+    } else if (link.getAttribute('target') === '_blank') {
+      e.preventDefault();
+      let safe = false;
+      try {
+        var url = new URL(href, location.href);
+        safe =
+          url.protocol === 'http:' ||
+          url.protocol === 'https:' ||
+          url.protocol === 'mailto:';
+      } catch (_) {}
+      safe && window.open(href, '_blank', 'noopener,noreferrer');
+    }
+  });
+})();</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent · Codex 思考过程 · GSMS 工作台</title>
+<style>
+/* ============================================================
+   GSMS tokens (科研蓝) — copied verbatim from assets/app.css
+   ============================================================ */
+:root{
+  --bg:oklch(98.5% 0.004 240); --surface:#fff; --surface-2:oklch(97.2% 0.005 245); --inset:oklch(96% 0.006 245);
+  --fg:oklch(30% 0.028 255); --fg-strong:oklch(24% 0.03 255); --muted:oklch(52% 0.02 255); --faint:oklch(66% 0.016 255);
+  --border:oklch(91.5% 0.008 250); --border-strong:oklch(86% 0.012 250);
+  --accent:oklch(55% 0.155 248); --accent-ink:oklch(46% 0.16 250); --accent-soft:oklch(96% 0.03 248); --accent-line:oklch(82% 0.07 248);
+  --ok:oklch(58% 0.12 172); --ok-soft:oklch(95.5% 0.04 172);
+  --warn:oklch(67% 0.13 70); --warn-soft:oklch(96% 0.06 78);
+  --danger:oklch(58% 0.18 25); --danger-soft:oklch(96% 0.04 25);
+  --info:oklch(60% 0.11 232); --info-soft:oklch(96% 0.035 232);
+  --r-sm:6px; --r:9px; --r-lg:13px;
+  --shadow-pop:0 8px 28px -8px oklch(40% 0.04 255 / 0.22), 0 2px 8px -4px oklch(40% 0.04 255 / 0.16);
+  --shadow-float:0 4px 14px -6px oklch(40% 0.04 255 / 0.28);
+  --nav-h:52px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","SF Mono",ui-monospace,"Cascadia Code",Menlo,monospace;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{margin:0;font-family:var(--font);color:var(--fg);background:var(--bg);font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+::selection{background:var(--accent-soft);}
+*::-webkit-scrollbar{width:9px;height:9px;}
+*::-webkit-scrollbar-thumb{background:oklch(88% 0.01 250);border-radius:20px;border:2px solid transparent;background-clip:padding-box;}
+*::-webkit-scrollbar-thumb:hover{background:oklch(80% 0.015 250);}
+*::-webkit-scrollbar-track{background:transparent;}
+a{color:inherit;text-decoration:none;}
+button{font-family:inherit;}
+svg{display:block;}
+.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+.ic-sm{width:14px;height:14px;} .ic-lg{width:18px;height:18px;}
+
+/* topnav */
+.topnav{height:var(--nav-h);background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:22px;padding:0 18px;position:sticky;top:0;z-index:40;}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:-.01em;color:var(--fg-strong);font-size:15px;padding-right:6px;}
+.brand .logo{width:24px;height:24px;border-radius:7px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:800;}
+.nav-links{display:flex;align-items:center;gap:2px;}
+.nav-links a{padding:6px 12px;border-radius:var(--r-sm);color:var(--muted);font-weight:500;font-size:13.5px;transition:background .12s,color .12s;}
+.nav-links a:hover{background:var(--inset);color:var(--fg);}
+.nav-links a.active{color:var(--accent-ink);background:var(--accent-soft);font-weight:600;}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:14px;}
+.status-dot{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);}
+.status-dot .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft);}
+.user-chip{display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 6px 4px 4px;border-radius:20px;transition:background .12s;}
+.user-chip:hover{background:var(--inset);}
+.avatar{width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);display:grid;place-items:center;font-size:11px;font-weight:700;border:1px solid var(--accent-line);}
+.user-chip .uname{font-size:12.5px;font-weight:500;color:var(--fg);}
+
+/* badges / buttons / misc */
+.badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:20px;font-size:11px;font-weight:600;background:var(--inset);color:var(--muted);}
+.badge .bdot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+.badge-ok{background:var(--ok-soft);color:var(--ok);} .badge-warn{background:var(--warn-soft);color:oklch(48% 0.12 60);}
+.badge-danger{background:var(--danger-soft);color:var(--danger);} .badge-info{background:var(--info-soft);color:var(--info);}
+.badge-accent{background:var(--accent-soft);color:var(--accent-ink);} .badge-muted{background:var(--inset);color:var(--faint);}
+.glabel{font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);}
+.meta{font-size:11.5px;color:var(--faint);}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+.icon-btn{width:30px;height:30px;display:grid;place-items:center;border-radius:var(--r-sm);border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;transition:background .12s,color .12s;}
+.icon-btn:hover{background:var(--inset);color:var(--fg);}
+.icon-btn.sm{width:26px;height:26px;}
+.btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 13px;border-radius:var(--r-sm);border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-size:13px;font-weight:500;cursor:pointer;transition:background .12s,border-color .12s;white-space:nowrap;}
+.btn:hover{background:var(--inset);border-color:var(--faint);}
+.btn .ic{width:15px;height:15px;}
+.btn-sm{height:27px;padding:0 9px;font-size:12.5px;}
+.spinner{width:14px;height:14px;border:2px solid var(--accent-line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex:none;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.fchip{width:30px;height:30px;border-radius:var(--r-sm);flex:none;display:grid;place-items:center;background:var(--inset);color:var(--muted);}
+.fchip.raster{background:var(--info-soft);color:var(--info);} .fchip.vector{background:var(--ok-soft);color:var(--ok);} .fchip.table{background:var(--accent-soft);color:var(--accent-ink);}
+.seg{display:inline-flex;background:var(--inset);border-radius:var(--r-sm);padding:2px;gap:2px;}
+.seg button{border:0;background:transparent;cursor:pointer;padding:5px 11px;border-radius:5px;font-size:12.5px;font-weight:500;color:var(--muted);display:inline-flex;align-items:center;gap:6px;transition:background .12s,color .12s;}
+.seg button:hover{color:var(--fg);} .seg button.on{background:var(--surface);color:var(--accent-ink);font-weight:600;box-shadow:var(--shadow-float);}
+.tabs{display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);flex:none;}
+.tabs button{border:0;background:transparent;cursor:pointer;padding:9px 11px;font-size:12.5px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;align-items:center;gap:6px;transition:color .12s;}
+.tabs button:hover{color:var(--fg);} .tabs button.on{color:var(--accent-ink);border-bottom-color:var(--accent);font-weight:600;}
+.row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);}
+.row .ftitle{font-size:13px;font-weight:500;color:var(--fg-strong);} .row .fsub{font-size:11.5px;color:var(--faint);}
+
+/* ============================================================
+   App shell — follows existing workbench 3-column layout
+   ============================================================ */
+.app{height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.scene-bar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 18px;background:var(--surface);border-bottom:1px solid var(--border);}
+.scene-bar .breadcrumb{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--muted);}
+.scene-bar .breadcrumb a{color:var(--accent-ink);font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:5px;}
+.scene-bar .breadcrumb b{color:var(--fg-strong);font-weight:650;}
+.scene-bar .region{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--faint);}
+.work{flex:1;min-height:0;display:flex;min-width:1180px;}
+.col{display:flex;flex-direction:column;min-height:0;background:var(--surface);}
+.col-head{height:46px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--border);}
+.col-head h2{margin:0;font-size:13px;font-weight:600;color:var(--fg-strong);}
+.col-head .right{margin-left:auto;display:flex;gap:2px;}
+.col-body{flex:1;min-height:0;overflow-y:auto;}
+.c-left{width:248px;flex:none;border-right:1px solid var(--border);}
+.c-right{width:300px;flex:none;border-left:1px solid var(--border);}
+.c-center{flex:1;min-width:560px;background:var(--bg);display:flex;flex-direction:column;min-height:0;}
+
+/* ============================================================
+   Chat
+   ============================================================ */
+.chat-wrap{flex:1;min-height:0;display:flex;flex-direction:column;}
+.chat-scroll{flex:1;min-height:0;overflow-y:auto;padding:22px 0 8px;}
+.chat-inner{max-width:780px;margin:0 auto;padding:0 26px;display:flex;flex-direction:column;gap:22px;}
+.msg{display:flex;gap:11px;}
+.msg.user{flex-direction:row-reverse;}
+.msg .who{width:28px;height:28px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:10.5px;font-weight:700;margin-top:2px;}
+.msg.user .who{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent-line);}
+.msg.agent .who{background:var(--accent);color:#fff;}
+.msg .bubble{min-width:0;max-width:calc(100% - 40px);}
+.msg.user .bubble{max-width:72%;}
+.msg.user .body{font-size:13.5px;line-height:1.62;padding:9px 13px;border-radius:14px;border-bottom-right-radius:4px;background:var(--accent);color:#fff;}
+.msg.user .body p{margin:0;}
+.msg.user .att-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.msg.user .att-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:6px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);color:#fff;font-size:12px;font-family:var(--mono);}
+
+/* agent turn */
+.turn{min-width:0;width:100%;display:flex;flex-direction:column;gap:12px;}
+
+/* ---- Codex thinking block ---- */
+.think{border:1px solid var(--border);border-radius:var(--r);background:var(--surface);overflow:hidden;}
+.think.running{border-color:var(--accent-line);box-shadow:0 0 0 3px var(--accent-soft);}
+.think-head{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;cursor:pointer;padding:10px 12px;text-align:left;color:var(--fg);transition:background .1s;}
+.think-head:hover{background:var(--surface-2);}
+.think-head .chev{color:var(--faint);transition:transform .18s;}
+.think.open .think-head .chev{transform:rotate(90deg);}
+.think-head .tlabel{font-size:12.5px;font-weight:600;color:var(--fg-strong);display:inline-flex;align-items:center;gap:7px;}
+.think-head .tlabel .ic{color:var(--accent);}
+.think-head .tsum{font-size:12px;color:var(--faint);margin-left:auto;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:7px;}
+.think-body{display:none;border-top:1px solid var(--border);padding:6px 14px 14px;}
+.think.open .think-body{display:block;}
+
+/* timeline */
+.timeline{position:relative;margin-top:8px;}
+.tl-step{position:relative;padding:0 0 16px 26px;}
+.tl-step:last-child{padding-bottom:2px;}
+.tl-step::before{content:"";position:absolute;left:7px;top:18px;bottom:0;width:1.5px;background:var(--border);}
+.tl-step:last-child::before{display:none;}
+.tl-dot{position:absolute;left:0;top:2px;width:15px;height:15px;border-radius:50%;display:grid;place-items:center;background:var(--surface);border:2px solid var(--border-strong);}
+.tl-step.done .tl-dot{border-color:var(--ok);background:var(--ok);color:#fff;}
+.tl-step.done .tl-dot .ic{width:9px;height:9px;stroke-width:3;}
+.tl-step.run .tl-dot{border-color:var(--accent);padding:0;}
+.tl-step.pending .tl-dot{border-style:dashed;}
+.tl-title{font-size:12.5px;font-weight:600;color:var(--fg-strong);display:flex;align-items:center;gap:8px;min-height:16px;}
+.tl-step.pending .tl-title{color:var(--faint);font-weight:500;}
+.tl-lines{margin-top:6px;display:flex;flex-direction:column;gap:3px;}
+.tl-line{font-size:12.5px;line-height:1.6;color:var(--muted);}
+.tl-line code{font-family:var(--mono);font-size:11.5px;background:var(--inset);padding:1px 5px;border-radius:4px;color:var(--accent-ink);}
+/* tool-call chip inside a step */
+.tool-chip{display:inline-flex;align-items:center;gap:7px;margin-top:7px;padding:5px 9px 5px 7px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface-2);font-size:11.5px;color:var(--fg);font-family:var(--mono);}
+.tool-chip .tk{display:inline-flex;align-items:center;gap:5px;color:var(--accent-ink);font-weight:600;}
+.tool-chip .tk .ic{width:13px;height:13px;}
+.tool-chip .arg{color:var(--muted);}
+.tool-chip .ok{color:var(--ok);margin-left:2px;display:inline-flex;align-items:center;gap:3px;}
+.tool-chip .ok .ic{width:12px;height:12px;}
+
+/* ---- answer ---- */
+.answer{font-size:13.8px;line-height:1.68;color:var(--fg);}
+.answer p{margin:0 0 11px;} .answer p:last-child{margin-bottom:0;}
+.answer strong{color:var(--fg-strong);font-weight:650;}
+.answer code{font-family:var(--mono);font-size:12px;background:var(--inset);padding:1px 5px;border-radius:4px;color:var(--accent-ink);}
+.answer ul{margin:0 0 11px;padding-left:18px;} .answer li{margin:3px 0;}
+.cursor-blink{display:inline-block;width:7px;height:15px;background:var(--accent);vertical-align:-2px;animation:blink 1s step-end infinite;border-radius:1px;}
+@keyframes blink{50%{opacity:0;}}
+
+/* ---- result: code block ---- */
+.code-block{border:1px solid var(--border-strong);border-radius:var(--r);overflow:hidden;background:oklch(22% 0.02 256);margin:4px 0 12px;}
+.code-head{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 12px;background:oklch(26% 0.02 256);border-bottom:1px solid oklch(32% 0.02 256);}
+.code-head .fname{font-family:var(--mono);font-size:11.5px;color:oklch(82% 0.02 240);display:inline-flex;align-items:center;gap:7px;}
+.code-head .fname .ic{width:13px;height:13px;color:oklch(66% 0.04 240);}
+.code-head .lang{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:oklch(60% 0.03 240);padding:2px 6px;border:1px solid oklch(36% 0.02 256);border-radius:4px;}
+.copy-btn{margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:5px;border:1px solid oklch(36% 0.02 256);background:transparent;color:oklch(78% 0.02 240);font-size:11.5px;cursor:pointer;transition:background .12s,color .12s;}
+.copy-btn:hover{background:oklch(32% 0.02 256);color:#fff;}
+.copy-btn.copied{color:oklch(75% 0.13 165);border-color:oklch(40% 0.08 165);}
+.copy-btn .ic{width:13px;height:13px;}
+.code-body{margin:0;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.7;color:oklch(86% 0.02 240);}
+.code-body .ln{display:inline-block;width:2em;color:oklch(48% 0.02 256);user-select:none;text-align:right;margin-right:14px;}
+/* syntax tokens */
+.t-kw{color:oklch(74% 0.13 310);} .t-str{color:oklch(78% 0.12 140);} .t-com{color:oklch(55% 0.02 256);font-style:italic;}
+.t-num{color:oklch(80% 0.11 70);} .t-fn{color:oklch(78% 0.11 230);} .t-bi{color:oklch(80% 0.10 200);}
+
+/* ---- result: diff ---- */
+.diff-block{border:1px solid var(--border-strong);border-radius:var(--r);overflow:hidden;margin:4px 0 12px;background:var(--surface);}
+.diff-head{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 12px;background:var(--surface-2);border-bottom:1px solid var(--border);}
+.diff-head .fname{font-family:var(--mono);font-size:11.5px;color:var(--fg-strong);display:inline-flex;align-items:center;gap:7px;}
+.diff-head .fname .ic{width:13px;height:13px;color:var(--muted);}
+.diff-head .stat{font-family:var(--mono);font-size:11px;display:inline-flex;gap:7px;}
+.diff-head .stat .add{color:var(--ok);} .diff-head .stat .del{color:var(--danger);}
+.diff-head .copy-btn{color:var(--muted);border-color:var(--border-strong);}
+.diff-head .copy-btn:hover{background:var(--inset);color:var(--fg);}
+.diff-head .copy-btn.copied{color:var(--ok);border-color:var(--ok);}
+.diff-body{margin:0;font-family:var(--mono);font-size:12px;line-height:1.65;overflow-x:auto;}
+.diff-body .dl{display:flex;padding:0 12px 0 0;white-space:pre;}
+.diff-body .dl .gut{width:34px;flex:none;text-align:center;color:var(--faint);user-select:none;border-right:1px solid var(--border);margin-right:10px;}
+.diff-body .dl.add{background:oklch(95.5% 0.04 165);} .diff-body .dl.add .gut{color:var(--ok);background:oklch(93% 0.05 165);}
+.diff-body .dl.del{background:oklch(96% 0.035 25);} .diff-body .dl.del .gut{color:var(--danger);background:oklch(94% 0.045 25);}
+.diff-body .dl .code{flex:1;}
+.diff-body .dl.add .code{color:oklch(40% 0.09 165);} .diff-body .dl.del .code{color:oklch(45% 0.13 25);}
+
+/* ---- result: data card ---- */
+.result-card{border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin:4px 0 12px;}
+.result-card .rc-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--surface-2);}
+.result-card .rc-head .ic{color:var(--accent);width:15px;height:15px;}
+.result-card .rc-head h4{margin:0;font-size:12.5px;font-weight:650;color:var(--fg-strong);}
+.result-card .rc-head .meta{margin-left:auto;}
+.rtable{width:100%;border-collapse:collapse;font-size:12.5px;}
+.rtable th,.rtable td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);}
+.rtable th{font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--faint);background:var(--surface);}
+.rtable td{color:var(--fg);} .rtable tr:last-child td{border-bottom:0;}
+.rtable td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;color:var(--fg-strong);}
+.rtable tr:hover td{background:var(--surface-2);}
+.rtable tfoot td{font-weight:650;color:var(--fg-strong);background:var(--surface-2);border-top:1px solid var(--border-strong);}
+
+/* turn action bar */
+.turn-actions{display:flex;align-items:center;gap:4px;opacity:0;transition:opacity .12s;}
+.turn:hover .turn-actions,.turn:focus-within .turn-actions{opacity:1;}
+.turn-actions .icon-btn{color:var(--faint);} .turn-actions .icon-btn:hover{color:var(--accent-ink);}
+
+/* composer */
+.composer{flex:none;padding:0 26px 18px;}
+.composer-inner{max-width:780px;margin:0 auto;}
+.att-strip{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
+.att-chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 6px 0 9px;background:var(--surface);border:1px solid var(--border-strong);border-radius:6px;font-size:12px;font-family:var(--mono);color:var(--fg);}
+.att-chip button{border:0;background:transparent;color:var(--faint);cursor:pointer;display:grid;place-items:center;padding:2px;border-radius:4px;}
+.att-chip button:hover{color:var(--danger);background:var(--inset);}
+.card-box{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--r-lg);box-shadow:var(--shadow-float);transition:border-color .12s,box-shadow .12s;}
+.card-box:focus-within{border-color:var(--accent-line);box-shadow:0 0 0 3px var(--accent-soft);}
+.composer textarea{width:100%;border:0;outline:none;resize:none;font-family:inherit;font-size:13.5px;line-height:1.55;color:var(--fg);background:transparent;padding:13px 15px 4px;max-height:160px;}
+.composer textarea::placeholder{color:var(--faint);}
+.composer-bar{display:flex;align-items:center;gap:8px;padding:7px 9px 9px;}
+.mini-select{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 9px;border-radius:var(--r-sm);border:1px solid var(--border);background:var(--surface);font-size:12.5px;color:var(--fg);cursor:pointer;}
+.mini-select:hover{background:var(--inset);}
+.send-btn{width:32px;height:32px;border-radius:var(--r-sm);border:0;background:var(--accent);color:#fff;display:grid;place-items:center;cursor:pointer;transition:background .12s;}
+.send-btn:hover{background:var(--accent-ink);} .send-btn:disabled{background:var(--border-strong);cursor:not-allowed;}
+
+/* right column run info */
+.task-card{padding:13px 14px;border-bottom:1px solid var(--border);}
+.task-state{display:flex;align-items:center;gap:9px;}
+.task-state .ti{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;flex:none;}
+.ti.done{background:var(--ok-soft);color:var(--ok);} .ti.run{background:var(--warn-soft);color:oklch(55% 0.12 65);}
+.run-step{display:flex;gap:9px;padding:9px 14px;border-bottom:1px solid var(--border);font-size:12px;}
+.run-step .rs-ic{width:18px;height:18px;border-radius:50%;flex:none;display:grid;place-items:center;background:var(--ok-soft);color:var(--ok);margin-top:1px;}
+.run-step .rs-ic .ic{width:11px;height:11px;stroke-width:3;}
+.run-step .rs-t{color:var(--fg);} .run-step .rs-s{color:var(--faint);font-size:11px;margin-top:1px;}
+</style>
+<style data-od-tweaks-bridge-style="">
+[data-od-tweaks-hidden] .tw-panel {
+  transform: translateX(calc(100% + 32px)) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.tw-restore { display: none !important; }
+</style><script data-od-tweaks-bridge="">(function(){
+  // Synchronously hide BEFORE the artifact body parses so the panel never
+  // flashes on initial paint. The host removes the attribute via postMessage
+  // once it knows the desired state.
+  document.documentElement.setAttribute('data-od-tweaks-hidden', '');
+
+  var suppressEcho = false;
+  var observer = null;
+
+  function panelEl(){ return document.querySelector('.tw-panel'); }
+
+  function applyClassesToPanel(visible){
+    var panel = panelEl();
+    if (panel) panel.classList.toggle('tw-hidden', !visible);
+  }
+
+  function setPanelVisible(visible){
+    suppressEcho = true;
+    document.documentElement.toggleAttribute('data-od-tweaks-hidden', !visible);
+    applyClassesToPanel(visible);
+    // Clear flag after the MutationObserver has had a chance to fire for this
+    // change so we don't echo our own host-driven toggles back to the host.
+    Promise.resolve().then(function(){ suppressEcho = false; });
+  }
+
+  function postState(){
+    var panel = panelEl();
+    if (!panel) return;
+    try {
+      parent.postMessage({
+        type: 'od:tweaks-panel-state',
+        visible: !panel.classList.contains('tw-hidden'),
+      }, '*');
+    } catch (e) {}
+  }
+
+  function postAvailability(){
+    try {
+      parent.postMessage({
+        type: 'od:tweaks-available',
+        available: !!panelEl(),
+      }, '*');
+    } catch (e) {}
+  }
+
+  function attachObserver(){
+    var panel = panelEl();
+    if (!panel || observer) return;
+    observer = new MutationObserver(function(){
+      if (suppressEcho) return;
+      postState();
+    });
+    observer.observe(panel, { attributes: true, attributeFilter: ['class'] });
+  }
+
+  function onReady(){
+    // Capture the panel authored visibility BEFORE we apply the host hidden
+    // attribute. The bridge sets data-od-tweaks-hidden synchronously in head
+    // (before the body parses), so on entry to onReady the attribute is
+    // always present even though the artifact may have authored the panel
+    // as default-visible. Reading the panel class first is the only place
+    // we can still observe the author intent. Then drive the attribute,
+    // classes, and posted state from that captured value so a default
+    // visible tw-panel reports visible:true and the toolbar toggle starts
+    // ON. Issue surfaced in PR #1643 review.
+    var panel = panelEl();
+    var initialVisible = !!panel && !panel.classList.contains('tw-hidden');
+    document.documentElement.toggleAttribute('data-od-tweaks-hidden', !initialVisible);
+    applyClassesToPanel(initialVisible);
+    attachObserver();
+    postAvailability();
+    // Post the captured initial visibility so the toolbar toggle reflects
+    // the default state on mount. Without this the toggle reads OFF while
+    // a default-visible tw-panel artifact clearly shows its panel and the
+    // user would have to click toggle-on then toggle-off to actually hide.
+    postState();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', onReady);
+  } else {
+    onReady();
+  }
+
+  window.addEventListener('message', function(ev){
+    if (!ev.data || ev.data.type !== 'od:tweaks-panel-visible') return;
+    setPanelVisible(!!ev.data.visible);
+  });
+})();</script></head>
+<body>
+<div class="app" data-od-id="path-0">
+  <header class="topnav" data-topnav="" data-od-id="path-0-0"></header>
+
+  <div class="scene-bar">
+    <div class="breadcrumb">
+      <a data-od-id="path-0-1-0-0"><i data-ic="arrow-left" data-cls="ic-sm"></i>工作台</a>
+      <i data-ic="chevron-right" data-cls="ic-sm"></i>
+      <b>黄河三角洲碳储量评估</b>
+    </div>
+    <span style="flex:1"></span>
+    <span class="region"><i data-ic="map" data-cls="ic-sm"></i>研究区：黄河三角洲</span>
+  </div>
+
+  <div class="work">
+    <!-- LEFT -->
+    <aside class="col c-left" data-od-id="path-0-2-0">
+      <div class="tabs" data-od-id="path-0-2-0-0">
+        <button class="on" data-od-id="path-0-2-0-0-0"><i data-ic="layers" data-cls="ic-sm"></i>图层</button>
+        <button data-od-id="path-0-2-0-0-1"><i data-ic="file" data-cls="ic-sm"></i>文件</button>
+        <button data-od-id="path-0-2-0-0-2"><i data-ic="box" data-cls="ic-sm"></i>InVEST</button>
+      </div>
+      <div class="col-body" data-od-id="path-0-2-0-1">
+        <div class="row"><span class="fchip raster"><i data-ic="image" data-cls="ic-sm"></i></span><div style="min-width:0"><div class="ftitle">landuse_2020.tif</div><div class="fsub">栅格 · 184 MB</div></div></div>
+        <div class="row"><span class="fchip vector"><i data-ic="map" data-cls="ic-sm"></i></span><div style="min-width:0"><div class="ftitle">study_boundary.shp</div><div class="fsub">矢量 · 2.1 MB</div></div></div>
+        <div class="row"><span class="fchip table"><i data-ic="table" data-cls="ic-sm"></i></span><div style="min-width:0"><div class="ftitle">carbon_pools.csv</div><div class="fsub">表格 · 6 KB</div></div></div>
+      </div>
+    </aside>
+
+    <!-- CENTER -->
+    <main class="col c-center" data-od-id="path-0-2-1">
+      <div class="col-head" style="background:var(--surface)" data-od-id="path-0-2-1-0">
+        <div class="seg">
+          <button class="on" data-od-id="path-0-2-1-0-0-0"><i data-ic="message-square" data-cls="ic-sm"></i>Agent</button>
+          <button data-od-id="path-0-2-1-0-0-1"><i data-ic="map" data-cls="ic-sm"></i>Map</button>
+          <button data-od-id="path-0-2-1-0-0-2"><i data-ic="columns" data-cls="ic-sm"></i>Split</button>
+        </div>
+        <div class="right" style="margin-left:auto;display:flex;align-items:center;gap:10px">
+          <span class="meta">模型：<b style="color:var(--fg);font-weight:600">GPT-4o</b></span>
+        </div>
+      </div>
+
+      <div class="chat-wrap" data-od-id="path-0-2-1-1">
+        <div class="chat-scroll" id="chatScroll" data-od-id="path-0-2-1-1-0">
+          <div class="chat-inner" id="chatInner" data-od-id="path-0-2-1-1-0-0"></div>
+        </div>
+        <div class="composer">
+          <div class="composer-inner">
+            <div class="att-strip" id="attStrip" data-od-id="path-0-2-1-1-1-0-0"></div>
+            <div class="card-box">
+              <textarea id="ta" rows="1" placeholder="描述分析任务，或让 Agent 编写 / 修改模型脚本…（已就绪示例：再试一句「帮我写碳储量汇总脚本」）" data-od-id="path-0-2-1-1-1-0-1-0"></textarea>
+              <div class="composer-bar">
+                <button class="icon-btn" id="attBtn" title="添加附件" data-od-id="path-0-2-1-1-1-0-1-1-0"><i data-ic="paperclip"></i></button>
+                <span style="flex:1"></span>
+                <div class="mini-select"><i data-ic="sparkles" data-cls="ic-sm"></i><span>GPT-4o · 推理</span><i data-ic="chevron-down" data-cls="ic-sm"></i></div>
+                <button class="send-btn" id="sendBtn" title="发送" data-od-id="path-0-2-1-1-1-0-1-1-3"><i data-ic="send" data-cls="ic-sm"></i></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT -->
+    <aside class="col c-right" data-od-id="path-0-2-2">
+      <div class="col-head" data-od-id="path-0-2-2-0"><h2 data-od-id="path-0-2-2-0-0">运行信息</h2></div>
+      <div class="task-card" data-od-id="path-0-2-2-1">
+        <div class="glabel" style="margin-bottom:9px">最近任务</div>
+        <div class="task-state">
+          <span class="ti done"><i data-ic="check-circle"></i></span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--fg-strong)">碳储量脚本已生成</div>
+            <div class="meta" style="margin-top:1px">模型：Carbon Storage · 用时 11.2s</div>
+          </div>
+          <span class="badge badge-ok"><span class="bdot"></span>完成</span>
+        </div>
+      </div>
+      <div class="col-head" style="border-top:1px solid var(--border)" data-od-id="path-0-2-2-2"><h2 style="font-size:12px" data-od-id="path-0-2-2-2-0">执行步骤</h2></div>
+      <div class="run-step" data-od-id="path-0-2-2-3"><span class="rs-ic"><i data-ic="check"></i></span><div><div class="rs-t">读取 carbon_pools.csv</div><div class="rs-s">7 类土地利用 · 4 个碳库</div></div></div>
+      <div class="run-step" data-od-id="path-0-2-2-4"><span class="rs-ic"><i data-ic="check"></i></span><div><div class="rs-t">校验栅格对齐</div><div class="rs-s">EPSG:4326 · 30m 分辨率</div></div></div>
+      <div class="run-step" data-od-id="path-0-2-2-5"><span class="rs-ic"><i data-ic="check"></i></span><div><div class="rs-t">生成汇总脚本</div><div class="rs-s">carbon_summary.py · 38 行</div></div></div>
+      <div class="run-step" data-od-id="path-0-2-2-6"><span class="rs-ic"><i data-ic="check"></i></span><div><div class="rs-t">写入输出</div><div class="rs-s">outputs/ → tot_c_cur.tif</div></div></div>
+    </aside>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   icons (subset of assets/app.js) + helpers
+   ============================================================ */
+const I={
+  layers:'<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+  file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+  'file-text':'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/>',
+  send:'<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
+  paperclip:'<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  copy:'<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  'chevron-right':'<path d="m9 18 6-6-6-6"/>','chevron-down':'<path d="m6 9 6 6 6-6"/>',
+  map:'<path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z"/><path d="M15 5.764v15"/><path d="M9 3.236v15"/>',
+  'message-square':'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  columns:'<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/>',
+  'check-circle':'<path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  box:'<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  image:'<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  table:'<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
+  code:'<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  terminal:'<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+  search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  'arrow-left':'<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  sparkles:'<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z"/>',
+  cpu:'<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M20 15h2M20 9h2M2 15h2M2 9h2"/>',
+  'refresh-cw':'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  'thumbs-up':'<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+  brain:'<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>'
+};
+function icon(n,c){return '<svg class="ic '+(c||'')+'" viewBox="0 0 24 24" aria-hidden="true">'+(I[n]||'')+'</svg>';}
+function hydrateIcons(root){(root||document).querySelectorAll('[data-ic]').forEach(n=>{n.outerHTML=icon(n.getAttribute('data-ic'),n.getAttribute('data-cls')||'');});}
+function renderTopnav(active){
+  const el=document.querySelector('[data-topnav]');if(!el)return;
+  const NAV=[['workbench','场景'],['data','数据管理'],['skills','Skills'],['settings','设置']];
+  el.innerHTML='<a class="brand"><span class="logo">G</span>GSMS</a><nav class="nav-links">'+
+    NAV.map(n=>'<a'+(n[0]===active?' class="active"':'')+'>'+n[1]+'</a>').join('')+'</nav>'+
+    '<div class="nav-right"><span class="status-dot"><span class="dot"></span>后端在线</span>'+
+    '<span class="user-chip"><span class="avatar">LZ</span><span class="uname">李泽 · 研究员</span></span></div>';
+}
+function toast(msg){let t=document.querySelector('.toast');if(!t){t=document.createElement('div');t.className='toast';t.style.cssText='position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(8px);background:var(--fg-strong);color:#fff;padding:9px 16px;border-radius:20px;font-size:12.5px;font-weight:500;box-shadow:var(--shadow-pop);z-index:200;opacity:0;transition:opacity .18s,transform .18s;display:inline-flex;align-items:center;gap:8px;';document.body.appendChild(t);}t.innerHTML=icon('check')+'<span>'+msg+'</span>';t.querySelector('.ic').style.color='var(--ok)';requestAnimationFrame(()=>{t.style.opacity='1';t.style.transform='translateX(-50%) translateY(0)';});clearTimeout(t._t);t._t=setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(8px)';},2000);}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+renderTopnav('workbench');
+
+/* ============================================================
+   Python syntax highlighter (lightweight, token-safe)
+   ============================================================ */
+const PY_KW=new Set('def return if elif else for while in import from as with try except raise class lambda and or not is None True False print pass break continue global yield assert del'.split(' '));
+const PY_BI=new Set('np pd rasterio gdal os sys math sum len range open zip enumerate float int str list dict'.split(' '));
+function hlPython(code){
+  const out=[];let i=0;const n=code.length;
+  const push=(cls,txt)=>out.push(cls?'<span class="'+cls+'">'+esc(txt)+'</span>':esc(txt));
+  while(i<n){
+    const c=code[i];
+    if(c==='#'){let j=i;while(j<n&&code[j]!=='\n')j++;push('t-com',code.slice(i,j));i=j;continue;}
+    if(c==='"'||c==="'"){
+      const q=c;let j=i+1;
+      const triple=code.slice(i,i+3)===q+q+q;
+      if(triple){j=i+3;while(j<n&&code.slice(j,j+3)!==q+q+q)j++;j=Math.min(n,j+3);}
+      else{while(j<n&&code[j]!==q&&code[j]!=='\n'){if(code[j]==='\\')j++;j++;}j++;}
+      push('t-str',code.slice(i,Math.min(j,n)));i=Math.min(j,n);continue;
+    }
+    if(/[0-9]/.test(c)&&!/[A-Za-z_]/.test(code[i-1]||'')){let j=i;while(j<n&&/[0-9._eE]/.test(code[j]))j++;push('t-num',code.slice(i,j));i=j;continue;}
+    if(/[A-Za-z_]/.test(c)){let j=i;while(j<n&&/[A-Za-z0-9_]/.test(code[j]))j++;const w=code.slice(i,j);
+      let cls='';if(PY_KW.has(w))cls='t-kw';else if(PY_BI.has(w))cls='t-bi';else if(code[j]==='(')cls='t-fn';
+      push(cls,w);i=j;continue;}
+    push('',c);i++;
+  }
+  return out.join('');
+}
+function codeBlock(fname,lang,code){
+  const lines=code.split('\n');
+  const body=lines.map((l,idx)=>'<span class="ln">'+(idx+1)+'</span>'+hlPython(l)).join('\n');
+  return '<div class="code-block" data-raw="'+esc(code).replace(/"/g,'&quot;')+'">'+
+    '<div class="code-head"><span class="fname">'+icon('file-text')+esc(fname)+'</span>'+
+    '<span class="lang">'+lang+'</span>'+
+    '<button class="copy-btn" data-copy>'+icon('copy')+'<span>复制</span></button></div>'+
+    '<pre class="code-body">'+body+'</pre></div>';
+}
+function diffBlock(fname,rows){
+  let add=0,del=0;
+  const body=rows.map(r=>{const[t,txt]=r;if(t==='+')add++;if(t==='-')del++;
+    const cls=t==='+'?'add':t==='-'?'del':'';const gut=t==='+'?'+':t==='-'?'−':'';
+    return '<div class="dl '+cls+'"><span class="gut">'+gut+'</span><span class="code">'+esc(txt||' ')+'</span></div>';}).join('');
+  const raw=rows.map(r=>(r[0]==='+'?'+ ':r[0]==='-'?'- ':'  ')+r[1]).join('\n');
+  return '<div class="diff-block" data-raw="'+esc(raw).replace(/"/g,'&quot;')+'">'+
+    '<div class="diff-head"><span class="fname">'+icon('code')+esc(fname)+'</span>'+
+    '<span class="stat"><span class="add">+'+add+'</span><span class="del">−'+del+'</span></span>'+
+    '<button class="copy-btn" data-copy>'+icon('copy')+'<span>复制</span></button></div>'+
+    '<div class="diff-body">'+body+'</div></div>';
+}
+function dataCard(title,meta,head,rows,foot){
+  const ths='<tr>'+head.map((h,i)=>'<th'+(i>0?' style="text-align:right"':'')+'>'+h+'</th>').join('')+'</tr>';
+  const trs=rows.map(r=>'<tr>'+r.map((c,i)=>i>0?'<td class="num">'+c+'</td>':'<td>'+c+'</td>').join('')+'</tr>').join('');
+  const tf=foot?'<tfoot><tr>'+foot.map((c,i)=>i>0?'<td class="num">'+c+'</td>':'<td>'+c+'</td>').join('')+'</tr></tfoot>':'';
+  return '<div class="result-card"><div class="rc-head">'+icon('table')+'<h4>'+title+'</h4><span class="meta">'+meta+'</span></div>'+
+    '<table class="rtable"><thead>'+ths+'</thead><tbody>'+trs+'</tbody>'+tf+'</table></div>';
+}
+
+/* ============================================================
+   thinking timeline + turn rendering
+   ============================================================ */
+function timelineHTML(steps){
+  return '<div class="timeline">'+steps.map(s=>{
+    const dot=s.state==='done'?icon('check'):s.state==='run'?'<span class="spinner" style="width:9px;height:9px;border-width:1.5px"></span>':'';
+    const lines=(s.lines||[]).map(l=>'<div class="tl-line">'+l+'</div>').join('');
+    const tool=s.tool?'<div class="tool-chip"><span class="tk">'+icon(s.tool.ic)+s.tool.name+'</span><span class="arg">'+s.tool.arg+'</span>'+(s.tool.ok?'<span class="ok">'+icon('check')+s.tool.ok+'</span>':'')+'</div>':'';
+    return '<div class="tl-step '+s.state+'"><span class="tl-dot">'+dot+'</span>'+
+      '<div class="tl-title">'+s.title+'</div>'+
+      ((lines||tool)?'<div class="tl-lines">'+lines+tool+'</div>':'')+'</div>';
+  }).join('')+'</div>';
+}
+function thinkHTML(turn){
+  const open=turn.thinkOpen?' open':'';const running=turn.thinking?' running':'';
+  const sum=turn.thinking
+    ? '<span class="spinner"></span>正在思考…'
+    : '已思考 '+turn.thinkSecs+' 秒 · '+turn.steps.length+' 步';
+  return '<div class="think'+open+running+'" data-think>'+
+    '<button class="think-head" data-toggle>'+icon('chevron-right','chev ic-sm')+
+      '<span class="tlabel">'+icon('brain')+'思考过程</span>'+
+      '<span class="tsum">'+sum+'</span></button>'+
+    '<div class="think-body">'+timelineHTML(turn.steps)+'</div></div>';
+}
+function turnHTML(turn){
+  const answer=turn.answer?'<div class="answer">'+turn.answer+'</div>':'';
+  const results=(turn.results||[]).join('');
+  const actions=(!turn.thinking&&turn.answer)?'<div class="turn-actions">'+
+    '<button class="icon-btn sm" data-regen title="重新生成">'+icon('refresh-cw','ic-sm')+'</button>'+
+    '<button class="icon-btn sm" title="复制回答" data-copyans>'+icon('copy','ic-sm')+'</button>'+
+    '<button class="icon-btn sm" title="赞">'+icon('thumbs-up','ic-sm')+'</button></div>':'';
+  return '<div class="msg agent"><span class="who">AI</span><div class="bubble"><div class="turn">'+
+    thinkHTML(turn)+answer+results+actions+'</div></div></div>';
+}
+function userHTML(m){
+  const tags=(m.att&&m.att.length)?'<div class="att-tags">'+m.att.map(a=>'<span class="att-chip">'+icon('paperclip','ic-sm')+a+'</span>').join('')+'</div>':'';
+  return '<div class="msg user"><span class="who">我</span><div class="bubble"><div class="body"><p>'+m.text+'</p>'+tags+'</div></div></div>';
+}
+
+/* ============================================================
+   seed conversation — 两个已完成回合（细节态）
+   ============================================================ */
+const SUMMARY_SCRIPT=
+'import rasterio\n'+
+'import numpy as np\n'+
+'import pandas as pd\n'+
+'\n'+
+'# 读取土地利用栅格与碳密度表\n'+
+'lulc = rasterio.open("landuse_2020.tif")\n'+
+'arr  = lulc.read(1)\n'+
+'pools = pd.read_csv("carbon_pools.csv")  # lucode, c_above, c_below, c_soil, c_dead\n'+
+'\n'+
+'def total_carbon(code):\n'+
+'    row = pools[pools.lucode == code]\n'+
+'    return float(row[["c_above","c_below","c_soil","c_dead"]].sum(axis=1))\n'+
+'\n'+
+'# 逐类汇总：像元数 × 单位碳密度 × 像元面积(ha)\n'+
+'px_area = abs(lulc.transform[0] * lulc.transform[4]) / 1e4\n'+
+'summary = {}\n'+
+'for code in np.unique(arr):\n'+
+'    n = int((arr == code).sum())\n'+
+'    summary[int(code)] = n * total_carbon(int(code)) * px_area\n'+
+'\n'+
+'print("研究区总碳储量：%.0f Mg C" % sum(summary.values()))';
+
+const seed=[
+  {role:'user',text:'当前项目里有哪些数据可以用来跑碳储量模型？',att:[]},
+  {role:'agent',thinking:false,thinkOpen:false,thinkSecs:6,
+    steps:[
+      {state:'done',title:'拆解问题',lines:['用户想确认 Carbon Storage 模型的输入是否齐备。','该模型需要三类输入：土地利用栅格、碳密度表、研究区边界。']},
+      {state:'done',title:'读取项目文件清单',tool:{ic:'search',name:'list_files',arg:'project://current',ok:'4 个文件'},
+        lines:['命中 <code>landuse_2020.tif</code>、<code>study_boundary.shp</code>、<code>carbon_pools.csv</code>。']},
+      {state:'done',title:'核对字段',tool:{ic:'table',name:'read_head',arg:'carbon_pools.csv',ok:'7 行'},
+        lines:['碳密度表含 <code>lucode, c_above, c_below, c_soil, c_dead</code>，字段完整。']},
+    ],
+    answer:'<p>当前项目的数据<strong>正好覆盖 Carbon Storage 模型的全部必需输入</strong>：</p>'+
+      '<ul><li><code>landuse_2020.tif</code> — 土地利用栅格（30m，EPSG:4326）</li>'+
+      '<li><code>carbon_pools.csv</code> — 碳密度表（7 类 × 4 个碳库，字段完整）</li>'+
+      '<li><code>study_boundary.shp</code> — 研究区边界</li></ul>'+
+      '<p>可以直接在左栏 InVEST 标签里配置运行；如果想要一份可复现的汇总脚本，我也可以直接写。</p>',
+    results:[]},
+  {role:'user',text:'帮我写一个碳储量汇总脚本，逐地类统计总碳。',att:['carbon_pools.csv']},
+  {role:'agent',thinking:false,thinkOpen:true,thinkSecs:11,
+    steps:[
+      {state:'done',title:'明确目标',lines:['编写脚本：按土地利用类别汇总研究区总碳储量（Mg C）。']},
+      {state:'done',title:'读取碳密度表结构',tool:{ic:'table',name:'read_csv',arg:'carbon_pools.csv',ok:'7×5'},
+        lines:['确认 4 个碳库列，单位为 Mg C / ha。']},
+      {state:'done',title:'确认栅格分辨率',tool:{ic:'image',name:'raster_meta',arg:'landuse_2020.tif',ok:'30m'},
+        lines:['像元面积 = 0.09 ha，用于像元数→面积换算。']},
+      {state:'done',title:'编写并自检脚本',tool:{ic:'terminal',name:'dry_run',arg:'carbon_summary.py',ok:'无报错'},
+        lines:['对 <code>np.unique</code> 逐类聚合，避免整幅栅格驻留内存。']},
+    ],
+    answer:'<p>已生成 <code>carbon_summary.py</code>，按地类逐一汇总研究区总碳储量。核心思路：像元数 × 单位碳密度 × 像元面积，避免一次性把整幅栅格读进内存。检测到表中 3 个缺失碳值，下面是我对填充逻辑的改动：</p>',
+    results:[
+      codeBlock('carbon_summary.py','python',SUMMARY_SCRIPT),
+      diffBlock('carbon_summary.py · 缺失值处理',[
+        ['ctx','def total_carbon(code):'],
+        ['ctx','    row = pools[pools.lucode == code]'],
+        ['-','    return float(row[["c_above","c_below","c_soil","c_dead"]].sum(axis=1))'],
+        ['+','    cols = ["c_above","c_below","c_soil","c_dead"]'],
+        ['+','    vals = row[cols].fillna(pools[cols].mean())   # 缺失按全表均值填充'],
+        ['+','    return float(vals.sum(axis=1))'],
+      ]),
+      dataCard('逐地类碳储量（试运行）','单位 Mg C',
+        ['地类','面积 (ha)','总碳储量'],
+        [['林地','12,480','1,983,200'],['农田','28,910','1,142,400'],['湿地','9,260','864,700'],['建设用地','4,130','61,950'],['水体','6,540','—']],
+        ['合计','61,320','4,052,250'])
+    ]},
+];
+
+let messages=seed.slice();
+const chatInner=document.getElementById('chatInner');
+const chatScroll=document.getElementById('chatScroll');
+function render(){
+  chatInner.innerHTML=messages.map(m=>m.role==='user'?userHTML(m):turnHTML(m)).join('');
+  hydrateIcons(chatInner);
+  bind();
+}
+function scrollEnd(){chatScroll.scrollTop=chatScroll.scrollHeight;}
+
+/* delegated bindings re-applied after each render */
+function bind(){
+  chatInner.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>{b.closest('[data-think]').classList.toggle('open');});
+  chatInner.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+    const raw=b.closest('[data-raw]').getAttribute('data-raw');
+    const tmp=document.createElement('textarea');tmp.innerHTML=raw;
+    navigator.clipboard?.writeText(tmp.value).then(()=>{
+      b.classList.add('copied');b.querySelector('span').textContent='已复制';
+      setTimeout(()=>{b.classList.remove('copied');b.querySelector('span').textContent='复制';},1500);
+    },()=>toast('复制失败'));
+  });
+  chatInner.querySelectorAll('[data-copyans]').forEach(b=>b.onclick=()=>{
+    const t=b.closest('.turn').querySelector('.answer');navigator.clipboard?.writeText(t?t.innerText:'').then(()=>toast('回答已复制'));
+  });
+  chatInner.querySelectorAll('[data-regen]').forEach(b=>b.onclick=()=>{toast('重新生成中…');});
+}
+render();
+scrollEnd();
+
+/* ============================================================
+   composer + live streaming turn
+   ============================================================ */
+const ta=document.getElementById('ta');
+const sendBtn=document.getElementById('sendBtn');
+let busy=false;
+ta.oninput=()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,160)+'px';};
+ta.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}};
+sendBtn.onclick=send;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function send(){
+  const text=ta.value.trim();
+  if(!text||busy)return;
+  busy=true;sendBtn.disabled=true;
+  messages.push({role:'user',text:esc(text),att:[]});
+  ta.value='';ta.style.height='auto';
+
+  const turn={role:'agent',thinking:true,thinkOpen:true,thinkSecs:0,steps:[],answer:'',results:[]};
+  messages.push(turn);
+  render();scrollEnd();
+
+  const plan=[
+    {title:'拆解请求',lines:['解析意图：需要一段可复现的碳储量汇总逻辑。','规划步骤：读输入 → 核对字段 → 逐类聚合 → 写出脚本。']},
+    {title:'读取碳密度表',tool:{ic:'table',name:'read_csv',arg:'carbon_pools.csv',ok:'7×5'},lines:['确认 4 个碳库列与 <code>lucode</code> 主键。']},
+    {title:'核对栅格元数据',tool:{ic:'image',name:'raster_meta',arg:'landuse_2020.tif',ok:'30m'},lines:['像元面积 0.09 ha，坐标系 EPSG:4326。']},
+    {title:'编写脚本并试跑',tool:{ic:'terminal',name:'dry_run',arg:'carbon_summary.py',ok:'通过'},lines:['逐类聚合，内存占用恒定。']},
+  ];
+  const t0=performance.now();
+  for(let s=0;s<plan.length;s++){
+    const step={state:'run',title:plan[s].title,lines:[],tool:null};
+    turn.steps.push(step);
+    refresh();await sleep(360);
+    for(const ln of plan[s].lines){step.lines.push(ln);refresh();await sleep(440);}
+    if(plan[s].tool){step.tool=plan[s].tool;refresh();await sleep(520);}
+    step.state='done';refresh();await sleep(220);
+  }
+  turn.thinking=false;turn.thinkSecs=Math.max(3,Math.round((performance.now()-t0)/1000));turn.thinkOpen=false;
+  refresh();scrollEnd();await sleep(380);
+
+  const ans='<p>已根据当前项目数据生成 <code>carbon_summary.py</code>，逐地类汇总研究区总碳储量。脚本采用像元计数法，对大栅格内存友好；下方可直接复制。</p>';
+  await typeInto(turn,ans);
+
+  turn.results=[codeBlock('carbon_summary.py','python',SUMMARY_SCRIPT)];
+  refresh();scrollEnd();await sleep(420);
+  turn.results.push(dataCard('逐地类碳储量（试运行）','单位 Mg C',
+    ['地类','面积 (ha)','总碳储量'],
+    [['林地','12,480','1,983,200'],['农田','28,910','1,142,400'],['湿地','9,260','864,700'],['建设用地','4,130','61,950']],
+    ['合计','55,180','4,052,250']));
+  refresh();scrollEnd();
+
+  busy=false;sendBtn.disabled=false;
+}
+
+function refresh(){render();scrollEnd();}
+
+async function typeInto(turn,html){
+  const plain=html.replace(/<[^>]+>/g,'');
+  for(let i=1;i<=plain.length;i+=2){
+    turn.answer='<p>'+esc(plain.slice(0,i))+'<span class="cursor-blink"></span></p>';
+    refresh();await sleep(16);
+  }
+  turn.answer=html;refresh();scrollEnd();
+}
+
+document.getElementById('attBtn').onclick=()=>toast('附件选择：从左栏文件引用');
+</script>
+
+
+<script data-od-snapshot-bridge="">(function(){
+  var SNAPSHOT_STYLE_PROPS = [
+    'display','position','box-sizing','width','height','min-width','max-width','min-height','max-height',
+    'margin','margin-top','margin-right','margin-bottom','margin-left',
+    'padding','padding-top','padding-right','padding-bottom','padding-left',
+    'border','border-top','border-right','border-bottom','border-left','border-radius',
+    'font','font-family','font-size','font-weight','font-style','line-height','letter-spacing',
+    'color','background-color','opacity','transform','transform-origin','overflow','overflow-x','overflow-y',
+    'white-space','text-align','vertical-align','object-fit','object-position',
+    'flex','flex-direction','flex-wrap','flex-grow','flex-shrink','flex-basis',
+    'grid','grid-template-columns','grid-template-rows','grid-column','grid-row',
+    'gap','row-gap','column-gap','align-items','align-content','align-self',
+    'justify-items','justify-content','justify-self','inset','top','right','bottom','left',
+    'z-index','box-shadow','text-shadow'
+  ];
+  function copyComputedStyle(source, target){
+    if (!source || !target || source.nodeType !== 1 || target.nodeType !== 1) return;
+    var computed = window.getComputedStyle(source);
+    var style = target.getAttribute('style') || '';
+    for (var i = 0; i < SNAPSHOT_STYLE_PROPS.length; i++){
+      var prop = SNAPSHOT_STYLE_PROPS[i];
+      var value = computed.getPropertyValue(prop);
+      if (value) style += prop + ':' + value + ';';
+    }
+    target.setAttribute('style', style);
+  }
+  function syncElementState(source, target){
+    var tag = source.tagName ? source.tagName.toLowerCase() : '';
+    if (tag === 'img' && source.currentSrc) target.setAttribute('src', source.currentSrc);
+    if (tag === 'input' || tag === 'textarea') target.setAttribute('value', source.value || '');
+    if (tag === 'canvas') {
+      try {
+        var img = document.createElement('img');
+        img.setAttribute('src', source.toDataURL('image/png'));
+        img.setAttribute('style', target.getAttribute('style') || '');
+        target.parentNode && target.parentNode.replaceChild(img, target);
+      } catch (_) {}
+    }
+  }
+  function inlineSnapshotStyles(originalRoot, cloneRoot){
+    copyComputedStyle(originalRoot, cloneRoot);
+    syncElementState(originalRoot, cloneRoot);
+    var originals = originalRoot.querySelectorAll('*');
+    var clones = cloneRoot.querySelectorAll('*');
+    var count = Math.min(originals.length, clones.length, 3500);
+    for (var i = 0; i < count; i++){
+      copyComputedStyle(originals[i], clones[i]);
+      syncElementState(originals[i], clones[i]);
+    }
+    var scripts = cloneRoot.querySelectorAll('script');
+    for (var s = scripts.length - 1; s >= 0; s--) scripts[s].remove();
+    var links = cloneRoot.querySelectorAll('link[rel~="stylesheet"], link[rel~="preload"], link[rel~="preconnect"]');
+    for (var l = links.length - 1; l >= 0; l--) links[l].remove();
+    var styles = cloneRoot.querySelectorAll('style');
+    for (var st = 0; st < styles.length; st++) {
+      styles[st].textContent = (styles[st].textContent || '')
+        .replace(/@import[^;]+;/gi, '')
+        .replace(/@font-face\s*\{[^}]*\}/gi, '');
+    }
+  }
+  function waitForImages(){
+    var imgs = Array.prototype.slice.call(document.images || []);
+    return Promise.all(imgs.map(function(img){
+      if (img.complete) return Promise.resolve();
+      return new Promise(function(resolve){
+        img.addEventListener('load', resolve, { once: true });
+        img.addEventListener('error', resolve, { once: true });
+      });
+    }));
+  }
+  function scrollOffset(){
+    var doc = document.documentElement;
+    var body = document.body;
+    return {
+      x: Math.max(window.scrollX || 0, doc ? doc.scrollLeft || 0 : 0, body ? body.scrollLeft || 0 : 0),
+      y: Math.max(window.scrollY || 0, doc ? doc.scrollTop || 0 : 0, body ? body.scrollTop || 0 : 0)
+    };
+  }
+  function escapeAttribute(value){
+    return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+  function renderSnapshot(id){
+    var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+    var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+    var dpr = window.devicePixelRatio || 1;
+    var docW = Math.max(w, document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth : 0);
+    var docH = Math.max(h, document.documentElement.scrollHeight || 0, document.body ? document.body.scrollHeight : 0);
+    var clone = document.documentElement.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    inlineSnapshotStyles(document.documentElement, clone);
+    var scroll = scrollOffset();
+    var cloneBody = clone.querySelector('body');
+    var rootStyle = clone.getAttribute('style') || '';
+    var bodyStyle = cloneBody ? cloneBody.getAttribute('style') || '' : '';
+    var bodyContent = cloneBody ? cloneBody.innerHTML : clone.innerHTML;
+    var wrapperStyle = rootStyle + bodyStyle +
+      'margin:0;position:relative;left:' + (-scroll.x) + 'px;top:' + (-scroll.y) + 'px;' +
+      'width:' + docW + 'px;height:' + docH + 'px;overflow:visible;';
+    var html = '<div xmlns="http://www.w3.org/1999/xhtml" style="' + escapeAttribute(wrapperStyle) + '">' + bodyContent + '</div>';
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
+      '<foreignObject x="0" y="0" width="' + docW + '" height="' + docH + '">' +
+      html +
+      '</foreignObject></svg>';
+    var img = new Image();
+    img.onload = function(){
+      try {
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.floor(w * dpr));
+        canvas.height = Math.max(1, Math.floor(h * dpr));
+        var ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('no 2d context');
+        ctx.scale(dpr, dpr);
+        ctx.drawImage(img, 0, 0, w, h);
+        window.parent.postMessage({ type: 'od:snapshot:result', id: id, dataUrl: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height }, '*');
+      } catch (err) {
+        window.parent.postMessage({ type: 'od:snapshot:result', id: id, error: String(err && err.message || err) }, '*');
+      }
+    };
+    function encodedSvgDataUrl(){
+      var encoded = encodeURIComponent(svg);
+      return 'data:image/svg+xml;charset=utf-8,' + encoded;
+    }
+    img.onerror = function(){
+      window.parent.postMessage({ type: 'od:snapshot:result', id: id, error: 'snapshot image failed' }, '*');
+    };
+    img.src = encodedSvgDataUrl();
+  }
+  window.addEventListener('message', function(ev){
+    var data = ev && ev.data;
+    if (!data || data.type !== 'od:snapshot' || !data.id) return;
+    waitForImages().then(function(){ renderSnapshot(String(data.id)); });
+  });
+})();</script><script data-od-srcdoc-transport-activation="">(function(){
+  window.addEventListener('message', function(ev){
+    var data = ev && ev.data;
+    if (!data || data.type !== 'od:srcdoc-transport-activate' || typeof data.html !== 'string') return;
+    document.open();
+    document.write(data.html);
+    document.close();
+  });
+})();</script></body></html>

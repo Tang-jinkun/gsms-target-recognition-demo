@@ -225,6 +225,33 @@ export class StreamingToolExecutor {
 
         const result = await tool.execute(tracked.call.input, this.context, onProgress)
 
+        // Auto-persist large results to artifact to keep context window lean
+        if (tool.persistResultAboveBytes && result.content.length > tool.persistResultAboveBytes) {
+          const inputKey = JSON.stringify(tracked.call.input).slice(0, 120)
+          const artifactId = `tool-result:${tool.name}:${inputKey}`
+          // Replace previous auto-persist if any (idempotent)
+          if (this.context.artifacts.list().some(a => a.id === artifactId)) {
+            this.context.artifacts.delete(artifactId)
+          }
+          const persisted = this.context.artifacts.create({
+            id: artifactId,
+            type: 'tool-result',
+            createdBy: tool.name,
+            data: { tool: tool.name, input: tracked.call.input, fullContent: result.content },
+          })
+          await this.emit({
+            runId: this.runId,
+            turn: this.turn,
+            eventType: 'artifact.created',
+            summary: `Persisted large output from ${tool.name} (${result.content.length} chars)`,
+            status: 'completed',
+            data: { artifactId: persisted.id, artifactType: 'tool-result' },
+            timestamp: new Date().toISOString(),
+          })
+          const truncated = result.content.slice(0, 500)
+          result.content = `${truncated}\n\n[Full result persisted as artifact "${artifactId}" (${result.content.length} chars). Use get_artifact to retrieve if needed.]`
+        }
+
         // Process result
         if (result.artifacts?.length) {
           const created = this.context.artifacts.createMany(result.artifacts)

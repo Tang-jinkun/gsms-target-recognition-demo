@@ -6,10 +6,28 @@ import {
   modelInputSchemaSchema,
   relationCheckSchema,
   type BindingReport,
+  type CandidateSet,
   type ModelInputSchema,
 } from '../domain/schemas.ts'
 
 export type GateStatus = 'ready_for_validation' | 'missing_input' | 'needs_review' | 'not_attempted'
+
+/** Float tolerance for treating two candidate scores as equal. */
+const SCORE_TIE_EPSILON = 1e-6
+
+/**
+ * True when the candidate set has no unique best candidate: at least two
+ * non-rejected candidates share the top score (within {@link SCORE_TIE_EPSILON}).
+ * Such a slot cannot be matched deterministically — a user decision is required.
+ */
+export function hasTopScoreTie(candidateSet: CandidateSet | undefined): boolean {
+  if (!candidateSet) return false
+  const live = candidateSet.candidates.filter(c => !c.rejected)
+  if (live.length < 2) return false
+  const max = Math.max(...live.map(c => c.score))
+  const tied = live.filter(c => c.score >= max - SCORE_TIE_EPSILON)
+  return tied.length >= 2
+}
 
 export interface DataMatchingGateResult {
   passed: boolean
@@ -75,8 +93,14 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
   }
 
   // ── Load current-context evidence ─────────────────────────────────────────
-  // Filter by matchingContextId to prevent reuse of stale evidence from
-  // a previous scene/model/data combination.
+  // Data cards are keyed by sceneDataContextId (model-independent) — they describe
+  // factual scene data and survive model switches.
+  // Candidate sets and relation checks are keyed by matchingContextId (model-specific).
+  const sceneDataContextId =
+    typeof state.sceneDataContextId === 'string' ? state.sceneDataContextId : undefined
+  const sceneDataFilter = (a: { metadata?: Record<string, unknown> }) =>
+    sceneDataContextId && a.metadata?.sceneDataContextId === sceneDataContextId
+
   // Strict: artifact must have matchingContextId AND it must match current context.
   // Artifacts without matchingContextId are stale/unscoped and cannot satisfy the gate.
   const ctxFilter = (a: { metadata?: Record<string, unknown> }) =>
@@ -88,7 +112,7 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
   const schema = schemaArtifact ? modelInputSchemaSchema.safeParse(schemaArtifact.data) : undefined
 
   const dataCards = artifacts
-    .filter(a => a.type === 'data-card' && ctxFilter(a))
+    .filter(a => a.type === 'data-card' && sceneDataFilter(a))
     .map(a => dataCardSchema.safeParse(a.data))
     .filter(r => r.success)
     .map(r => r.data)
@@ -153,6 +177,15 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
     // Check 7: no unresolved ambiguity as certain match
     if (binding.status === 'ambiguous' && isRequired) {
       issue = `Required slot '${binding.slot}' has ambiguous matches that need user decision`
+      hasAmbiguous = true
+    }
+
+    // Check 7b: deterministic tie-break guard. A required slot claimed as a certain
+    // 'matched' is not justified when its candidate set has no unique best (top
+    // score tied). Authoritative here — the gate does not trust a self-reported
+    // 'matched' over the evidence, unless the user explicitly disambiguated.
+    if (isRequired && binding.status === 'matched' && !binding.userConfirmed && hasTopScoreTie(candidateSet)) {
+      issue = `Required slot '${binding.slot}' has multiple equally-scored candidates; a user decision is required`
       hasAmbiguous = true
     }
 

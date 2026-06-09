@@ -5,6 +5,7 @@ export type InvocationKind = 'model' | 'user'
 export interface SkillDefinition {
   name: string
   description: string
+  whenToUse?: string
   instructions: string
   source: SkillSource
   allowedTools?: string[]
@@ -19,6 +20,7 @@ export interface SkillDefinition {
 export interface SkillSummary {
   name: string
   description: string
+  whenToUse?: string
   source: SkillSource
   execution: SkillExecution
 }

@@ -13,30 +13,47 @@ import type { AgentContext, AgentTool, Artifact, DomainState } from '@gsms/agent
 
 export type PhaseGroup = 'matching' | 'execution'
 
-const phaseGroupMap: Record<string, PhaseGroup> = {
-  // matching group — soft boundary, rollback allowed
-  'conversation-ready': 'matching',
-  'discovering-data': 'matching',
-  'matching-slots': 'matching',
-  'resolving-ambiguity': 'matching',
-  'ready-for-validation': 'matching',
-  'awaiting-user-confirmation': 'matching',
-  'validation-failed': 'matching',
-  'confirmation-rejected': 'matching',
-  'sufficiency-assessed': 'matching',
-  // execution group — hard gate, strict sequential order
-  'confirmed-for-execution': 'execution',
-  'job-running': 'execution',
-  'job-failed': 'execution',
-  'job-succeeded': 'execution',
-  'outputs-inspected': 'execution',
-  'results-analyzed': 'execution',
-  'results-ready-for-interpretation': 'execution',
-  'report-written': 'execution',
-}
+// Execution pipeline: each entry defines which tool is allowed at that phase.
+// The pipeline is traversed in order; any phase not listed here is 'matching'.
+// Tools in the `alwaysAllowed` set are permitted at every execution phase.
+const EXECUTION_PIPELINE: Array<{ phase: string; allowedTool: string }> = [
+  { phase: 'confirmed-for-execution', allowedTool: 'execute_validated_snapshot' },
+  { phase: 'job-running',             allowedTool: 'get_invest_job_status' },
+  { phase: 'job-failed',              allowedTool: 'get_invest_job_status' },
+  { phase: 'job-succeeded',           allowedTool: 'inspect_invest_job_outputs' },
+  { phase: 'outputs-inspected',       allowedTool: 'analyze_invest_results' },
+  { phase: 'results-analyzed',        allowedTool: 'interpret_invest_results' },
+  { phase: 'results-ready-for-interpretation', allowedTool: 'write_invest_report' },
+  { phase: 'report-written',          allowedTool: 'get_invest_job_status' },
+]
+
+const EXECUTION_PHASES = new Set(EXECUTION_PIPELINE.map(e => e.phase))
+const EXECUTION_ALLOWED_TOOLS = new Map(EXECUTION_PIPELINE.map(e => [e.phase, e.allowedTool]))
+
+// Always allowed in both matching and execution groups
+const ALWAYS_ALLOWED = new Set(['skill', 'finish', 'update_goal', 'list_invest_models'])
+
+// While a finalized binding has an unresolved ambiguity (needs_review), these
+// forward/branch tools are hidden — the only way forward is a user decision +
+// re-finalize. Hiding them stops the agent from looping validate/confirm or
+// wandering into the off-path sufficiency survey.
+const BLOCKED_WHILE_AMBIGUOUS = new Set([
+  'validate_binding_report',
+  'confirm_validation_snapshot',
+  'finalize_sufficiency_assessment',
+])
+
+// Matching phases that must persist across runs (user interaction in progress).
+// Used by InvestAgentSession and InvestAgentWorker to avoid resetting active workflows.
+export const WAITING_PHASES = new Set([
+  'awaiting-user-confirmation',
+  'validation-failed',
+  'confirmation-rejected',
+  'ready-for-validation',
+])
 
 export function getPhaseGroup(phase: string): PhaseGroup {
-  return phaseGroupMap[phase] ?? 'matching'
+  return EXECUTION_PHASES.has(phase) ? 'execution' : 'matching'
 }
 
 export function isExecutionPhase(phase: string): boolean {
@@ -91,6 +108,8 @@ const matchingTools = new Set([
   'check_data_relation',
   'finalize_data_matching',
   'finalize_sufficiency_assessment',
+  'assess_scene_runnable_models',
+  'run_reconnaissance',
 ])
 
 const validationTools = new Set(['validate_binding_report'])
@@ -133,31 +152,23 @@ export function workflowPhaseFilter() {
     // finish has its own evidence gate — only enforced in matching group
     if (tool.name === 'finish') return finishPassesEvidenceGate(context)
 
-    return matchingPhaseAllows(tool.name, context)
+    return matchingPhaseAllows(tool.name, state)
   }
 }
 
 // ── Execution Phase Gate (hard) ────────────────────────────────────────────────
 
 function executionPhaseAllows(toolName: string, phase: string): boolean {
-  if (['skill', 'finish', 'update_goal', 'list_invest_models'].includes(toolName)) return true
-
-  if (phase === 'job-running') return toolName === 'get_invest_job_status'
-  if (phase === 'job-succeeded') return toolName === 'inspect_invest_job_outputs'
-  if (phase === 'outputs-inspected') return toolName === 'analyze_invest_results'
-  if (phase === 'results-analyzed') return toolName === 'interpret_invest_results'
-  if (phase === 'results-ready-for-interpretation') return toolName === 'write_invest_report'
-  if (phase === 'report-written') return toolName === 'get_invest_job_status'
-  if (phase === 'confirmed-for-execution') return toolName === 'execute_validated_snapshot'
-  if (phase === 'job-failed') return toolName === 'get_invest_job_status'
-
-  return true
+  if (ALWAYS_ALLOWED.has(toolName)) return true
+  return EXECUTION_ALLOWED_TOOLS.get(phase) === toolName
 }
 
 // ── Matching Phase Gate (tool-visibility) ──────────────────────────────────────
-// All domain tools are visible in the matching group. The model chooses its own
-// investigation path. Gates inside tools (DataMatchingGate, etc.) enforce evidence
-// quality — the boundary layer does not encode a fixed tool sequence.
+// Domain tools are visible in the matching group so the model chooses its own
+// investigation path; gates inside tools (DataMatchingGate, etc.) enforce evidence
+// quality. The one exception: while a finalized binding is blocked on an
+// unresolved ambiguity (needs_review), forward/branch tools are hidden so the
+// agent must get a user decision and re-finalize instead of looping.
 //
 // This is the correct separation:
 //   - Workflow Boundary: controls which phase group the agent is in (matching vs execution)
@@ -165,7 +176,10 @@ function executionPhaseAllows(toolName: string, phase: string): boolean {
 //   - Skills: teach the model how to investigate
 //   - finish: gated by finishPassesEvidenceGate (needs at least one domain artifact)
 
-function matchingPhaseAllows(): boolean {
+function matchingPhaseAllows(toolName: string, state: DomainState): boolean {
+  const ambiguityUnresolved =
+    state.bindingStatus === 'needs_review' || state.phase === 'resolving-ambiguity'
+  if (ambiguityUnresolved && BLOCKED_WHILE_AMBIGUOUS.has(toolName)) return false
   return true
 }
 
@@ -197,7 +211,7 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
   const has = (type: string) => currentArtifacts.some(a => a.type === type)
 
   // Terminal evidence: always allows finish
-  if (has('sufficiency-report') || has('binding-report') || has('invest-report')) return true
+  if (has('sufficiency-report') || has('binding-report') || has('invest-report') || has('scene-runnable-assessment')) return true
 
   // If the agent started matching (has candidate-sets), it MUST complete the
   // binding report. Cannot finish with just candidates — that's an incomplete workflow.

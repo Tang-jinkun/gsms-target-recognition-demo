@@ -15,7 +15,7 @@ import {
 } from '../domain/schemas.ts'
 import { assertReportCanProceed } from '../matching/guards.ts'
 import { buildBindingReport, retrieveCandidates } from '../matching/primitives.ts'
-import { checkDataMatchingGate } from '../gates/dataMatchingGate.ts'
+import { checkDataMatchingGate, hasTopScoreTie } from '../gates/dataMatchingGate.ts'
 
 function latestModelSchema(context: AgentContext): ModelInputSchema {
   const modelId = context.domainState.snapshot().modelId
@@ -28,11 +28,21 @@ function latestModelSchema(context: AgentContext): ModelInputSchema {
 }
 
 function dataCards(context: AgentContext): DataCard[] {
-  const matchingContextId = currentMatchingContext(context)
+  const sceneDataContextId = currentSceneDataContext(context)
   return context.artifacts
     .list('data-card')
-    .filter(artifact => artifact.metadata?.matchingContextId === matchingContextId)
+    .filter(artifact => artifact.metadata?.sceneDataContextId === sceneDataContextId)
     .map(artifact => dataCardSchema.parse(artifact.data))
+}
+
+function currentSceneDataContext(context: AgentContext): string {
+  const value = context.domainState.snapshot().sceneDataContextId
+  if (typeof value !== 'string') {
+    throw toolFailure('SCENE_DATA_CONTEXT_MISSING', 'Load the current scene data before matching.', {
+      nextAction: { tool: 'list_scene_data_cards', input: {} },
+    })
+  }
+  return value
 }
 
 const retrieveSchema = z.object({ slot: z.string().min(1) })
@@ -44,6 +54,7 @@ const finalizeSchema = z.object({
     status: bindingStatusSchema,
     confidence: z.number().min(0).max(1),
     reasoning: z.string().min(1),
+    userConfirmed: z.boolean().optional(),
   })),
   unresolvedQuestions: z.array(z.string()).default([]),
 })
@@ -198,6 +209,10 @@ export const finalizeDataMatchingTool: AgentTool = {
             status: { enum: ['matched', 'ambiguous', 'missing', 'rejected'] },
             confidence: { type: 'number', minimum: 0, maximum: 1 },
             reasoning: { type: 'string' },
+            userConfirmed: {
+              type: 'boolean',
+              description: 'Set true ONLY when the user explicitly chose this asset among equally-scored candidates. Without it, a required slot whose top candidates tie is forced to ambiguous.',
+            },
           },
         },
       },
@@ -251,6 +266,28 @@ export const finalizeDataMatchingTool: AgentTool = {
         )
       }
       const selected = candidateSet?.candidates.find(candidate => candidate.assetId === decision.selectedAssetId)
+
+      // Deterministic tie-break guard: a required slot claimed as a certain
+      // 'matched' is not justified when its candidates have no unique best
+      // (top score tied). Force it to 'ambiguous' so the gate routes to a user
+      // decision — unless the user already disambiguated (userConfirmed).
+      const forcedAmbiguous =
+        slot.required &&
+        decision.status === 'matched' &&
+        !decision.userConfirmed &&
+        hasTopScoreTie(candidateSet)
+
+      if (forcedAmbiguous) {
+        return {
+          slot: slot.name,
+          candidateAssetIds,
+          confidence: decision.confidence,
+          status: 'ambiguous' as const,
+          facts: [],
+          agentReasoning: `${decision.reasoning} [Auto-flagged ambiguous: ${candidateAssetIds.length} candidates share the top score; the user must choose one.]`,
+        }
+      }
+
       return {
         slot: slot.name,
         selectedAssetId: decision.selectedAssetId,
@@ -259,6 +296,7 @@ export const finalizeDataMatchingTool: AgentTool = {
         status: decision.status,
         facts: selected?.evidence ?? [],
         agentReasoning: decision.reasoning,
+        userConfirmed: decision.userConfirmed,
       }
     })
     const persistedChecks = contextualArtifacts(context, 'relation-check')
@@ -440,6 +478,24 @@ export function computeMatchingContextId(
     sceneId,
     modelId: schema?.modelId ?? 'none',
     version: schema?.version ?? '0',
+    assets: cards
+      .map(card => ({ assetId: card.assetId, fingerprint: card.provenance.fingerprint }))
+      .sort((left, right) => left.assetId.localeCompare(right.assetId)),
+  }
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 24)
+}
+
+/**
+ * Scene-level context ID that depends only on the scene and its data assets,
+ * NOT on which model is selected. Data cards are factual descriptions of scene
+ * files and should survive model switches.
+ */
+export function computeSceneDataContextId(
+  sceneId: string,
+  cards: readonly DataCard[],
+): string {
+  const payload = {
+    sceneId,
     assets: cards
       .map(card => ({ assetId: card.assetId, fingerprint: card.provenance.fingerprint }))
       .sort((left, right) => left.assetId.localeCompare(right.assetId)),

@@ -9,6 +9,7 @@ import { GsmsClient } from './gsms/GsmsClient.ts'
 import { createGsmsTools } from './tools/gsmsTools.ts'
 import { createMatchingTools } from './tools/matchingTools.ts'
 import { createReportTools } from './tools/reportTools.ts'
+import { createReconTool } from './tools/reconTools.ts'
 import { GsmsBootstrapClient, type GsmsScene } from './cli/GsmsBootstrapClient.ts'
 import { InvestAgentSession, registerSessionControlTools } from './cli/InvestAgentSession.ts'
 import { parseCliArguments, resolveCliConfig } from './cli/config.ts'
@@ -54,10 +55,19 @@ async function main(): Promise<void> {
     const skills = await loadSkills(workspace)
     const registry = new ToolRegistry()
     const gsmsClient = new GsmsClient({ baseUrl: config.gsmsUrl })
-    const domainTools: AgentTool[] = [
+    const model = new OpenAICompatibleAdapter({
+      apiKey: config.apiKey,
+      model: config.model,
+      baseUrl: config.modelBaseUrl,
+    })
+    const coreTools: AgentTool[] = [
       ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
+    ]
+    const domainTools: AgentTool[] = [
+      ...coreTools,
+      createReconTool(coreTools, () => model),
     ]
     for (const tool of domainTools) registry.register(tool)
     registerSessionControlTools(
@@ -67,11 +77,7 @@ async function main(): Promise<void> {
       message => console.log(`[skill] ${message}`),
     )
     const session = new InvestAgentSession({
-      model: new OpenAICompatibleAdapter({
-        apiKey: config.apiKey,
-        model: config.model,
-        baseUrl: config.modelBaseUrl,
-      }),
+      model,
       tools: registry,
       skills,
       workspace,

@@ -73,6 +73,9 @@ export class AgentRuntime {
       signal: this.options.signal,
     }
     const toolCallHistory: string[] = []
+    let noProgressCount = 0
+    const maxNoProgressSteer = 2   // inject steering after this many no-progress turns
+    const maxNoProgressStop = 4    // force stop after this many no-progress turns
     await this.#emit({
       runId,
       turn: 0,
@@ -85,6 +88,7 @@ export class AgentRuntime {
     while (goal.status === 'active' && goal.turnCount < goal.maxTurns) {
       this.options.signal?.throwIfAborted()
       goal.turnCount++
+      const artifactCountBefore = artifacts.list().length
 
       const visibleTools = this.#visibleToolDefinitions(context)
       const modelRequest = {
@@ -184,13 +188,24 @@ export class AgentRuntime {
       }
 
       // Collect tool results from executor
+      // Filter out hidden progress messages — they must not appear between
+      // an assistant message with tool_calls and its tool result messages,
+      // as the OpenAI-compatible API requires tool messages to directly follow.
       for (const msg of executor.getCompletedResults()) {
+        if (msg.hidden) {
+          transcript.record('message', msg)
+          continue
+        }
         messages.push(msg)
         if (msg.role === 'tool') transcript.record('tool_result', msg)
       }
 
       // Wait for remaining tools
       for await (const msg of executor.getRemainingResults()) {
+        if (msg.hidden) {
+          transcript.record('message', msg)
+          continue
+        }
         messages.push(msg)
         if (msg.role === 'tool') transcript.record('tool_result', msg)
       }
@@ -214,6 +229,45 @@ export class AgentRuntime {
           diagnostics.push(diagnostic)
           transcript.record('diagnostic', diagnostic)
         }
+      }
+
+      // Diminishing-returns detection: if no new artifacts were created this
+      // turn, the agent is likely looping without progress.  After
+      // maxNoProgressSteer consecutive no-progress turns, inject a steering
+      // message; after maxNoProgressStop, force-stop the run.
+      if (artifacts.list().length === artifactCountBefore) {
+        noProgressCount++
+        if (noProgressCount === maxNoProgressSteer) {
+          messages.push({
+            role: 'user',
+            content: 'You have been repeating the same actions without producing new evidence or artifacts. If the objective is complete, call finish now. If you are stuck, change your approach or call finish with what you have so far.',
+            hidden: true,
+          })
+          transcript.record('message', { role: 'user', content: '[steering] diminishing-returns warning injected', hidden: true })
+        }
+        if (noProgressCount >= maxNoProgressStop) {
+          const diagnostic: Diagnostic = {
+            code: 'AGENT_NO_PROGRESS',
+            message: `Agent produced no new artifacts for ${noProgressCount} consecutive turns — stopping.`,
+            severity: 'error',
+          }
+          diagnostics.push(diagnostic)
+          transcript.record('diagnostic', diagnostic)
+          await this.#emit({
+            runId,
+            turn: goal.turnCount,
+            eventType: 'diagnostic.created',
+            summary: diagnostic.message,
+            status: 'failed',
+            data: { code: diagnostic.code, noProgressCount },
+            timestamp: new Date().toISOString(),
+          })
+          goal.status = 'failed'
+          goal.remainingIssues.push(diagnostic.message)
+          break
+        }
+      } else {
+        noProgressCount = 0
       }
 
       if (goal.status !== 'active') break

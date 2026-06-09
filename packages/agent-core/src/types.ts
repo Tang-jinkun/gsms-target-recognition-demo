@@ -177,6 +177,10 @@ export interface AgentTool {
   description: string
   inputSchema: Record<string, unknown>
   risk: ToolRisk
+  /** If set and result.content exceeds this many bytes, the full content is
+   *  persisted as a `tool-result` artifact and only a compact pointer is
+   *  returned to the model. Keeps the context window lean for large outputs. */
+  persistResultAboveBytes?: number
   execute(input: unknown, context: AgentContext, onProgress?: (event: ToolProgressEvent) => void): Promise<AgentToolResult>
 }
 

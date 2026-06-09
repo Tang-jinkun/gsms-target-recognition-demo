@@ -18,6 +18,7 @@ const frontmatterSchema = z
   .object({
     name: z.string().regex(NAME_PATTERN),
     description: z.string().trim().min(1).max(MAX_DESCRIPTION_LENGTH),
+    'when-to-use': z.string().trim().min(1).max(MAX_DESCRIPTION_LENGTH).optional(),
     'allowed-tools': z.array(z.string().trim().min(1)).optional(),
     'user-invocable': z.boolean().default(true),
     'model-invocable': z.boolean().default(true),
@@ -136,6 +137,7 @@ async function loadSkillFile(
   return {
     name: parsed.name,
     description: parsed.description,
+    whenToUse: parsed['when-to-use'],
     instructions: markdown.slice(match[0].length).trim(),
     source,
     allowedTools: parsed['allowed-tools'],

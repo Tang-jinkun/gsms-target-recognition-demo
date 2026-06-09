@@ -519,6 +519,34 @@ test('phase filter enforces hard gate in execution phase', () => {
   assert.equal(filter(stubTool('validate_binding_report'), context), false, 'validation blocked during execution')
 })
 
+test('phase filter hides forward tools while a binding is needs_review', () => {
+  const makeContext = (state: Record<string, unknown>) =>
+    ({
+      workspace: process.cwd(),
+      goal: {
+        objective: 'run carbon', status: 'active' as const, turnCount: 1, maxTurns: 10,
+        evidence: [], remainingIssues: [], startedAt: new Date().toISOString(),
+      },
+      artifacts: new ArtifactStore(),
+      domainState: new DomainStateStore(state),
+    }) satisfies AgentContext
+  const filter = workflowPhaseFilter()
+
+  const blocked = makeContext({ modelId: 'carbon', matchingContextId: 'ctx-carbon', phase: 'resolving-ambiguity', bindingStatus: 'needs_review' })
+  assert.equal(filter(stubTool('validate_binding_report'), blocked), false, 'validate hidden while ambiguous')
+  assert.equal(filter(stubTool('confirm_validation_snapshot'), blocked), false, 'confirm hidden while ambiguous')
+  assert.equal(filter(stubTool('finalize_sufficiency_assessment'), blocked), false, 'sufficiency hidden while ambiguous')
+  // Tools needed to resolve the ambiguity stay available
+  assert.equal(filter(stubTool('finalize_data_matching'), blocked), true, 're-finalize stays available')
+  assert.equal(filter(stubTool('retrieve_input_candidates'), blocked), true, 'candidate retrieval stays available')
+  assert.equal(filter(stubTool('check_data_relation'), blocked), true, 'relation check stays available')
+
+  // Once resolved (ready-for-validation), the forward tools come back
+  const ready = makeContext({ modelId: 'carbon', matchingContextId: 'ctx-carbon', phase: 'ready-for-validation', bindingStatus: 'ready_for_validation' })
+  assert.equal(filter(stubTool('validate_binding_report'), ready), true, 'validate visible once ready')
+  assert.equal(filter(stubTool('finalize_sufficiency_assessment'), ready), true, 'sufficiency visible once ready')
+})
+
 function stubTool(name: string): AgentTool {
   return {
     name,
