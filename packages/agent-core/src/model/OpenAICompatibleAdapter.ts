@@ -3,6 +3,7 @@ import type {
   ModelAdapter,
   ModelRequest,
   ModelResponse,
+  StreamChunk,
   ToolCall,
 } from '../types.ts'
 
@@ -70,6 +71,87 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
       ),
     }
   }
+
+  async *completeStreaming(request: ModelRequest): AsyncIterable<StreamChunk> {
+    const response = await fetch(`${this.#baseUrl}/chat/completions`, {
+      method: 'POST',
+      signal: request.signal,
+      headers: {
+        authorization: `Bearer ${this.options.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.options.model,
+        messages: request.messages.map(toOpenAIMessage),
+        tools: request.tools.map(tool => ({
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema,
+          },
+        })),
+        tool_choice: 'auto',
+        stream: true,
+      }),
+    })
+    if (!response.ok) {
+      throw new Error(`Model request failed: ${response.status} ${await response.text()}`)
+    }
+
+    const body = response.body
+    if (!body) throw new Error('Response body is null')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const activeToolCalls = new Map<number, { id: string; name: string }>()
+
+    for await (const chunk of body) {
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || !trimmed.startsWith('data: ')) continue
+        const data = trimmed.slice(6)
+        if (data === '[DONE]') {
+          yield { type: 'done' }
+          return
+        }
+
+        let parsed: StreamingChunk
+        try {
+          parsed = JSON.parse(data) as StreamingChunk
+        } catch {
+          continue
+        }
+
+        const delta = parsed.choices?.[0]?.delta
+        if (!delta) continue
+
+        if (delta.content) {
+          yield { type: 'text', text: delta.content }
+        }
+
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const index = tc.index ?? 0
+            if (tc.id && tc.function?.name) {
+              activeToolCalls.set(index, { id: tc.id, name: tc.function.name })
+              yield { type: 'tool_call_start', id: tc.id, name: tc.function.name }
+            }
+            if (tc.function?.arguments) {
+              const active = activeToolCalls.get(index)
+              if (active) {
+                yield { type: 'tool_call_delta', id: active.id, argumentsDelta: tc.function.arguments }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 function toOpenAIMessage(message: AgentMessage): Record<string, unknown> {
@@ -100,4 +182,17 @@ function parseArguments(value: string): unknown {
   } catch {
     return {}
   }
+}
+
+interface StreamingChunk {
+  choices?: Array<{
+    delta?: {
+      content?: string | null
+      tool_calls?: Array<{
+        index?: number
+        id?: string
+        function?: { name?: string; arguments?: string }
+      }>
+    }
+  }>
 }

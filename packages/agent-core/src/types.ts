@@ -28,8 +28,25 @@ export interface ModelResponse {
   toolCalls?: ToolCall[]
 }
 
+// ── Streaming ────────────────────────────────────────────────────────────────
+
+export type StreamChunk =
+  | { type: 'text'; text: string }
+  | { type: 'tool_call_start'; id: string; name: string }
+  | { type: 'tool_call_delta'; id: string; argumentsDelta: string }
+  | { type: 'done' }
+
 export interface ModelAdapter {
   complete(request: ModelRequest): Promise<ModelResponse>
+  /** Optional streaming variant. Falls back to complete() if not implemented. */
+  completeStreaming?(request: ModelRequest): AsyncIterable<StreamChunk>
+}
+
+// ── Tool Progress ────────────────────────────────────────────────────────────
+
+export interface ToolProgressEvent {
+  message: string
+  percentage?: number
 }
 
 export interface GoalState {
@@ -89,7 +106,9 @@ export interface AgentActionEvent {
   eventType:
     | 'run.started'
     | 'model.responded'
+    | 'model.streaming'
     | 'tool.started'
+    | 'tool.progress'
     | 'tool.completed'
     | 'tool.deferred'
     | 'tool.failed'
@@ -158,7 +177,7 @@ export interface AgentTool {
   description: string
   inputSchema: Record<string, unknown>
   risk: ToolRisk
-  execute(input: unknown, context: AgentContext): Promise<AgentToolResult>
+  execute(input: unknown, context: AgentContext, onProgress?: (event: ToolProgressEvent) => void): Promise<AgentToolResult>
 }
 
 export interface TranscriptEvent {

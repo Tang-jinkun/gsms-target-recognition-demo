@@ -87,6 +87,7 @@ const matchingTools = new Set([
   'get_invest_model_schema',
   'list_scene_data_cards',
   'retrieve_input_candidates',
+  'retrieve_required_input_candidates',
   'check_data_relation',
   'finalize_data_matching',
   'finalize_sufficiency_assessment',
@@ -116,7 +117,8 @@ const allDomainTools = new Set([
 export function workflowPhaseFilter() {
   return (tool: AgentTool, context: AgentContext): boolean => {
     if (['skill', 'update_goal'].includes(tool.name)) return true
-    if (!allDomainTools.has(tool.name)) return true
+
+    if (!allDomainTools.has(tool.name) && tool.name !== 'finish') return true
 
     const state = context.domainState.snapshot()
     const phase = typeof state.phase === 'string' ? state.phase : ''
@@ -127,9 +129,10 @@ export function workflowPhaseFilter() {
       return executionPhaseAllows(tool.name, phase)
     }
 
-    // ── Soft boundary: matching group with evidence gate ────────────────────
-    // finish has its own evidence gate
+    // ── Soft boundary: matching group ───────────────────────────────────────
+    // finish has its own evidence gate — only enforced in matching group
     if (tool.name === 'finish') return finishPassesEvidenceGate(context)
+
     return matchingPhaseAllows(tool.name, context)
   }
 }
@@ -181,6 +184,9 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
     typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
 
   const domainArtifacts = artifacts.filter(a => !['goal-progress'].includes(a.type))
+  // No artifacts at all = non-domain session, allow finish freely
+  if (domainArtifacts.length === 0 && artifacts.length === 0) return true
+  // Has artifacts but none are domain = something is wrong, block
   if (domainArtifacts.length === 0) return false
 
   // Current-context artifacts (matching scope)

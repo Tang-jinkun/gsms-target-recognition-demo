@@ -75,13 +75,23 @@ export class InvestAgentWorker {
     if (session.artifacts.length) artifacts.createMany(session.artifacts as ArtifactInput[])
     const domainState = new DomainStateStore(session.domain_state)
     const currentPhase = typeof session.domain_state.phase === 'string' ? session.domain_state.phase : ''
-    if (!isExecutionPhase(currentPhase)) {
-      domainState.applyPatch({
-        phase: 'discovering-data',
-        matchingContextId: null,
-        slots: null,
-        bindingStatus: null,
-      })
+    // Phases that must persist across runs (user interaction in progress)
+    const WAITING_PHASES = new Set([
+      'awaiting-user-confirmation',
+      'validation-failed',
+      'confirmation-rejected',
+      'ready-for-validation',
+    ])
+    if (!isExecutionPhase(currentPhase) && !WAITING_PHASES.has(currentPhase)) {
+      // Preserve matchingContextId if scene hasn't changed — allows "继续" / "验证刚才的绑定" to work
+      const previousSceneId = typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined
+      if (previousSceneId && previousSceneId !== session.scene_id) {
+        // Scene changed — full reset
+        domainState.applyPatch({ phase: 'discovering-data', matchingContextId: null, slots: null, bindingStatus: null })
+      } else {
+        // Same scene — preserve context, just reset phase for re-discovery
+        domainState.applyPatch({ phase: 'discovering-data' })
+      }
     }
     const sessionWorkspace = resolve(this.options.workspace, 'sessions', session.id)
     await mkdir(sessionWorkspace, { recursive: true })
@@ -292,7 +302,7 @@ function workflowDirective(
     return 'Validation already passed. Call confirm_validation_snapshot once to request explicit user confirmation; do not validate again.'
   }
   if (phase === 'confirmed-for-execution') {
-    return 'The exact validation snapshot is confirmed. Execute it only if execution is part of the current user request.'
+    return 'The validation snapshot is confirmed for execution. Call execute_validated_snapshot immediately to start the InVEST model run. Do not load skills, inspect outputs, or call any other tool.'
   }
   if (phase === 'job-running') {
     return 'Refresh the current job with get_invest_job_status. Do not invent alternate status or output tools.'

@@ -41,13 +41,16 @@ export class InvestAgentSession {
 
   async send(message: string): Promise<AgentRunResult> {
     const currentPhase = String(this.domainState.snapshot().phase ?? 'conversation-ready')
-    if (!isExecutionPhase(currentPhase)) {
-      this.domainState.applyPatch({
-        phase: 'discovering-data',
-        matchingContextId: null,
-        slots: null,
-        bindingStatus: null,
-      })
+    // Phases that must persist across runs (user interaction in progress)
+    const WAITING_PHASES = new Set([
+      'awaiting-user-confirmation',
+      'validation-failed',
+      'confirmation-rejected',
+      'ready-for-validation',
+    ])
+    if (!isExecutionPhase(currentPhase) && !WAITING_PHASES.has(currentPhase)) {
+      // Preserve matchingContextId — allows "继续" / "验证刚才的绑定" to work
+      this.domainState.applyPatch({ phase: 'discovering-data' })
     }
     const objective = [
       `Current GSMS scene ID: ${this.options.sceneId}`,

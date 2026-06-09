@@ -246,7 +246,6 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           ],
           statePatch: {
             sceneId,
-            phase: 'matching-slots',
             assetIds: cards.map(card => card.assetId),
             matchingContextId,
           },
@@ -480,8 +479,17 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       async execute(input, context) {
         const parsed = confirmSnapshotSchema.parse(input)
         const state = requireCurrentSnapshot(context, parsed.snapshotId)
-        if (state.phase !== 'awaiting-user-confirmation') {
-          throw new Error('The latest validation snapshot is not awaiting user confirmation')
+        // Gate on validation-report artifact, not phase — phase is a workflow hint,
+        // artifacts are the source of truth for what has been done.
+        const hasValidationReport = context.artifacts.list('validation-report').some(
+          (a: any) => a.metadata?.matchingContextId === state.matchingContextId ||
+            !a.metadata?.matchingContextId,
+        )
+        if (!hasValidationReport) {
+          throw new Error('No validation report found. Run validate_binding_report first.')
+        }
+        if (state.validationStatus === 'failed') {
+          throw new Error('Validation failed. Fix the issues and re-validate before confirming.')
         }
         const result = await client.confirmValidationSnapshot(parsed.snapshotId, parsed.confirmed)
         return {
@@ -510,8 +518,13 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       async execute(input, context) {
         const parsed = executeSnapshotSchema.parse(input)
         const state = requireCurrentSnapshot(context, parsed.snapshotId)
-        if (state.phase !== 'confirmed-for-execution' || state.confirmationStatus !== 'confirmed') {
-          throw new Error('The validation snapshot has not been confirmed for execution')
+        // Gate on confirmation-record artifact, not phase — phase is a workflow hint,
+        // artifacts are the source of truth for what has been done.
+        const hasConfirmationRecord = context.artifacts.list('confirmation-record').some(
+          (a: any) => a.data?.snapshot_id === parsed.snapshotId || !a.data?.snapshot_id,
+        )
+        if (!hasConfirmationRecord) {
+          throw new Error('No confirmation record found. Call confirm_validation_snapshot first.')
         }
         const result = await client.createJobFromValidationSnapshot(parsed.snapshotId, parsed.runMode)
         const source = result as { job_id?: unknown }

@@ -9,6 +9,7 @@ import {
   modelInputSchemaSchema,
   relationCheckSchema,
   type BindingReport,
+  type CandidateSet,
   type DataCard,
   type ModelInputSchema,
 } from '../domain/schemas.ts'
@@ -113,13 +114,63 @@ export const retrieveInputCandidatesTool: AgentTool = {
         },
       ],
       statePatch: {
-        phase: 'matching-slots',
         slots: {
           [slot]: {
             candidateAssetIds: candidates.candidates.map(candidate => candidate.assetId),
             status: candidates.candidates.length ? 'candidates-found' : 'missing',
           },
         },
+      },
+    }
+  },
+}
+
+export const retrieveRequiredInputCandidatesTool: AgentTool = {
+  name: 'retrieve_required_input_candidates',
+  description: 'Retrieve evidence-backed candidates for ALL required input slots of the current model at once. Preferred over calling retrieve_input_candidates for each slot individually.',
+  risk: 'read',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['modelId'],
+    properties: { modelId: { type: 'string' } },
+  },
+  async execute(input, context) {
+    const { modelId } = z.object({ modelId: z.string().min(1) }).parse(input)
+    const schema = latestModelSchema(context)
+    if (modelId !== schema.modelId) {
+      throw toolFailure('MODEL_MISMATCH', `Model ${modelId} does not match current schema ${schema.modelId}.`)
+    }
+    const matchingContextId = currentMatchingContext(context)
+    const cards = dataCards(context)
+    const results: Array<{ slot: string; candidateCount: number; status: string }> = []
+    const artifacts: Array<{ id: string; type: string; createdBy: 'tool'; data: unknown; metadata: Record<string, unknown> }> = []
+
+    for (const slot of schema.slots.filter(s => s.required)) {
+      const artifactId = `candidate-set:${matchingContextId}:${slot.name}`
+      const existing = context.artifacts.get(artifactId)
+      if (existing) {
+        results.push({ slot: slot.name, candidateCount: (existing.data as CandidateSet).candidates.length, status: 'cached' })
+        continue
+      }
+      const candidates = retrieveCandidates(slot, cards)
+      artifacts.push({
+        id: artifactId,
+        type: 'candidate-set',
+        createdBy: 'tool',
+        data: candidates,
+        metadata: { slot: slot.name, modelId: schema.modelId, sceneId: context.domainState.snapshot().sceneId, matchingContextId },
+      })
+      results.push({ slot: slot.name, candidateCount: candidates.candidates.length, status: 'created' })
+    }
+
+    return {
+      content: JSON.stringify(results),
+      artifacts,
+      statePatch: {
+        slots: Object.fromEntries(
+          results.map(r => [r.slot, { candidateAssetIds: [], status: r.candidateCount ? 'candidates-found' : 'missing' }]),
+        ),
       },
     }
   },
@@ -369,7 +420,7 @@ export const finalizeDataMatchingTool: AgentTool = {
 }
 
 export function createMatchingTools(): AgentTool[] {
-  return [retrieveInputCandidatesTool, finalizeDataMatchingTool]
+  return [retrieveInputCandidatesTool, retrieveRequiredInputCandidatesTool, finalizeDataMatchingTool]
 }
 
 function toolFailure(

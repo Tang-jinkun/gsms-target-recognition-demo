@@ -17,8 +17,10 @@ import type {
   GoalState,
   AgentEventSink,
   ModelAdapter,
+  ModelResponse,
   ToolCall,
 } from '../types.ts'
+import { StreamingToolExecutor } from './StreamingToolExecutor.ts'
 
 export interface AgentRuntimeOptions {
   model: ModelAdapter
@@ -71,8 +73,6 @@ export class AgentRuntime {
       signal: this.options.signal,
     }
     const toolCallHistory: string[] = []
-    let failedToolName: string | undefined
-    let failedToolCount = 0
     await this.#emit({
       runId,
       turn: 0,
@@ -85,11 +85,35 @@ export class AgentRuntime {
     while (goal.status === 'active' && goal.turnCount < goal.maxTurns) {
       this.options.signal?.throwIfAborted()
       goal.turnCount++
-      const response = await this.options.model.complete({
+
+      const visibleTools = this.#visibleToolDefinitions(context)
+      const modelRequest = {
         messages,
-        tools: this.#visibleToolDefinitions(context),
+        tools: visibleTools,
         signal: this.options.signal,
-      })
+      }
+
+      // Create executor for this turn
+      const executor = new StreamingToolExecutor(
+        this.options.tools,
+        context,
+        this.options.eventSink,
+        runId,
+        goal.turnCount,
+        this.#permissions,
+        this.options.signal,
+      )
+
+      let response: ModelResponse
+
+      if (this.options.model.completeStreaming) {
+        // Streaming mode: start executing tools as they arrive
+        response = await this.#streamWithExecutor(modelRequest, executor, runId, goal.turnCount)
+      } else {
+        // Non-streaming mode: wait for full response, then execute tools
+        response = await this.options.model.complete(modelRequest)
+      }
+
       await this.#emit({
         runId,
         turn: goal.turnCount,
@@ -104,6 +128,7 @@ export class AgentRuntime {
         },
         timestamp: new Date().toISOString(),
       })
+
       const assistant: AgentMessage = {
         role: 'assistant',
         content: response.content,
@@ -111,6 +136,14 @@ export class AgentRuntime {
       }
       messages.push(assistant)
       transcript.record('message', assistant)
+
+      // In non-streaming mode, register tools after model.responded event
+      // (streaming mode already registered them during #streamWithExecutor)
+      if (!this.options.model.completeStreaming) {
+        for (const call of response.toolCalls ?? []) {
+          executor.addTool(call)
+        }
+      }
 
       if (!response.toolCalls?.length) {
         toolCallHistory.length = 0
@@ -122,6 +155,7 @@ export class AgentRuntime {
         continue
       }
 
+      // Loop detection
       const toolCallSignature = canonicalToolCalls(response.toolCalls)
       toolCallHistory.push(toolCallSignature)
       const maxRepeatedToolCalls = this.options.maxRepeatedToolCalls ?? 4
@@ -149,54 +183,40 @@ export class AgentRuntime {
         break
       }
 
-      const pendingHiddenMessages: AgentMessage[] = []
-      for (const call of response.toolCalls) {
-        const artifactCount = artifacts.list().length
-        const stateBefore = canonical(domainState.snapshot())
-        pendingHiddenMessages.push(
-          ...(await this.#executeTool(call, context, messages, transcript, diagnostics, runId)),
-        )
-        const toolResult = [...messages].reverse().find(
-          message => message.role === 'tool' && message.toolCallId === call.id,
-        )
-        const madeProgress =
-          artifacts.list().length !== artifactCount ||
-          canonical(domainState.snapshot()) !== stateBefore
-        if (toolResult?.role === 'tool' && toolResult.isError && !madeProgress) {
-          if (failedToolName === call.name) {
-            failedToolCount++
-          } else {
-            failedToolName = call.name
-            failedToolCount = 1
-          }
-          if (failedToolCount >= 3) {
-            const diagnostic: Diagnostic = {
-              code: 'AGENT_TOOL_FAILURE_LOOP',
-              message: `Tool ${call.name} failed ${failedToolCount} consecutive times without producing progress. Last error: ${summarizeText(toolResult.content)}`,
-              severity: 'error',
-            }
-            diagnostics.push(diagnostic)
-            transcript.record('diagnostic', diagnostic)
-            await this.#emit({
-              runId,
-              turn: goal.turnCount,
-              eventType: 'loop.detected',
-              summary: diagnostic.message,
-              status: 'failed',
-              data: { code: diagnostic.code, tool: call.name },
-              timestamp: new Date().toISOString(),
-            })
-            goal.status = 'failed'
-            goal.remainingIssues.push(diagnostic.message)
-            break
-          }
-        } else {
-          failedToolName = undefined
-          failedToolCount = 0
-        }
-        if (goal.status !== 'active') break
+      // Collect tool results from executor
+      for (const msg of executor.getCompletedResults()) {
+        messages.push(msg)
+        if (msg.role === 'tool') transcript.record('tool_result', msg)
       }
-      messages.push(...pendingHiddenMessages)
+
+      // Wait for remaining tools
+      for await (const msg of executor.getRemainingResults()) {
+        messages.push(msg)
+        if (msg.role === 'tool') transcript.record('tool_result', msg)
+      }
+
+      // Check if blocked (permission deferred)
+      if (executor.hasBlockedOnPermission()) {
+        break
+      }
+
+      // Tool failure tracking
+      const toolResults = messages.filter(m => m.role === 'tool' && m.toolCallId)
+      const lastToolResult = toolResults[toolResults.length - 1]
+      if (lastToolResult?.isError) {
+        const failedCall = response.toolCalls.find(c => c.id === lastToolResult.toolCallId)
+        if (failedCall) {
+          const diagnostic: Diagnostic = {
+            code: 'AGENT_TOOL_FAILURE',
+            message: `Tool ${failedCall.name} failed: ${summarizeText(lastToolResult.content)}`,
+            severity: 'error',
+          }
+          diagnostics.push(diagnostic)
+          transcript.record('diagnostic', diagnostic)
+        }
+      }
+
+      if (goal.status !== 'active') break
     }
 
     if (goal.status === 'active') {
@@ -255,6 +275,82 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * Streaming mode: process model stream and start executing tools as they arrive.
+   */
+  async #streamWithExecutor(
+    request: { messages: readonly AgentMessage[]; tools: readonly ReturnType<ToolRegistry['list']>[number][]; signal?: AbortSignal },
+    executor: StreamingToolExecutor,
+    runId: string,
+    turn: number,
+  ): Promise<ModelResponse> {
+    let content = ''
+    const toolCallAccumulator = new Map<number, { id: string; name: string; arguments: string }>()
+    let lastCompletedId: string | undefined
+
+    const finalizeToolCall = () => {
+      if (lastCompletedId === undefined) return
+      const tc = toolCallAccumulator.get([...toolCallAccumulator.values()].findIndex(t => t.id === lastCompletedId))
+      if (tc && tc.arguments) {
+        executor.addTool({
+          id: tc.id,
+          name: tc.name,
+          input: parseArguments(tc.arguments),
+        })
+      }
+      lastCompletedId = undefined
+    }
+
+    for await (const chunk of this.options.model.completeStreaming!(request)) {
+      switch (chunk.type) {
+        case 'text':
+          content += chunk.text
+          await this.#emit({
+            runId,
+            turn,
+            eventType: 'model.streaming',
+            summary: chunk.text,
+            status: 'completed',
+            data: { text: chunk.text },
+            timestamp: new Date().toISOString(),
+          })
+          break
+        case 'tool_call_start':
+          // Finalize previous tool call if any
+          finalizeToolCall()
+          toolCallAccumulator.set(toolCallAccumulator.size, {
+            id: chunk.id,
+            name: chunk.name,
+            arguments: '',
+          })
+          lastCompletedId = chunk.id
+          break
+        case 'tool_call_delta': {
+          const entry = [...toolCallAccumulator.values()].find(tc => tc.id === chunk.id)
+          if (entry) entry.arguments += chunk.argumentsDelta
+          break
+        }
+        case 'done':
+          finalizeToolCall()
+          break
+      }
+    }
+
+    // Finalize any remaining tool call (stream ended without 'done')
+    finalizeToolCall()
+
+    const toolCalls = [...toolCallAccumulator.values()].map(tc => ({
+      id: tc.id,
+      name: tc.name,
+      input: parseArguments(tc.arguments),
+    }))
+
+    return {
+      content,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+    }
+  }
+
   #visibleToolDefinitions(context: AgentContext) {
     return this.options.tools
       .list()
@@ -275,170 +371,6 @@ export class AgentRuntime {
     )
   }
 
-  async #executeTool(
-    call: ToolCall,
-    context: AgentContext,
-    messages: AgentMessage[],
-    transcript: Transcript,
-    diagnostics: Diagnostic[],
-    runId: string,
-  ): Promise<AgentMessage[]> {
-    const startedAt = Date.now()
-    await this.#emit({
-      runId,
-      turn: context.goal.turnCount,
-      eventType: 'tool.started',
-      summary: `Started ${call.name}`,
-      status: 'started',
-      toolCallId: call.id,
-      data: { tool: call.name, input: sanitizeForEvent(call.input) },
-      timestamp: new Date().toISOString(),
-    })
-    transcript.record('tool_call', call)
-    const tool = this.options.tools.resolve(call.name)
-    if (!tool) {
-      const visibleTools = this.#visibleToolDefinitions(context).map(tool => tool.name)
-      const message = `Unknown tool: ${call.name}. Available tools for the current workflow stage: ${visibleTools.join(', ')}`
-      this.#pushToolResult(messages, transcript, call, message, true)
-      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, message)
-      return []
-    }
-    if (!this.#isToolVisible(tool, context)) {
-      const visibleTools = this.#visibleToolDefinitions(context).map(item => item.name)
-      const message = `Tool ${call.name} is not available in the current workflow stage. Available tools: ${visibleTools.join(', ')}`
-      this.#pushToolResult(messages, transcript, call, message, true)
-      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, message)
-      return []
-    }
-
-      const decision = await this.#permissions.check(tool, call.input, context)
-      transcript.record('permission', { tool: tool.name, decision })
-      if (decision === 'defer') {
-        context.goal.status = 'blocked'
-        context.goal.remainingIssues = [`Awaiting user confirmation for ${tool.name}`]
-        this.#pushToolResult(
-          messages,
-          transcript,
-          call,
-          `Permission deferred pending user confirmation: ${tool.name}`,
-          true,
-        )
-        await this.#emit({
-          runId,
-          turn: context.goal.turnCount,
-          eventType: 'tool.deferred',
-          summary: `Waiting for user confirmation before ${tool.name}`,
-          status: 'waiting',
-          toolCallId: call.id,
-          data: { tool: call.name },
-          durationMs: Date.now() - startedAt,
-          timestamp: new Date().toISOString(),
-        })
-        return []
-      }
-      if (decision !== 'allow') {
-      this.#pushToolResult(messages, transcript, call, `Permission denied: ${tool.name}`, true)
-      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, `Permission denied: ${tool.name}`)
-      return []
-    }
-
-    try {
-      const result = await tool.execute(call.input, context)
-      if (result.activateSkill) {
-        context.skillScope = {
-          name: result.activateSkill.name,
-          allowedTools: new Set(result.activateSkill.allowedTools),
-          activatedAtTurn: context.goal.turnCount,
-        }
-      }
-      if (result.goalUpdate) Object.assign(context.goal, result.goalUpdate)
-      if (result.artifacts?.length) {
-        const created = context.artifacts.createMany(result.artifacts)
-        for (const artifact of created) {
-          transcript.record('artifact', artifact)
-          await this.#emit({
-            runId,
-            turn: context.goal.turnCount,
-            eventType: 'artifact.created',
-            summary: `Created ${artifact.type} artifact`,
-            status: 'completed',
-            data: { artifactId: artifact.id, artifactType: artifact.type },
-            timestamp: new Date().toISOString(),
-          })
-        }
-      }
-      if (result.statePatch) {
-        const state = context.domainState.applyPatch(result.statePatch)
-        transcript.record('state', { patch: result.statePatch, state })
-        await this.#emit({
-          runId,
-          turn: context.goal.turnCount,
-          eventType: 'state.changed',
-          summary: `Updated workflow state${typeof state.phase === 'string' ? ` to ${state.phase}` : ''}`,
-          status: 'completed',
-          data: { patch: sanitizeForEvent(result.statePatch) },
-          timestamp: new Date().toISOString(),
-        })
-      }
-      if (result.diagnostics?.length) {
-        diagnostics.push(...result.diagnostics)
-        for (const diagnostic of result.diagnostics) {
-          transcript.record('diagnostic', diagnostic)
-          await this.#emit({
-            runId,
-            turn: context.goal.turnCount,
-            eventType: 'diagnostic.created',
-            summary: diagnostic.message,
-            status: diagnostic.severity === 'error' ? 'failed' : 'completed',
-            data: { code: diagnostic.code, severity: diagnostic.severity },
-            timestamp: new Date().toISOString(),
-          })
-        }
-      }
-      this.#pushToolResult(messages, transcript, call, result.content, false)
-      await this.#emit({
-        runId,
-        turn: context.goal.turnCount,
-        eventType: 'tool.completed',
-        summary: `Completed ${call.name}`,
-        status: 'completed',
-        toolCallId: call.id,
-        data: { tool: call.name },
-        durationMs: Date.now() - startedAt,
-        timestamp: new Date().toISOString(),
-      })
-      return result.hiddenMessages ?? []
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.#pushToolResult(
-        messages,
-        transcript,
-        call,
-        message,
-        true,
-      )
-      await this.#emitToolFailure(runId, context.goal.turnCount, call, startedAt, message)
-      return []
-    }
-  }
-
-  #pushToolResult(
-    messages: AgentMessage[],
-    transcript: Transcript,
-    call: ToolCall,
-    content: string,
-    isError: boolean,
-  ): void {
-    const message: AgentMessage = {
-      role: 'tool',
-      toolCallId: call.id,
-      content,
-      isError,
-    }
-    messages.push(message)
-    transcript.record('tool_result', message)
-  }
-
   async #emit(event: AgentActionEvent): Promise<void> {
     try {
       await this.options.eventSink?.emit(event)
@@ -446,25 +378,13 @@ export class AgentRuntime {
       // Observability must never prevent the Agent from completing its work.
     }
   }
+}
 
-  #emitToolFailure(
-    runId: string,
-    turn: number,
-    call: ToolCall,
-    startedAt: number,
-    message: string,
-  ): Promise<void> {
-    return this.#emit({
-      runId,
-      turn,
-      eventType: 'tool.failed',
-      summary: `Failed ${call.name}: ${summarizeText(message)}`,
-      status: 'failed',
-      toolCallId: call.id,
-      data: { tool: call.name, error: summarizeText(message) },
-      durationMs: Date.now() - startedAt,
-      timestamp: new Date().toISOString(),
-    })
+function parseArguments(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return {}
   }
 }
 
@@ -514,23 +434,4 @@ function createRunId(): string {
 function summarizeText(value: string, maxLength = 500): string {
   const compact = value.replace(/\s+/g, ' ').trim()
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact
-}
-
-function sanitizeForEvent(value: unknown, depth = 0): unknown {
-  if (depth > 4) return '[truncated]'
-  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeForEvent(item, depth + 1))
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .slice(0, 40)
-        .map(([key, item]) => [
-          key,
-          /api.?key|token|secret|password|authorization/i.test(key)
-            ? '[redacted]'
-            : sanitizeForEvent(item, depth + 1),
-        ]),
-    )
-  }
-  if (typeof value === 'string') return summarizeText(value, 1000)
-  return value
 }
