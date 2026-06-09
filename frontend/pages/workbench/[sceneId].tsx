@@ -19,6 +19,12 @@ type LeftTab = 'layers' | 'files' | 'invest'
 type TaskState = 'idle' | 'run' | 'done' | 'fail'
 type ChatMsg = { role: 'user' | 'agent'; html: string; text: string; att: string[] }
 
+type TurnBlock =
+  | { type: 'text'; text: string; status: 'streaming' | 'done' }
+  | { type: 'tool'; id: string; name: string; status: 'running' | 'completed' | 'failed'; message?: string; percentage?: number }
+
+type Turn = { role: 'user' | 'assistant'; blocks: TurnBlock[] }
+
 const TYPE_LABEL: Record<string, string> = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹', other: '其他' }
 const TYPE_ICON: Record<string, string> = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', other: 'file' }
 
@@ -67,6 +73,7 @@ export default function WorkbenchPage() {
     { role: 'agent', html: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', text: '已记录这份土地利用数据作为对话上下文。需要我对它的分类体系或时相做进一步说明吗？', att: [] },
   ])
   const [msgs, setMsgs] = React.useState<ChatMsg[]>([])
+  const [turns, setTurns] = React.useState<Turn[]>([])
   const [atts, setAtts] = React.useState<string[]>([])
   const [draft, setDraft] = React.useState('')
   const [streaming, setStreaming] = React.useState(false)
@@ -74,8 +81,6 @@ export default function WorkbenchPage() {
   const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
   const [agentError, setAgentError] = React.useState('')
   const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
-  const [streamingText, setStreamingText] = React.useState('')
-  const [activeTools, setActiveTools] = React.useState<Array<{ id: string; name: string; status: string; message?: string; percentage?: number }>>([])
   const agentEventCursorRef = React.useRef({ sessionId: '', afterId: 0 })
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -119,10 +124,16 @@ export default function WorkbenchPage() {
     return () => { cancelled = true }
   }, [])
 
+  // Persist the streaming turn across polls so incremental deltas accumulate correctly
+  const streamingTurnRef = React.useRef<Turn | null>(null)
+  const prevMsgCountRef = React.useRef(0)
+
   const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
     if (agentEventCursorRef.current.sessionId !== session.id) {
       agentEventCursorRef.current = { sessionId: session.id, afterId: 0 }
       setAgentEvents([])
+      streamingTurnRef.current = null
+      prevMsgCountRef.current = 0
     }
     const [current, messages, confirmations, events] = await Promise.all([
       agentSessionsRepo.get(session.id),
@@ -133,65 +144,112 @@ export default function WorkbenchPage() {
     setAgentSession(current)
     setStreaming(current.status === 'queued' || current.status === 'running')
     setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
-    setMsgs(messages.map(message => ({
-      role: message.role === 'assistant' ? 'agent' : 'user',
-      html: escapeHtml(message.content).replace(/\n/g, '<br />'),
-      text: message.content,
-      att: [],
-    })))
     setAgentError(current.last_error ?? '')
+
+    // When a new message arrives, the streaming turn is now persisted — clear the ref
+    if (messages.length > prevMsgCountRef.current) {
+      streamingTurnRef.current = null
+    }
+    prevMsgCountRef.current = messages.length
+
+    // Build base turns from persisted messages
+    const baseTurns: Turn[] = messages.map(msg => ({
+      role: msg.role === 'assistant' ? 'assistant' as const : 'user' as const,
+      blocks: [{ type: 'text' as const, text: msg.content, status: 'done' as const }],
+    }))
+
+    // If session is running and no new message yet, attach the streaming turn
+    const isRunning = current.status === 'running' || current.status === 'queued'
+    if (isRunning && streamingTurnRef.current) {
+      baseTurns.push(streamingTurnRef.current)
+    }
+
     if (events.length) {
       agentEventCursorRef.current.afterId = events.at(-1)!.id
       const actionEvents = events.filter(event => isAgentActionEvent(event.type))
       setAgentEvents(previous => [...previous, ...actionEvents].slice(-500))
 
-      // Derive streaming text from model.streaming events
-      const streamingEvents = events.filter(e => e.type === 'model.streaming' && e.data.text)
-      if (streamingEvents.length) {
-        setStreamingText(prev => prev + streamingEvents.map(e => e.data.text).join(''))
-      }
+      // Accumulate streaming blocks into the streaming turn
+      const streamingEvents = events.filter(e => e.type === 'model.streaming' || e.type === 'tool.started' || e.type === 'tool.progress' || e.type === 'tool.completed' || e.type === 'tool.failed')
 
-      // Derive active tools from tool events
-      const toolEvents = events.filter(e =>
-        e.type === 'tool.started' || e.type === 'tool.progress' || e.type === 'tool.completed' || e.type === 'tool.failed')
-      if (toolEvents.length) {
-        setActiveTools(prev => {
-          const tools = new Map(prev.map(t => [t.id, t]))
-          for (const ev of toolEvents) {
+      if (streamingEvents.length && isRunning) {
+        // Create streaming turn if needed
+        if (!streamingTurnRef.current) {
+          streamingTurnRef.current = { role: 'assistant', blocks: [] }
+          baseTurns.push(streamingTurnRef.current)
+        }
+        const st = streamingTurnRef.current
+
+        for (const ev of streamingEvents) {
+          if (ev.type === 'model.streaming') {
+            if (ev.data.text) {
+              const lastBlock = st.blocks[st.blocks.length - 1]
+              if (lastBlock && lastBlock.type === 'text' && lastBlock.status === 'streaming') {
+                lastBlock.text += ev.data.text
+              } else {
+                st.blocks.push({ type: 'text', text: ev.data.text, status: 'streaming' })
+              }
+            } else if (ev.data.tool) {
+              const toolId = ev.data.tool_call_id ?? ev.data.tool
+              st.blocks.push({ type: 'tool', id: toolId, name: ev.data.tool, status: 'running' })
+            }
+          } else if (ev.type === 'tool.started') {
             const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-            if (ev.type === 'tool.started') {
-              tools.set(toolId, { id: toolId, name: ev.data.tool ?? 'tool', status: 'running' })
-            } else if (ev.type === 'tool.progress') {
-              const existing = tools.get(toolId)
-              if (existing) { existing.message = ev.data.message; existing.percentage = ev.data.percentage }
-            } else {
-              const existing = tools.get(toolId)
-              if (existing) existing.status = ev.type === 'tool.completed' ? 'completed' : 'failed'
+            const existing = st.blocks.find(b => b.type === 'tool' && b.id === toolId)
+            if (!existing) {
+              st.blocks.push({ type: 'tool', id: toolId, name: ev.data.tool ?? 'tool', status: 'running' })
+            }
+          } else if (ev.type === 'tool.progress') {
+            const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
+            const toolBlock = st.blocks.find(b => b.type === 'tool' && b.id === toolId)
+            if (toolBlock && toolBlock.type === 'tool') {
+              toolBlock.message = ev.data.message
+              toolBlock.percentage = ev.data.percentage
+            }
+          } else if (ev.type === 'tool.completed' || ev.type === 'tool.failed') {
+            const toolId = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
+            const toolBlock = st.blocks.find(b => b.type === 'tool' && b.id === toolId)
+            if (toolBlock && toolBlock.type === 'tool') {
+              toolBlock.status = ev.type === 'tool.completed' ? 'completed' : 'failed'
             }
           }
-          return [...tools.values()]
-        })
+        }
       }
     }
 
-    // Clear streaming state when session becomes idle
-    if (current.status !== 'running' && current.status !== 'queued') {
-      setStreamingText('')
-      setActiveTools([])
+    // Mark streaming text as done when session is idle
+    if (!isRunning) {
+      if (streamingTurnRef.current) {
+        for (const block of streamingTurnRef.current.blocks) {
+          if (block.type === 'text' && block.status === 'streaming') block.status = 'done'
+        }
+      }
     }
+
+    setTurns(baseTurns)
   }, [])
+
+  // Dynamic polling: 500ms when streaming, 1500ms when idle
+  const pollTimerRef = React.useRef<number | undefined>(undefined)
+  const pollSessionRef = React.useRef<AgentSession | null>(null)
 
   React.useEffect(() => {
     if (!sceneId) return
     let cancelled = false
-    let timer: number | undefined
     const start = async () => {
       try {
         const sessions = await agentSessionsRepo.list(sceneId)
         const session = sessions[0] ?? await agentSessionsRepo.create(sceneId, `${sceneName} Agent`)
         if (cancelled) return
+        pollSessionRef.current = session
         await refreshAgentSession(session)
-        timer = window.setInterval(() => refreshAgentSession(session).catch(() => {}), 1500)
+        const poll = () => {
+          if (cancelled || !pollSessionRef.current) return
+          refreshAgentSession(pollSessionRef.current).catch(() => {})
+          const interval = streaming ? 500 : 1500
+          pollTimerRef.current = window.setTimeout(poll, interval)
+        }
+        pollTimerRef.current = window.setTimeout(poll, streaming ? 500 : 1500)
       } catch {
         if (!cancelled) setAgentError('Agent session service is unavailable.')
       }
@@ -199,9 +257,23 @@ export default function WorkbenchPage() {
     start()
     return () => {
       cancelled = true
-      if (timer) window.clearInterval(timer)
+      if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
     }
   }, [sceneId, refreshAgentSession])
+
+  // Restart polling with new interval when streaming state changes
+  React.useEffect(() => {
+    if (!pollSessionRef.current) return
+    if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
+    const poll = () => {
+      if (!pollSessionRef.current) return
+      refreshAgentSession(pollSessionRef.current).catch(() => {})
+      const interval = streaming ? 500 : 1500
+      pollTimerRef.current = window.setTimeout(poll, interval)
+    }
+    pollTimerRef.current = window.setTimeout(poll, streaming ? 500 : 1500)
+    return () => { if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current) }
+  }, [streaming, refreshAgentSession])
 
   const refreshSceneFiles = React.useCallback(async () => {
     const next = await workbenchRepo.listFiles(sceneId || undefined)
@@ -229,7 +301,7 @@ export default function WorkbenchPage() {
   React.useEffect(() => {
     const el = chatScrollRef.current
     if (el && autoScrollRef.current) el.scrollTop = el.scrollHeight
-  }, [msgs, streamingText, activeTools, view])
+  }, [msgs, turns, view])
   React.useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight }, [logLines])
   React.useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
 
@@ -293,8 +365,6 @@ export default function WorkbenchPage() {
     try {
       setDraft(''); setAtts([])
       setStreaming(true)
-      setStreamingText('')
-      setActiveTools([])
       setAgentError('')
       const result = await agentSessionsRepo.send(agentSession.id, text + attachmentContext)
       await refreshAgentSession(result.session)
@@ -492,6 +562,48 @@ export default function WorkbenchPage() {
         fallbackCopy(text) && done()
       }
     }
+
+    // Agent mode: render unified turns with blocks
+    if (turns.length > 0) {
+      return (
+        <div className="chat-inner" style={{ padding: pad }}>
+          {turns.map((turn, i) => (
+            <div className={`msg ${turn.role === 'assistant' ? 'agent' : 'user'}`} key={i}>
+              <span className="who">{turn.role === 'user' ? '我' : 'AI'}</span>
+              <div className="bubble">
+                <div className="body">
+                  {turn.blocks.map((block, j) => {
+                    if (block.type === 'text') {
+                      const html = escapeHtml(block.text).replace(/\n/g, '<br />') + (block.status === 'streaming' ? '<span class="cursor-blink"></span>' : '')
+                      return <p key={j} dangerouslySetInnerHTML={{ __html: html }} />
+                    }
+                    if (block.type === 'tool') {
+                      return (
+                        <div className={`tool-card ${block.status}`} key={j}>
+                          <span className="tool-icon">
+                            {block.status === 'running' ? <span className="spinner" /> : block.status === 'completed' ? <Icon name="check" cls="ic-sm" /> : <Icon name="alert-circle" cls="ic-sm" />}
+                          </span>
+                          <div className="tool-info">
+                            <span className="tool-name">{block.name}</span>
+                            {block.message && <span className="tool-msg">{block.message}</span>}
+                          </div>
+                          {typeof block.percentage === 'number' && (
+                            <div className="tool-progress"><div className="tool-progress-bar" style={{ width: `${block.percentage}%` }} /></div>
+                          )}
+                        </div>
+                      )
+                    }
+                    return null
+                  })}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    // Prototype/fallback mode: render legacy msgs
     return (
       <div className="chat-inner" style={{ padding: pad }}>
         {msgs.map((m, i) => (
@@ -508,34 +620,6 @@ export default function WorkbenchPage() {
             </div>
           </div>
         ))}
-        {streaming && (streamingText || activeTools.length > 0) && (
-          <div className="msg agent">
-            <span className="who">AI</span>
-            <div className="bubble">
-              <div className="body">
-                {streamingText && <p dangerouslySetInnerHTML={{ __html: escapeHtml(streamingText) + '<span class="cursor-blink"></span>' }} />}
-                {activeTools.length > 0 && (
-                  <div className="tool-cards">
-                    {activeTools.map(tool => (
-                      <div className={`tool-card ${tool.status}`} key={tool.id}>
-                        <span className="tool-icon">
-                          {tool.status === 'running' ? <span className="spinner" /> : tool.status === 'completed' ? <Icon name="check" cls="ic-sm" /> : <Icon name="alert-circle" cls="ic-sm" />}
-                        </span>
-                        <div className="tool-info">
-                          <span className="tool-name">{tool.name}</span>
-                          {tool.message && <span className="tool-msg">{tool.message}</span>}
-                        </div>
-                        {typeof tool.percentage === 'number' && (
-                          <div className="tool-progress"><div className="tool-progress-bar" style={{ width: `${tool.percentage}%` }} /></div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     )
   }
