@@ -37,9 +37,10 @@ export interface ToolExecutorResult {
  * execution time, not just at advertisement time.  This prevents the model
  * from executing hidden tools even if it guesses their names.
  *
- * Concurrency rules:
- * - Tools with `isConcurrencySafe === true` may execute in parallel.
- * - All other tools must execute alone (no concurrent tools at all).
+ * Concurrency model (currently serial; opt-in for future parallelism):
+ * - Tools with `isConcurrencySafe === true` MAY execute in parallel, but
+ *   this capability is NOT yet used — no GSMS tool declares it, and the
+ *   default is false. All tools currently execute one at a time.
  * - `isConcurrencySafe` is an explicit opt-in on the AgentTool interface;
  *   it is NOT derived from `risk`.
  *
