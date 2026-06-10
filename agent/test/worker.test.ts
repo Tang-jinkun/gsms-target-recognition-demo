@@ -66,7 +66,7 @@ test('worker claims a queued session and checkpoints a completed Agent run', asy
 
     assert.equal(await worker.runOnce(), true)
     assert.deepEqual(actions, ['start', 'complete'])
-    assert.deepEqual(events, ['run.started', 'model.responded', 'tool.started', 'tool.completed', 'run.completed'])
+    assert.deepEqual(events, ['run.started', 'model.streaming', 'model.responded', 'tool.started', 'tool.completed', 'run.completed'])
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

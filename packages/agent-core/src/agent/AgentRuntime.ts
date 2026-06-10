@@ -305,20 +305,16 @@ export class AgentRuntime {
       }
 
       // Diminishing-returns detection: if no new artifacts were created this
-      // turn AND at least one tool failed, the agent is likely stuck.
+      // turn, the agent is likely stuck in an unproductive loop.
       // After maxNoProgressSteer consecutive stuck turns, inject a steering
       // message; after maxNoProgressStop, force-stop the run.
       //
-      // Note: successful tool calls that don't create artifacts (e.g.
-      // read_file, write_file) are NOT counted as "no progress" — the agent
-      // made progress by successfully executing a tool.  Only failures
-      // without side-effects count toward the diminishing-returns counter.
-      const lastToolResult = [...messages].reverse().find(
-        m => m.role === 'tool' && m.toolCallId,
-      )
-      const lastToolFailed = lastToolResult?.role === 'tool' && lastToolResult.isError
+      // Any turn without new artifacts counts — whether the tool succeeded
+      // or not.  A successful call that produces no evidence (e.g. repeated
+      // list_invest_models) is still unproductive if it doesn't advance the
+      // workflow.
       const noNewArtifacts = artifacts.list().length === artifactCountBefore
-      if (lastToolFailed && noNewArtifacts) {
+      if (noNewArtifacts && goal.status === 'active') {
         noProgressCount++
         if (noProgressCount === maxNoProgressSteer) {
           messages.push({

@@ -313,8 +313,9 @@ test('runtime stops a repeated multi-tool cycle before max turns', async () => {
   }).run('Validate the binding once')
 
   assert.equal(result.goal.status, 'failed')
-  assert.equal(result.goal.turnCount, 6)
-  assert.match(result.goal.remainingIssues[0]!, /inspect_inputs.*validate_submission/)
+  // Diminishing-returns (4 no-artifact turns) fires before cycle detection (6 turns).
+  assert.equal(result.goal.turnCount, 4)
+  assert.equal(result.diagnostics[0]?.code, 'AGENT_NO_PROGRESS')
 })
 
 test('runtime stops one tool after three varied failures without progress', async () => {

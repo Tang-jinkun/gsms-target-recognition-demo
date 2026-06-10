@@ -5,6 +5,30 @@ function clone<T>(value: T): T {
   return structuredClone(value)
 }
 
+/**
+ * Two artifacts are metadata-compatible for supersedes purposes when they
+ * represent the SAME logical entity.  Key distinguishing fields:
+ *  - `slot`: candidate-set / user-disambiguation are per-slot
+ *  - `assetId`: data-card is per-asset
+ *  - `inputKey`: tool-result auto-persist is per-input
+ *
+ * If neither artifact carries any of these fields, they are considered
+ * compatible (the old supersedes-by-scopeKey+type default).
+ */
+function metadataCompatible(
+  oldMeta: Record<string, unknown> | undefined,
+  newMeta: Record<string, unknown> | undefined,
+): boolean {
+  for (const key of ['slot', 'assetId', 'inputKey']) {
+    const oldVal = oldMeta?.[key]
+    const newVal = newMeta?.[key]
+    if (oldVal !== undefined || newVal !== undefined) {
+      return oldVal === newVal
+    }
+  }
+  return true
+}
+
 export class ArtifactStore {
   readonly #artifacts = new Map<string, Artifact>()
   #currentScopeKey = ''
@@ -37,12 +61,17 @@ export class ArtifactStore {
       let supersedesId = input.supersedes
 
       // If no explicit supersedes, find the latest artifact with the same
-      // scopeKey + type that is not already superseded.
+      // scopeKey + type that is not already superseded.  Crucially:
+      //  1. Skip artifacts from the CURRENT batch (siblings, not supersessions).
+      //  2. Require metadata compatibility — a candidate-set for slot A must
+      //     not supersede one for slot B, even if they share scopeKey + type.
       if (!supersedesId && scopeKey) {
         for (const existing of this.#artifacts.values()) {
+          if (seen.has(existing.id)) continue  // same batch — not a supersedes target
           if (existing.scopeKey === scopeKey &&
               existing.type === input.type &&
-              !existing.superseded) {
+              !existing.superseded &&
+              metadataCompatible(existing.metadata, input.metadata)) {
             supersedesId = existing.id
             break
           }

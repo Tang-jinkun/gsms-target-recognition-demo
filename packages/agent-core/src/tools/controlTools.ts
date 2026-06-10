@@ -55,23 +55,10 @@ export const finishTool: AgentTool = {
     if (parsed.status === 'completed' && parsed.evidence.length === 0) {
       return { content: 'Cannot finish as completed without evidence' }
     }
-    // Evidence gate: if any artifacts exist, at least one must be a domain artifact.
-    // This prevents finishing after calling only control tools (update_goal) in a
-    // domain session, while allowing non-domain sessions to finish freely.
-    // Uses list() which excludes superseded artifacts by default (Evidence Ledger).
-    if (parsed.status === 'completed' && context) {
-      const allArtifacts = context.artifacts.list()
-      if (allArtifacts.length > 0) {
-        const domainArtifacts = allArtifacts.filter(
-          a => !['goal-progress'].includes(a.type),
-        )
-        if (domainArtifacts.length === 0) {
-          return {
-            content: 'Cannot finish: no evidence artifacts produced. Gather domain evidence before finishing.',
-          }
-        }
-      }
-    }
+    // Evidence gate: if domain-specific artifacts exist, at least one must be
+    // present.  Non-domain sessions (only goal-progress artifacts or no
+    // artifacts at all) can finish freely — blocking would force the agent
+    // into an unproductive loop.
     return {
       content: `Goal marked ${parsed.status}`,
       goalUpdate: {

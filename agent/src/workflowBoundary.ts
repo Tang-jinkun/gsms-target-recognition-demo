@@ -199,10 +199,10 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
     typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
 
   const domainArtifacts = artifacts.filter(a => !['goal-progress'].includes(a.type))
-  // No artifacts at all = non-domain session, allow finish freely
-  if (domainArtifacts.length === 0 && artifacts.length === 0) return true
-  // Has artifacts but none are domain = something is wrong, block
-  if (domainArtifacts.length === 0) return false
+  // No domain artifacts = the agent explored but didn't produce GSMS-specific
+  // evidence (e.g. generic file operations).  Allow finish freely — blocking
+  // would force the agent into an unproductive loop.
+  if (domainArtifacts.length === 0) return true
 
   // Current-context artifacts (matching scope)
   const currentArtifacts = matchingContextId
@@ -226,6 +226,12 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
 
   // Data cards only (no schema): basic scene exploration
   if (has('gsms-scene-data-cards')) return true
+
+  // Fallback: if the agent produced any domain artifacts that aren't
+  // candidate-sets (blocked above), allow finish.  This covers custom
+  // artifact types like scene-fact, model-skill, or any domain evidence
+  // the agent gathered without going through the full GSMS matching pipeline.
+  if (currentArtifacts.length > 0) return true
 
   return false
 }
