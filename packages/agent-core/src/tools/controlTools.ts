@@ -58,6 +58,7 @@ export const finishTool: AgentTool = {
     // Evidence gate: if any artifacts exist, at least one must be a domain artifact.
     // This prevents finishing after calling only control tools (update_goal) in a
     // domain session, while allowing non-domain sessions to finish freely.
+    // Uses list() which excludes superseded artifacts by default (Evidence Ledger).
     if (parsed.status === 'completed' && context) {
       const allArtifacts = context.artifacts.list()
       if (allArtifacts.length > 0) {

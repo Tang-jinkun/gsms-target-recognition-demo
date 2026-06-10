@@ -78,6 +78,13 @@ export interface Artifact<T = unknown> {
   createdBy: ArtifactCreator
   data: T
   metadata?: Record<string, unknown>
+  // ── Evidence Ledger ──
+  /** Scope key "turn:N" or "turn:N:skill:name". Injected by runtime. */
+  scopeKey?: string
+  /** ID of the artifact this one supersedes (version chain). */
+  supersedes?: string
+  /** True when a newer artifact has superseded this one. */
+  superseded?: boolean
 }
 
 export interface ArtifactInput<T = unknown> {
@@ -88,6 +95,8 @@ export interface ArtifactInput<T = unknown> {
   createdBy: ArtifactCreator
   data: T
   metadata?: Record<string, unknown>
+  scopeKey?: string
+  supersedes?: string
 }
 
 export type DomainState = Record<string, unknown>
@@ -135,7 +144,10 @@ export interface ArtifactRepository {
   create<T>(input: ArtifactInput<T>): Artifact<T>
   createMany(inputs: readonly ArtifactInput[]): Artifact[]
   get<T = unknown>(id: string): Artifact<T> | undefined
-  list(type?: string): Artifact[]
+  list(type?: string, options?: { scopeKey?: string; includeSuperseded?: boolean }): Artifact[]
+  /** Set by the runtime at the start of each turn for scope-aware writes. */
+  currentScopeKey: string
+  /** @deprecated Use scope-aware supersession. */
   delete(id: string): boolean
 }
 

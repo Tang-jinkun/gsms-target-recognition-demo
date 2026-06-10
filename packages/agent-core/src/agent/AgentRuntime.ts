@@ -91,6 +91,12 @@ export class AgentRuntime {
     while (goal.status === 'active' && goal.turnCount < goal.maxTurns) {
       this.options.signal?.throwIfAborted()
       goal.turnCount++
+
+      // Evidence Ledger: scope artifacts to this turn (+ active skill if any).
+      artifacts.currentScopeKey = context.skillScope
+        ? `turn:${goal.turnCount}:skill:${context.skillScope.name}`
+        : `turn:${goal.turnCount}`
+
       const artifactCountBefore = artifacts.list().length
       const canonicalStateBefore = canonical(domainState.snapshot())
 

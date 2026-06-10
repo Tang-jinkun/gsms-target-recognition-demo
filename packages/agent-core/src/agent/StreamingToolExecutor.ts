@@ -323,15 +323,14 @@ export class StreamingToolExecutor {
         // Auto-persist large results to artifact to keep context window lean
         if (tool.persistResultAboveBytes && result.content.length > tool.persistResultAboveBytes) {
           const inputKey = JSON.stringify(tracked.call.input).slice(0, 120)
-          const artifactId = `tool-result:${tool.name}:${inputKey}`
-          // Replace previous auto-persist if any (idempotent)
-          if (this.context.artifacts.list().some(a => a.id === artifactId)) {
-            this.context.artifacts.delete(artifactId)
-          }
+          // Find previous auto-persist for supersedes chain (append-only, new ID each time)
+          const existing = this.context.artifacts.list(undefined, { includeSuperseded: true })
+            .find(a => a.type === 'tool-result' && a.metadata?.inputKey === inputKey)
           const persisted = this.context.artifacts.create({
-            id: artifactId,
             type: 'tool-result',
             createdBy: 'tool' as const,
+            supersedes: existing?.id,
+            metadata: { inputKey },
             data: { tool: tool.name, input: tracked.call.input, fullContent: result.content },
           })
           await this.emit({
@@ -344,7 +343,7 @@ export class StreamingToolExecutor {
             timestamp: new Date().toISOString(),
           })
           const truncated = result.content.slice(0, 500)
-          result.content = `${truncated}\n\n[Full result persisted as artifact "${artifactId}" (${result.content.length} chars). Use get_artifact to retrieve if needed.]`
+          result.content = `${truncated}\n\n[Full result persisted as artifact "${persisted.id}" (${result.content.length} chars). Use get_artifact to retrieve if needed.]`
         }
 
         // ── Process result ──────────────────────────────────────────────
