@@ -24,6 +24,10 @@ WORKDIR /app
 RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.tuna.tsinghua.edu.cn/alpine#g' /etc/apk/repositories
 ENV NODE_ENV=production
 ENV PORT=3000
+# Needed at RUNTIME by the SSE proxy API route (pages/api/.../stream.ts) to
+# reach the backend. Defaults match docker-compose; override via env there.
+ARG INTERNAL_API_URL=http://backend:8000
+ENV INTERNAL_API_URL=$INTERNAL_API_URL
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next

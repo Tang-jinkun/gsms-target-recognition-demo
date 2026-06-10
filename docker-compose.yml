@@ -44,6 +44,10 @@ services:
         NEXT_PUBLIC_API_URL: ""
         INTERNAL_API_URL: "http://backend:8000"
         NPM_REGISTRY: "https://registry.npmjs.org/"
+    environment:
+      # Runtime backend URL for the SSE proxy API route (real-time streaming
+      # that the buffered next.config rewrites cannot do).
+      INTERNAL_API_URL: "http://backend:8000"
     ports:
       - "${GSMS_FRONTEND_BIND:-0.0.0.0}:${GSMS_FRONTEND_PORT:-3000}:3000"
     depends_on:

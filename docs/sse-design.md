@@ -426,9 +426,22 @@ EventSource.onerror 持续触发（后端不支持 / 域名限制）
 2. 前端 `setTurns` 优化：避免全量重渲染，使用 `requestAnimationFrame` 节流
 3. 多标签页支持：共享 EventSource（BroadcastChannel）
 
-## 7. 风险与权衡
+## 6.5 关键部署约束：SSE 不能走 Next rewrites 代理
 
-| 风险 | 缓解 |
+后端只绑 `127.0.0.1`,浏览器无法直连,前端 `/api/*` 默认经 `next.config.js`
+的 `rewrites()` 转发到后端。**但 Next 的 rewrites 代理会缓冲 `text/event-stream`**
+——它等待上游关闭才下发,而无限 SSE 生成器永不关闭,导致 EventSource 连上却
+收不到任何帧,表现为"无实时效果、刷新后才一次性出现"。
+
+解决:新增 Next API route `pages/api/agent/sessions/[id]/stream.ts`,手动 fetch
+后端 SSE 并逐块 `res.write` + `flush`,关闭 body 解析与缓冲。API route 优先级
+高于 `rewrites()`,精确接管该路径;其余 `/api/*` 仍走 rewrites。
+
+运行时依赖:该 route 在**运行时**读 `process.env.INTERNAL_API_URL`,故
+Dockerfile runner 阶段与 docker-compose `frontend.environment` 都需注入(原先
+只作为 build arg 供 next.config 用)。
+
+## 7. 风险与权衡
 |------|------|
 | DB 轮询增加 DB 负载 | 300ms 间隔 + limit 100 + idle 降频 |
 | 长连接占用服务端资源 | asyncio 生成器，无阻塞；单连接 ~1KB 内存 |

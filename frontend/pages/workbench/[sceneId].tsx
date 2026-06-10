@@ -1,4 +1,6 @@
 import React from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import Head from 'next/head'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
@@ -229,24 +231,34 @@ export default function WorkbenchPage() {
   // same event cursor and fold the same streaming deltas, duplicating text N times.
   const refreshInFlightRef = React.useRef(false)
 
-  // Latest persisted messages + whether the session is running, kept in refs so
-  // the turn rebuild (driven by both SSE folds and meta refreshes) reads current
-  // values without re-subscribing.
+  // Latest persisted messages, kept in a ref so the turn rebuild (driven by both
+  // SSE folds and meta refreshes) reads current values without re-subscribing.
   const messagesRef = React.useRef<AgentMessage[]>([])
-  const isRunningRef = React.useRef(false)
 
   // Rebuild the visible turns from persisted messages + accumulated run blocks.
   // Pure projection over the refs; safe to call after any event fold or refresh.
   const rebuildTurns = React.useCallback(() => {
     const messages = messagesRef.current
-    const isRunning = isRunningRef.current
-    if (!isRunning) {
-      for (const blocks of runBlocksRef.current.values()) finalizeBlocks(blocks)
+    const runOrder = runOrderRef.current
+    const assistantCount = messages.filter(m => m.role === 'assistant').length
+    // A trailing run with no persisted assistant message yet is the in-flight
+    // turn — its think card is live regardless of the (possibly lagging) status
+    // flag. SSE may deliver streaming events before the session.status→running
+    // event arrives, so we derive "live" from the run/message mapping, not the
+    // flag. Only settle the *answered* runs' blocks.
+    const hasLiveRun = runOrder.length > assistantCount
+    let mapped = 0
+    for (const runId of runOrder) {
+      const isLive = hasLiveRun && mapped >= assistantCount
+      if (!isLive) {
+        const blocks = runBlocksRef.current.get(runId)
+        if (blocks) finalizeBlocks(blocks)
+      }
+      mapped++
     }
     // Each assistant message gets the activity blocks of the run that produced it,
     // mapped by chronological order. The think card (activity) is kept separate
     // from the answer (the persisted message text).
-    const runOrder = runOrderRef.current
     let assistantSeen = 0
     const baseTurns: Turn[] = messages.map(msg => {
       if (msg.role !== 'assistant') {
@@ -263,9 +275,9 @@ export default function WorkbenchPage() {
         ],
       }
     })
-    // A run is in flight when its activity has no persisted answer yet — show it
-    // as a live streaming turn (think card only; the answer arrives on completion).
-    if (isRunning && runOrder.length > assistantSeen) {
+    // Push the in-flight run as a live streaming turn (think card only; the
+    // answer arrives once the assistant message is persisted).
+    if (hasLiveRun) {
       const liveBlocks = runBlocksRef.current.get(runOrder[assistantSeen])
       if (liveBlocks && liveBlocks.length) {
         baseTurns.push({ role: 'assistant', blocks: liveBlocks.map(b => ({ ...b })), streaming: true })
@@ -312,7 +324,6 @@ export default function WorkbenchPage() {
     ])
     setAgentSession(current)
     const isRunning = current.status === 'queued' || current.status === 'running'
-    isRunningRef.current = isRunning
     setStreaming(isRunning)
     messagesRef.current = messages
     setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
@@ -334,7 +345,6 @@ export default function WorkbenchPage() {
     ])
     setAgentSession(current)
     const isRunning = current.status === 'queued' || current.status === 'running'
-    isRunningRef.current = isRunning
     setStreaming(isRunning)
     messagesRef.current = messages
     setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
@@ -756,7 +766,7 @@ export default function WorkbenchPage() {
                 <div className="msg user" key={i}>
                   <span className="who">我</span>
                   <div className="bubble">
-                    <div className="body"><p dangerouslySetInnerHTML={{ __html: escapeHtml(text).replace(/\n/g, '<br />') }} /></div>
+                    <div className="body md-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown></div>
                     <button className="copy-btn" title="复制" onClick={() => copyText(text, i)}>
                       <Icon name={copiedIdx === i ? 'check' : 'copy'} cls="ic-sm" />
                     </button>
@@ -798,7 +808,12 @@ export default function WorkbenchPage() {
                           <div className="timeline">
                             {activityBlocks.map((block, j) => {
                               if (block.type === 'text') {
-                                const lines = block.text.split('\n').filter(Boolean)
+                                // The model emits newlines as sentence boundaries (e.g.
+                                // '。\n', ':\n\n'). Splitting on \n produces 1-3 char
+                                // fragments ("final / ize / _s / ufficiency"). Collapse
+                                // all newlines into spaces so the thinking text reads as
+                                // one continuous paragraph — the way it's meant to.
+                                const text = block.text.replace(/\n+/g, ' ').trim()
                                 return (
                                   <div className={`tl-step ${block.status === 'streaming' ? 'run' : 'done'}`} key={j}>
                                     <span className="tl-dot">
@@ -807,9 +822,7 @@ export default function WorkbenchPage() {
                                         : <Icon name="check" cls="ic-sm" />}
                                     </span>
                                     <div className="tl-lines">
-                                      {lines.map((line, k) => (
-                                        <div className="tl-line" key={k} dangerouslySetInnerHTML={{ __html: escapeHtml(line) }} />
-                                      ))}
+                                      <div className="tl-line" dangerouslySetInnerHTML={{ __html: escapeHtml(text) }} />
                                     </div>
                                   </div>
                                 )
@@ -855,8 +868,9 @@ export default function WorkbenchPage() {
 
                     {/* Answer: plain text response */}
                     {responseBlock && responseBlock.type === 'text' && (responseBlock.text || responseBlock.status === 'streaming') && (
-                      <div className="answer">
-                        <p dangerouslySetInnerHTML={{ __html: escapeHtml(responseBlock.text).replace(/\n/g, '<br />') + (responseBlock.status === 'streaming' ? '<span class="cursor-blink"></span>' : '') }} />
+                      <div className="answer md-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{responseBlock.text}</ReactMarkdown>
+                        {responseBlock.status === 'streaming' && <span className="cursor-blink" />}
                       </div>
                     )}
 
@@ -1229,6 +1243,11 @@ export default function WorkbenchPage() {
         .msg.user .who { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent-line); }
         .msg.agent .who { background: var(--accent); color: #fff; }
         .msg .bubble { min-width: 0; max-width: calc(100% - 40px); }
+        /* The agent bubble must FILL the row. Without flex:1 it defaults to
+         * flex-grow:0 + content-based basis, so with min-width:0 the flex
+         * algorithm shrinks it to the think card's min-content width — which,
+         * once .tl-line allows word-break, collapses to ~2 chars per line. */
+        .msg.agent .bubble { flex: 1 1 auto; }
         .msg.user .bubble { max-width: 72%; }
         .msg .body { font-size: 13.5px; line-height: 1.62; padding: 9px 13px; border-radius: 14px; }
         .msg.agent .body { background: var(--surface); border: 1px solid var(--border); color: var(--fg); border-bottom-left-radius: 4px; }
@@ -1274,8 +1293,8 @@ export default function WorkbenchPage() {
         .tl-step.pending .tl-dot { border-style: dashed; }
         .tl-title { font-size: 12.5px; font-weight: 600; color: var(--fg-strong); display: flex; align-items: center; gap: 8px; min-height: 16px; }
         .tl-step.pending .tl-title { color: var(--faint); font-weight: 500; }
-        .tl-lines { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
-        .tl-line { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+        .tl-lines { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; }
+        .tl-line { font-size: 12.5px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
         .tl-line code { font-family: var(--mono); font-size: 11.5px; background: var(--inset); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
         /* tool-chip inside a step */
         .tool-chip { display: inline-flex; align-items: center; gap: 7px; margin-top: 7px; padding: 5px 9px 5px 7px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); font-size: 11.5px; color: var(--fg); font-family: var(--mono); }
@@ -1290,6 +1309,29 @@ export default function WorkbenchPage() {
         .answer strong { color: var(--fg-strong); font-weight: 650; }
         .answer code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
         .answer ul { margin: 0 0 11px; padding-left: 18px; } .answer li { margin: 3px 0; }
+        /* markdown body (ReactMarkdown) */
+        .md-body p { margin: 0 0 10px; line-height: 1.62; } .md-body p:last-child { margin-bottom: 0; }
+        .md-body strong { color: var(--fg-strong); font-weight: 650; }
+        .md-body em { font-style: italic; }
+        .md-body h1 { font-size: 17px; font-weight: 700; margin: 18px 0 8px; color: var(--fg-strong); }
+        .md-body h2 { font-size: 15px; font-weight: 700; margin: 16px 0 7px; color: var(--fg-strong); }
+        .md-body h3 { font-size: 13.8px; font-weight: 650; margin: 14px 0 6px; color: var(--fg-strong); }
+        .md-body h4, .md-body h5, .md-body h6 { font-size: 13px; font-weight: 600; margin: 12px 0 5px; color: var(--fg-strong); }
+        .md-body code { font-family: var(--mono); font-size: 12px; background: var(--inset); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+        .md-body pre { margin: 0 0 11px; padding: 11px 13px; border-radius: var(--r); background: var(--inset); border: 1px solid var(--border); overflow-x: auto; }
+        .md-body pre code { background: transparent; padding: 0; border-radius: 0; color: var(--fg); font-size: 12.5px; line-height: 1.55; }
+        .md-body ul, .md-body ol { margin: 0 0 11px; padding-left: 22px; }
+        .md-body li { margin: 3px 0; line-height: 1.6; }
+        .md-body li > ul, .md-body li > ol { margin: 3px 0 0; }
+        .md-body blockquote { margin: 0 0 11px; padding: 6px 12px; border-left: 3px solid var(--accent-line); background: var(--surface); color: var(--muted); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+        .md-body table { margin: 0 0 11px; border-collapse: collapse; width: 100%; font-size: 12.5px; }
+        .md-body th, .md-body td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+        .md-body th { background: var(--surface-2); font-weight: 600; color: var(--fg-strong); }
+        .md-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+        .md-body a:hover { color: var(--accent-ink); }
+        .md-body hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+        .md-body img { max-width: 100%; border-radius: var(--r-sm); }
+        .msg.user .md-body code { background: rgba(255,255,255,.18); color: #fff; }
         /* turn actions */
         .turn-actions { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity .12s; }
         .turn:hover .turn-actions, .turn:focus-within .turn-actions { opacity: 1; }
