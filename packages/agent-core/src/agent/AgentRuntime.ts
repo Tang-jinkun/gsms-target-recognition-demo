@@ -99,6 +99,9 @@ export class AgentRuntime {
 
       const artifactCountBefore = artifacts.list().length
       const canonicalStateBefore = canonical(domainState.snapshot())
+      const hadSkillScopeBefore = !!context.skillScope
+      const diagnosticsCountBefore = diagnostics.length
+      const goalStatusBefore = goal.status
 
       const visibleTools = this.#visibleToolDefinitions(context)
       const modelRequest = {
@@ -304,17 +307,21 @@ export class AgentRuntime {
         if (toolFailedWithoutProgress) break
       }
 
-      // Diminishing-returns detection: if no new artifacts were created this
-      // turn, the agent is likely stuck in an unproductive loop.
-      // After maxNoProgressSteer consecutive stuck turns, inject a steering
-      // message; after maxNoProgressStop, force-stop the run.
-      //
-      // Any turn without new artifacts counts — whether the tool succeeded
-      // or not.  A successful call that produces no evidence (e.g. repeated
-      // list_invest_models) is still unproductive if it doesn't advance the
-      // workflow.
-      const noNewArtifacts = artifacts.list().length === artifactCountBefore
-      if (noNewArtifacts && goal.status === 'active') {
+      // Diminishing-returns detection via a unified progress signal. A turn
+      // counts as progress if ANY of these advanced: a new artifact (incl.
+      // supersession), the domain state, an activated skill, a new diagnostic,
+      // or the goal status (finish/blocked). Only genuinely-stuck turns — same
+      // actions, no state change, no new evidence — count toward stopping.
+      // NOTE: goal narration fields (progress/nextStep set by update_goal) are
+      // intentionally NOT progress; spamming them is exactly the stuck loop
+      // this guard catches.
+      const progressMadeThisTurn =
+        artifacts.list().length !== artifactCountBefore ||
+        canonical(domainState.snapshot()) !== canonicalStateBefore ||
+        (!!context.skillScope && !hadSkillScopeBefore) ||
+        diagnostics.length > diagnosticsCountBefore ||
+        goal.status !== goalStatusBefore
+      if (!progressMadeThisTurn && goal.status === 'active') {
         noProgressCount++
         if (noProgressCount === maxNoProgressSteer) {
           messages.push({
@@ -327,7 +334,7 @@ export class AgentRuntime {
         if (noProgressCount >= maxNoProgressStop) {
           const diagnostic: Diagnostic = {
             code: 'AGENT_NO_PROGRESS',
-            message: `Agent produced no new artifacts for ${noProgressCount} consecutive failing turns — stopping.`,
+            message: `Agent made no progress (no new evidence or state change) for ${noProgressCount} consecutive turns — stopping.`,
             severity: 'error',
           }
           diagnostics.push(diagnostic)
