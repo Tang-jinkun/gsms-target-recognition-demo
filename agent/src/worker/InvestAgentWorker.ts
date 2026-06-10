@@ -34,6 +34,8 @@ export interface InvestAgentWorkerOptions {
   maxTurns?: number
   sessionApi?: AgentSessionApiClient
   modelFactory?: (session: PersistedAgentSession) => ModelAdapter
+  /** Enable run_reconnaissance sub-agent (experimental). Off by default. */
+  experimentalRecon?: boolean
 }
 
 export class InvestAgentWorker {
@@ -132,10 +134,10 @@ export class InvestAgentWorker {
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
     ]
-    const domainTools: AgentTool[] = [
-      ...coreTools,
-      createReconTool(coreTools, () => model),
-    ]
+    const domainTools: AgentTool[] = [...coreTools]
+    if (this.options.experimentalRecon) {
+      domainTools.push(createReconTool(coreTools, () => model))
+    }
     for (const tool of domainTools) registry.register(tool)
     registerSessionControlTools(registry, this.options.skills, () => domainTools.map(tool => tool.name))
 

@@ -143,13 +143,36 @@ export function createReconTool(
         lastAssistantText ||
         '(subagent produced no output)'
 
+      // Surface subagent artifacts as structured UNVERIFIED evidence.
+      // These are NOT copied into the parent's ArtifactStore — the parent's
+      // evidence gate must only count artifacts produced by the parent's own
+      // deterministic tools.  The parent model is expected to re-run a
+      // deterministic tool (retrieve_input_candidates, check_data_relation,
+      // assess_scene_model_readiness) to convert any claim into parent-scope
+      // evidence.  Only type/data/metadata are surfaced; createdBy is stripped
+      // to prevent the model from echoing forged 'user' claims.
+      const unverifiedEvidence = result.artifacts.map(a => ({
+        type: a.type,
+        data: a.data,
+        metadata: a.metadata,
+      }))
+
       return {
         content: JSON.stringify({
           findings,
           turnsUsed: result.goal.turnCount,
           status: result.goal.status,
           diagnostics: result.diagnostics,
+          unverifiedEvidence,
+          verificationRequired: unverifiedEvidence.length > 0,
+          ...(unverifiedEvidence.length > 0 ? {
+            note: 'Subagent findings are UNVERIFIED. The parent must re-run a deterministic tool '
+              + '(retrieve_input_candidates / check_data_relation / assess_scene_model_readiness) '
+              + 'to convert any claim into parent-scope evidence.',
+          } : {}),
         }),
+        // Do NOT set artifacts — subagent evidence must not enter the parent's
+        // Evidence Ledger or influence the finish tool's evidence gate.
       }
     },
   })

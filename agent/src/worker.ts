@@ -18,7 +18,8 @@ const builtinsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'skil
 const loaded = await new SkillLoader({ projectSkillsDir: builtinsDir }).load()
 const skills = new SkillRegistry()
 skills.replace(loaded.skills.map(skill => ({ ...skill, source: 'builtin' as const })))
-const worker = new InvestAgentWorker({ gsmsUrl, proxyToken, workspace, skills })
+const experimentalRecon = process.env.INVEST_AGENT_EXPERIMENTAL_RECON === '1'
+const worker = new InvestAgentWorker({ gsmsUrl, proxyToken, workspace, skills, experimentalRecon })
 
 do {
   const worked = await worker.runOnce()

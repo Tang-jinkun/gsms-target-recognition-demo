@@ -19,6 +19,8 @@ export interface AgentCliConfig {
   apiKey: string
   maxTurns: number
   yes: boolean
+  /** Enable run_reconnaissance sub-agent (experimental). Off by default. */
+  experimentalRecon?: boolean
 }
 
 interface ProviderMetadata {
@@ -104,6 +106,7 @@ export async function resolveCliConfig(
     apiKey,
     maxTurns: args.maxTurns ?? positiveInteger(env.INVEST_AGENT_MAX_TURNS ?? '30', 'max turns'),
     yes: args.yes,
+    experimentalRecon: env.INVEST_AGENT_EXPERIMENTAL_RECON === '1',
   }
 }
 

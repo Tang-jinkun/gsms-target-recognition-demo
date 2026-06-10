@@ -65,10 +65,10 @@ async function main(): Promise<void> {
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
     ]
-    const domainTools: AgentTool[] = [
-      ...coreTools,
-      createReconTool(coreTools, () => model),
-    ]
+    const domainTools: AgentTool[] = [...coreTools]
+    if (config.experimentalRecon) {
+      domainTools.push(createReconTool(coreTools, () => model))
+    }
     for (const tool of domainTools) registry.register(tool)
     registerSessionControlTools(
       registry,
