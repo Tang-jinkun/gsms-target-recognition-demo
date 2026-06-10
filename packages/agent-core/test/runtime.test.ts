@@ -786,3 +786,118 @@ test('P0: permission deferred stops remaining tools from producing side-effects'
     'Should see deferred message for tool B',
   )
 })
+
+// ── Streaming Semantics Tests ────────────────────────────────────────────────
+// These tests lock down the contract: the streaming path emits incremental UI
+// events (model.streaming) while consuming the model stream, but defers tool
+// execution until after loop detection.  This ordering is explicitly chosen
+// for correctness — tools must not start until after loop detection — and
+// these tests guard that invariant from being silently reverted.
+
+test('streaming events arrive before tool execution within each turn', async () => {
+  // Each turn: model.streaming events (tool cards) must all arrive before
+  // tool.started for that turn.  Across turns the events interleave —
+  // turn 2's stream starts after turn 1's tools finish — which is correct.
+  const events: Array<Record<string, unknown>> = []
+  const inspectTool: AgentTool = {
+    name: 'inspect_data',
+    description: 'Inspect data',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() { return { content: 'inspected' } },
+  }
+  const model = new FakeModelAdapter([
+    { content: '', toolCalls: [{ id: '1', name: 'inspect_data', input: { path: 'data.csv' } }] },
+    { content: '', toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Done', evidence: ['data.csv'] } }] },
+  ])
+
+  await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([inspectTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    eventSink: { emit: async event => { events.push(event as unknown as Record<string, unknown>) } },
+  }).run('Inspect data')
+
+  // Split the event stream into turns using tool.started as boundaries.
+  // Within each turn, all model.streaming events must precede tool.started.
+  const turns: Array<{ streaming: number; toolStarted: number }> = []
+  let turnStreaming = 0
+  for (let i = 0; i < events.length; i++) {
+    if (events[i].eventType === 'model.streaming') turnStreaming++
+    if (events[i].eventType === 'tool.started') {
+      turns.push({ streaming: turnStreaming, toolStarted: i })
+      turnStreaming = 0
+    }
+  }
+
+  assert.ok(turns.length >= 2, 'Should have at least 2 turns')
+  for (const turn of turns) {
+    assert.ok(turn.streaming > 0, `Each turn must have model.streaming events before tool.started (got ${turn.streaming})`)
+  }
+})
+
+test('streaming emits both text and tool-call card events', async () => {
+  const events: Array<Record<string, unknown>> = []
+  const inspectTool: AgentTool = {
+    name: 'inspect_data',
+    description: 'Inspect data',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() { return { content: 'inspected' } },
+  }
+  const model = new FakeModelAdapter([
+    { content: '', toolCalls: [{ id: '1', name: 'inspect_data', input: { path: 'data.csv' } }] },
+    { content: '', toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Done', evidence: ['data.csv'] } }] },
+  ])
+
+  await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([inspectTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    eventSink: { emit: async event => { events.push(event as unknown as Record<string, unknown>) } },
+  }).run('Inspect data')
+
+  const streamingEvents = events.filter(e => e.eventType === 'model.streaming')
+  assert.ok(streamingEvents.length > 0, 'Should have model.streaming events')
+
+  const toolCards = streamingEvents.filter(e => String(e.summary).startsWith('tool_call:'))
+  assert.ok(toolCards.length > 0, 'Should emit tool_call card events for the frontend')
+  assert.ok(
+    toolCards.every(e => e.data && typeof e.data === 'object' && 'tool' in (e.data as object)),
+    'Tool card events must include tool name in data',
+  )
+})
+
+test('streaming accumulates multiple argument deltas correctly', async () => {
+  // FakeModelAdapter splits arguments into 7-char deltas.
+  // If reassembly is broken, the parsed tool input will be truncated or wrong.
+  const events: Array<Record<string, unknown>> = []
+  let capturedInput: unknown = null
+  const longInputTool: AgentTool = {
+    name: 'long_input',
+    description: 'Takes a long input',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute(_input: Record<string, unknown>) {
+      capturedInput = _input
+      return { content: 'ok' }
+    },
+  }
+  const bigInput = { path: '/very/long/path/to/some/deeply/nested/data/file.csv', format: 'csv', options: { delimiter: ',', header: true } }
+  const model = new FakeModelAdapter([
+    { content: '', toolCalls: [{ id: '1', name: 'long_input', input: bigInput }] },
+    { content: '', toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Done', evidence: ['result'] } }] },
+  ])
+
+  await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([longInputTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    eventSink: { emit: async event => { events.push(event as unknown as Record<string, unknown>) } },
+  }).run('Run long input tool')
+
+  assert.deepEqual(capturedInput, bigInput, 'Tool must receive the full reconstructed input, not a truncated fragment')
+})
