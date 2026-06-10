@@ -1,6 +1,7 @@
 """Server-side OpenAI-compatible proxy used by the local InVEST Agent CLI."""
 from __future__ import annotations
 
+import asyncio
 import json
 import hmac
 import os
@@ -10,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as FastApiRequest
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -20,7 +21,7 @@ from app.agent_sessions import (
     next_confirmation_status,
     next_session_status,
 )
-from app.db import get_db
+from app.db import get_db, SessionLocal
 from app.llm_proxy import chat_completions_url
 from app.models import (
     AgentConfirmation,
@@ -170,6 +171,15 @@ def _add_event(db: Session, session_id: str, event_type: str, data: dict) -> Age
     return event
 
 
+def _emit_status_event(db: Session, session_id: str, old_status: str, new_status: str) -> None:
+    """Emit a session.status event so the SSE stream can push status transitions."""
+    if old_status != new_status:
+        _add_event(db, session_id, "session.status", {
+            "status": new_status,
+            "previous_status": old_status,
+        })
+
+
 @router.post("/sessions", status_code=201)
 def create_agent_session(body: SessionCreateIn, db: Session = Depends(get_db)):
     scene = db.get(Scene, body.scene_id)
@@ -240,7 +250,8 @@ def enqueue_agent_message(
     if not session:
         raise HTTPException(status_code=404, detail="Agent session not found")
     try:
-        session.status = next_session_status(session.status, "enqueue_message")
+        old_status = session.status
+        session.status = next_session_status(old_status, "enqueue_message")
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     content = body.content.strip()
@@ -261,6 +272,7 @@ def enqueue_agent_message(
         "message.queued",
         {"message_id": message.id, "role": message.role},
     )
+    _emit_status_event(db, session.id, old_status, session.status)
     session.last_error = None
     db.commit()
     db.refresh(message)
@@ -283,6 +295,81 @@ def list_agent_events(
         .all()
     )
     return [_event_dict(event) for event in rows]
+
+
+def _format_sse_event(event: dict) -> str:
+    """Serialize one event dict (from _event_dict) into an SSE frame."""
+    payload = json.dumps(event["data"], ensure_ascii=False)
+    return f"id: {event['id']}\nevent: {event['type']}\ndata: {payload}\n\n"
+
+
+def _resolve_sse_cursor(header_value: str | None, query_value: int) -> int:
+    """Pick the SSE start cursor. The reconnect header wins over the query param."""
+    if header_value:
+        try:
+            return int(header_value)
+        except ValueError:
+            return query_value
+    return query_value
+
+
+def _fetch_events_since(session_id: str, cursor: int, limit: int = 100):
+    """Fetch events with id > cursor in a short-lived DB session (thread-safe)."""
+    db = SessionLocal()
+    try:
+        if db.get(AgentSession, session_id) is None:
+            return None
+        rows = (
+            db.query(AgentEvent)
+            .filter(AgentEvent.session_id == session_id, AgentEvent.id > cursor)
+            .order_by(AgentEvent.id.asc())
+            .limit(limit)
+            .all()
+        )
+        return [_event_dict(event) for event in rows]
+    finally:
+        db.close()
+
+
+@router.get("/sessions/{session_id}/stream")
+async def stream_agent_events(
+    session_id: str,
+    request: FastApiRequest,
+    last_event_id: int = Query(default=0, ge=0),
+):
+    """SSE endpoint: push agent events in real-time via short-interval DB polling.
+
+    EventSource auto-reconnects with a Last-Event-ID header; that takes
+    precedence over the query param so no events are missed across reconnects.
+    """
+    cursor = _resolve_sse_cursor(request.headers.get("last-event-id"), last_event_id)
+
+    async def event_generator():
+        nonlocal cursor
+        while True:
+            if await request.is_disconnected():
+                break
+            events = await asyncio.to_thread(_fetch_events_since, session_id, cursor)
+            if events is None:
+                yield 'event: error\ndata: {"detail":"session not found"}\n\n'
+                break
+            if events:
+                for event in events:
+                    cursor = event["id"]
+                    yield _format_sse_event(event)
+            else:
+                yield ":heartbeat\n\n"
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "cache-control": "no-cache",
+            "x-accel-buffering": "no",
+            "connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/sessions/{session_id}/events", status_code=201)
@@ -319,7 +406,8 @@ def request_agent_confirmation(
     if any(item.status == "pending" for item in session.confirmations):
         raise HTTPException(status_code=409, detail="Agent session already has a pending confirmation.")
     try:
-        session.status = next_session_status(session.status, "request_confirmation")
+        old_status = session.status
+        session.status = next_session_status(old_status, "request_confirmation")
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     confirmation = AgentConfirmation(
@@ -338,6 +426,7 @@ def request_agent_confirmation(
         "confirmation.requested",
         {"confirmation_id": confirmation.id, "kind": confirmation.kind},
     )
+    _emit_status_event(db, session.id, old_status, session.status)
     db.commit()
     db.refresh(confirmation)
     return _confirmation_dict(confirmation)
@@ -369,8 +458,9 @@ def resolve_agent_confirmation(
         raise HTTPException(status_code=404, detail="Agent confirmation not found")
     try:
         confirmation.status = next_confirmation_status(confirmation.status, body.approved)
+        old_status = session.status
         session.status = next_session_status(
-            session.status,
+            old_status,
             "approve_confirmation" if body.approved else "reject_confirmation",
         )
     except ValueError as exc:
@@ -385,6 +475,7 @@ def resolve_agent_confirmation(
             "status": confirmation.status,
         },
     )
+    _emit_status_event(db, session.id, old_status, session.status)
     db.commit()
     db.refresh(confirmation)
     return {"session": _session_dict(session), "confirmation": _confirmation_dict(confirmation)}
@@ -449,7 +540,8 @@ def checkpoint_agent_session(
     if not session:
         raise HTTPException(status_code=404, detail="Agent session not found")
     try:
-        session.status = next_session_status(session.status, body.action)
+        old_status = session.status
+        session.status = next_session_status(old_status, body.action)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if body.domain_state is not None:
@@ -480,6 +572,7 @@ def checkpoint_agent_session(
         "session.checkpoint",
         {"action": body.action, "status": session.status},
     )
+    _emit_status_event(db, session.id, old_status, session.status)
     db.commit()
     db.refresh(session)
     return _session_dict(session)
@@ -535,7 +628,6 @@ def proxy_chat_completions(
             detail = resp.text[:2000]
             raise HTTPException(status_code=502, detail=f"Provider HTTP {resp.status_code}: {detail}")
         if is_streaming:
-            from fastapi.responses import StreamingResponse
             return StreamingResponse(
                 resp.iter_content(chunk_size=None),
                 media_type="text/event-stream",

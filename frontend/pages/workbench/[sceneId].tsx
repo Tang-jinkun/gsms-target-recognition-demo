@@ -11,7 +11,8 @@ import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
 import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
 import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
-import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
+import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentMessage, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
+import { useAgentEventSource } from '../../src/lib/useAgentEventSource'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -130,6 +131,19 @@ const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<':
 const isAgentActionEvent = (type: string) =>
   /^(run|model|tool|state|artifact|diagnostic|loop)\./.test(type)
 
+// Events that fold into a run's activity blocks (think card timeline).
+const isStreamFoldEvent = (type: string) =>
+  type === 'model.streaming' || type === 'tool.started' ||
+  type === 'tool.progress' || type === 'tool.completed' ||
+  type === 'tool.failed' || type === 'artifact.created' ||
+  type === 'diagnostic.created'
+
+// Events that change session/message/confirmation state and warrant a meta refresh.
+const isMetaEvent = (type: string) =>
+  type === 'session.status' || type === 'confirmation.requested' ||
+  type === 'confirmation.resolved' || type === 'message.created' ||
+  type === 'message.queued' || type === 'session.checkpoint'
+
 export default function WorkbenchPage() {
   const router = useRouter()
   const sceneId = typeof router.query.sceneId === 'string' ? router.query.sceneId : ''
@@ -215,55 +229,20 @@ export default function WorkbenchPage() {
   // same event cursor and fold the same streaming deltas, duplicating text N times.
   const refreshInFlightRef = React.useRef(false)
 
-  const runRefresh = React.useCallback(async (session: AgentSession) => {
-    if (agentEventCursorRef.current.sessionId !== session.id) {
-      agentEventCursorRef.current = { sessionId: session.id, afterId: 0 }
-      setAgentEvents([])
-      runBlocksRef.current = new Map()
-      runOrderRef.current = []
-    }
-    const [current, messages, confirmations, events] = await Promise.all([
-      agentSessionsRepo.get(session.id),
-      agentSessionsRepo.messages(session.id),
-      agentSessionsRepo.confirmations(session.id),
-      agentSessionsRepo.events(session.id, agentEventCursorRef.current.afterId),
-    ])
-    setAgentSession(current)
-    const isRunning = current.status === 'queued' || current.status === 'running'
-    setStreaming(isRunning)
-    setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
-    setAgentError(current.last_error ?? '')
+  // Latest persisted messages + whether the session is running, kept in refs so
+  // the turn rebuild (driven by both SSE folds and meta refreshes) reads current
+  // values without re-subscribing.
+  const messagesRef = React.useRef<AgentMessage[]>([])
+  const isRunningRef = React.useRef(false)
 
-    // Fold new events into their run's activity blocks
-    if (events.length) {
-      agentEventCursorRef.current.afterId = events.at(-1)!.id
-      const actionEvents = events.filter(event => isAgentActionEvent(event.type))
-      if (actionEvents.length) setAgentEvents(previous => [...previous, ...actionEvents].slice(-500))
-
-      for (const ev of events) {
-        if (
-          ev.type !== 'model.streaming' && ev.type !== 'tool.started' &&
-          ev.type !== 'tool.progress' && ev.type !== 'tool.completed' &&
-          ev.type !== 'tool.failed' && ev.type !== 'artifact.created' &&
-          ev.type !== 'diagnostic.created'
-        ) continue
-        const runId = (ev.data.run_id as string) ?? 'run'
-        let blocks = runBlocksRef.current.get(runId)
-        if (!blocks) {
-          blocks = []
-          runBlocksRef.current.set(runId, blocks)
-          runOrderRef.current.push(runId)
-        }
-        applyEventToBlocks(blocks, ev)
-      }
-    }
-
-    // When the run is finished, settle its blocks (stop spinners, drop cursor)
+  // Rebuild the visible turns from persisted messages + accumulated run blocks.
+  // Pure projection over the refs; safe to call after any event fold or refresh.
+  const rebuildTurns = React.useCallback(() => {
+    const messages = messagesRef.current
+    const isRunning = isRunningRef.current
     if (!isRunning) {
       for (const blocks of runBlocksRef.current.values()) finalizeBlocks(blocks)
     }
-
-    // Assistant messages are the persisted final answers; user messages are echoed.
     // Each assistant message gets the activity blocks of the run that produced it,
     // mapped by chronological order. The think card (activity) is kept separate
     // from the answer (the persisted message text).
@@ -284,7 +263,6 @@ export default function WorkbenchPage() {
         ],
       }
     })
-
     // A run is in flight when its activity has no persisted answer yet — show it
     // as a live streaming turn (think card only; the answer arrives on completion).
     if (isRunning && runOrder.length > assistantSeen) {
@@ -293,9 +271,80 @@ export default function WorkbenchPage() {
         baseTurns.push({ role: 'assistant', blocks: liveBlocks.map(b => ({ ...b })), streaming: true })
       }
     }
-
     setTurns(baseTurns)
   }, [])
+
+  // Fold one event into its run's activity blocks. Returns true if the event was
+  // an activity (stream-fold) event so the caller can decide to rebuild turns.
+  const foldEvent = React.useCallback((ev: AgentEvent) => {
+    if (isAgentActionEvent(ev.type)) {
+      setAgentEvents(previous => [...previous, ev].slice(-500))
+    }
+    if (!isStreamFoldEvent(ev.type)) return false
+    const runId = (ev.data.run_id as string) ?? 'run'
+    let blocks = runBlocksRef.current.get(runId)
+    if (!blocks) {
+      blocks = []
+      runBlocksRef.current.set(runId, blocks)
+      runOrderRef.current.push(runId)
+    }
+    applyEventToBlocks(blocks, ev)
+    return true
+  }, [])
+
+  // Reset all per-session accumulation when switching sessions.
+  const resetSessionState = React.useCallback((sessionId: string) => {
+    agentEventCursorRef.current = { sessionId, afterId: 0 }
+    setAgentEvents([])
+    runBlocksRef.current = new Map()
+    runOrderRef.current = []
+    messagesRef.current = []
+  }, [])
+
+  // Refresh session metadata (status, messages, confirmations). Used on init,
+  // on meta SSE events, and on the lightweight fallback timer. Does NOT fetch
+  // events — those arrive via SSE (or the full polling fallback).
+  const refreshMeta = React.useCallback(async (session: AgentSession) => {
+    const [current, messages, confirmations] = await Promise.all([
+      agentSessionsRepo.get(session.id),
+      agentSessionsRepo.messages(session.id),
+      agentSessionsRepo.confirmations(session.id),
+    ])
+    setAgentSession(current)
+    const isRunning = current.status === 'queued' || current.status === 'running'
+    isRunningRef.current = isRunning
+    setStreaming(isRunning)
+    messagesRef.current = messages
+    setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
+    setAgentError(current.last_error ?? '')
+    rebuildTurns()
+  }, [rebuildTurns])
+
+  // Full polling refresh (fallback path when SSE is unavailable): also fetches
+  // events and folds them, replicating the original single-loop behavior.
+  const runRefresh = React.useCallback(async (session: AgentSession) => {
+    if (agentEventCursorRef.current.sessionId !== session.id) {
+      resetSessionState(session.id)
+    }
+    const [current, messages, confirmations, events] = await Promise.all([
+      agentSessionsRepo.get(session.id),
+      agentSessionsRepo.messages(session.id),
+      agentSessionsRepo.confirmations(session.id),
+      agentSessionsRepo.events(session.id, agentEventCursorRef.current.afterId),
+    ])
+    setAgentSession(current)
+    const isRunning = current.status === 'queued' || current.status === 'running'
+    isRunningRef.current = isRunning
+    setStreaming(isRunning)
+    messagesRef.current = messages
+    setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
+    setAgentError(current.last_error ?? '')
+    if (events.length) {
+      agentEventCursorRef.current.afterId = events.at(-1)!.id
+      for (const ev of events) foldEvent(ev)
+    }
+    rebuildTurns()
+  }, [resetSessionState, foldEvent, rebuildTurns])
 
   const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
     if (refreshInFlightRef.current) return
@@ -307,41 +356,99 @@ export default function WorkbenchPage() {
     }
   }, [runRefresh])
 
-  // Dynamic polling: a SINGLE self-scheduling loop. The interval is read from a
-  // ref each tick so the cadence adapts to streaming state without ever spawning
-  // a second concurrent loop (which would double-apply events and duplicate text).
-  const pollTimerRef = React.useRef<number | undefined>(undefined)
+  // After a user action (send / confirm): when SSE is live only refresh metadata
+  // (the stream delivers events — fetching them here would double-fold); when SSE
+  // has fallen back to polling, do a full refresh that also folds events.
+  const sseFailedRef = React.useRef(false)
+  const refreshAfterAction = React.useCallback(async (session: AgentSession) => {
+    if (sseFailedRef.current) await refreshAgentSession(session)
+    else await refreshMeta(session)
+  }, [refreshAgentSession, refreshMeta])
+
+  // The active session, once resolved, drives both SSE and fallback polling.
+  const [activeSession, setActiveSession] = React.useState<AgentSession | null>(null)
+  const [sseFailed, setSseFailed] = React.useState(false)
+  React.useEffect(() => { sseFailedRef.current = sseFailed }, [sseFailed])
   const pollSessionRef = React.useRef<AgentSession | null>(null)
   const streamingRef = React.useRef(false)
   React.useEffect(() => { streamingRef.current = streaming }, [streaming])
 
+  // Resolve (or create) the session for this scene, then prime initial state.
   React.useEffect(() => {
     if (!sceneId) return
     let cancelled = false
-    const poll = () => {
-      if (cancelled || !pollSessionRef.current) return
-      refreshAgentSession(pollSessionRef.current).catch(() => {})
-      pollTimerRef.current = window.setTimeout(poll, streamingRef.current ? 500 : 1500)
-    }
     const start = async () => {
       try {
         const sessions = await agentSessionsRepo.list(sceneId)
         const session = sessions[0] ?? await agentSessionsRepo.create(sceneId, `${sceneName} Agent`)
         if (cancelled) return
         pollSessionRef.current = session
+        resetSessionState(session.id)
+        // Prime events once so history before the SSE connection is present.
+        // Only then activate SSE — it resumes from the primed cursor, so the
+        // initial fetch's events are never re-delivered (no duplicate text).
         await refreshAgentSession(session)
         if (cancelled) return
-        pollTimerRef.current = window.setTimeout(poll, streamingRef.current ? 500 : 1500)
+        setActiveSession(session)
       } catch {
         if (!cancelled) setAgentError('Agent session service is unavailable.')
       }
     }
     start()
+    return () => { cancelled = true }
+  }, [sceneId, refreshAgentSession, resetSessionState])
+
+  // SSE: real-time event stream. Folds activity events immediately; for meta
+  // events (status/message/confirmation changes) it triggers a metadata refresh.
+  const handleSseEvent = React.useCallback((ev: AgentEvent) => {
+    if (ev.id && ev.id > agentEventCursorRef.current.afterId) {
+      agentEventCursorRef.current.afterId = ev.id
+    }
+    const folded = foldEvent(ev)
+    if (folded) {
+      rebuildTurns()
+    }
+    if (isMetaEvent(ev.type)) {
+      const session = pollSessionRef.current
+      if (session) refreshMeta(session).catch(() => {})
+    }
+  }, [foldEvent, rebuildTurns, refreshMeta])
+
+  useAgentEventSource({
+    sessionId: sseFailed ? null : activeSession?.id ?? null,
+    onEvent: handleSseEvent,
+    onError: () => setSseFailed(true),
+    enabled: !sseFailed,
+    initialCursor: agentEventCursorRef.current.afterId,
+  })
+
+  // Lightweight safety-net refresh while SSE is active: catches any meta drift
+  // (e.g. a status event missed during a reconnect gap). Cheap — no events fetch.
+  React.useEffect(() => {
+    if (sseFailed || !activeSession) return
+    const id = window.setInterval(() => {
+      if (pollSessionRef.current) refreshMeta(pollSessionRef.current).catch(() => {})
+    }, 5000)
+    return () => window.clearInterval(id)
+  }, [sseFailed, activeSession, refreshMeta])
+
+  // Fallback polling loop: only runs if SSE failed. Mirrors the original
+  // self-scheduling single loop with adaptive cadence.
+  React.useEffect(() => {
+    if (!sseFailed || !activeSession) return
+    let cancelled = false
+    let timer: number | undefined
+    const poll = () => {
+      if (cancelled || !pollSessionRef.current) return
+      refreshAgentSession(pollSessionRef.current).catch(() => {})
+      timer = window.setTimeout(poll, streamingRef.current ? 500 : 1500)
+    }
+    poll()
     return () => {
       cancelled = true
-      if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
+      if (timer) window.clearTimeout(timer)
     }
-  }, [sceneId, refreshAgentSession])
+  }, [sseFailed, activeSession, refreshAgentSession])
 
   const refreshSceneFiles = React.useCallback(async () => {
     const next = await workbenchRepo.listFiles(sceneId || undefined)
@@ -435,7 +542,7 @@ export default function WorkbenchPage() {
       setStreaming(true)
       setAgentError('')
       const result = await agentSessionsRepo.send(agentSession.id, text + attachmentContext)
-      await refreshAgentSession(result.session)
+      await refreshAfterAction(result.session)
     } catch {
       setStreaming(false)
       setAgentError('Could not send the message. The session may still be busy.')
@@ -447,7 +554,7 @@ export default function WorkbenchPage() {
     try {
       const result = await agentSessionsRepo.resolveConfirmation(agentSession.id, pendingConfirmation.id, approved)
       setPendingConfirmation(null)
-      await refreshAgentSession(result.session)
+      await refreshAfterAction(result.session)
     } catch {
       setAgentError('Could not resolve the Agent confirmation.')
     }
