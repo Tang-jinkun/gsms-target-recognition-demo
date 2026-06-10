@@ -6,19 +6,20 @@ import { dataCardSchema, type DataCard } from '../src/domain/schemas.ts'
 
 const sampleCard: DataCard = {
   assetId: 'asset-1',
+  path: 'data/lulc_current.tif',
   filename: 'lulc_current.tif',
   assetType: 'raster',
   semanticHints: ['lulc', 'current', 'landuse'],
-  provenance: { fingerprint: 'abc123' },
-  tabular: null,
+  provenance: { source: 'user-local', fingerprint: 'abc123' },
 }
 
 const sampleCard2: DataCard = {
   assetId: 'asset-2',
+  path: 'data/carbon_pools.csv',
   filename: 'carbon_pools.csv',
   assetType: 'csv',
   semanticHints: ['carbon', 'pools'],
-  provenance: { fingerprint: 'def456' },
+  provenance: { source: 'user-local', fingerprint: 'def456' },
   tabular: { fields: [{ name: 'lucode' }, { name: 'c_above' }] },
 }
 
@@ -86,7 +87,7 @@ test('data-card artifacts survive model switch in artifact store', () => {
   const found = artifacts.list('data-card').filter(a => a.metadata?.sceneDataContextId === sceneDataContextId)
   assert.equal(found.length, 2, 'both data cards found by sceneDataContextId')
   assert.deepEqual(
-    found.map(a => a.data.assetId).sort(),
+    found.map(a => (a.data as DataCard).assetId).sort(),
     ['asset-1', 'asset-2'],
   )
 })

@@ -926,7 +926,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
 
           let adapted
           try {
-            adapted = adaptGsmsModelSchema(rawModels.find((m: any) => m.id === model.id))
+            adapted = adaptGsmsModelSchema((rawModels as Array<{ id: string }>).find(m => m.id === model.id))
           } catch {
             assessments.push({
               modelId: model.id,

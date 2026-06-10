@@ -8,7 +8,15 @@ import { buildTool } from '../src/tools/buildTool.ts'
 function makeContext(): AgentContext {
   return {
     workspace: '/tmp/test',
-    goal: { status: 'running', progress: 0 },
+    goal: {
+      objective: 'test',
+      status: 'active',
+      turnCount: 0,
+      maxTurns: 10,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: '2026-01-01T00:00:00.000Z',
+    },
     artifacts: new ArtifactStore(),
     domainState: new DomainStateStore(),
   }
