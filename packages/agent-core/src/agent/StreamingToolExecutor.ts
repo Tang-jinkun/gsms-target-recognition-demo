@@ -55,7 +55,9 @@ export class StreamingToolExecutor {
   private discarded = false
   private progressAvailableResolve?: () => void
   private readonly diagnostics: Diagnostic[] = []
-  private pendingProcess?: Promise<void>
+  private processQueueRunning = false
+  private processQueueDone: Promise<void> = Promise.resolve()
+  private resolveProcessQueueDone?: () => void
 
   constructor(
     private readonly toolRegistry: ToolRegistry,
@@ -96,9 +98,14 @@ export class StreamingToolExecutor {
       pendingProgress: [],
     })
 
-    this.pendingProcess = this.processQueue().finally(() => {
-      this.pendingProcess = undefined
-    })
+    // Start processing if not already running.
+    if (!this.processQueueRunning) {
+      this.processQueueRunning = true
+      this.processQueueDone = new Promise<void>(resolve => {
+        this.resolveProcessQueueDone = resolve
+      })
+      void this.processQueue()
+    }
   }
 
   /**
@@ -108,8 +115,8 @@ export class StreamingToolExecutor {
    * continuing to the next turn.
    */
   async flush(): Promise<void> {
-    while (this.pendingProcess) {
-      await this.pendingProcess
+    while (this.processQueueRunning) {
+      await this.processQueueDone
     }
   }
 
@@ -122,18 +129,58 @@ export class StreamingToolExecutor {
   }
 
   private async processQueue(): Promise<void> {
-    for (const tool of this.tools) {
-      if (tool.status !== 'queued') continue
+    try {
+      let i = 0
+      while (i < this.tools.length) {
+        const tool = this.tools[i]
+        if (!tool || tool.status !== 'queued') { i++; continue }
 
-      if (this.canExecuteTool(tool.isConcurrencySafe)) {
-        await this.executeTool(tool)
-      } else {
-        if (!tool.isConcurrencySafe) break
+        // Stop processing if a previous tool deferred permission — the run
+        // is now blocked and remaining tools must not execute.
+        // Mark remaining queued tools as completed with cancellation so
+        // getCompletedResults() can yield them and transition to 'yielded'.
+        if (this.context.goal.status === 'blocked') {
+          for (const remaining of this.tools.slice(i)) {
+            if (remaining.status === 'queued') {
+              remaining.status = 'completed'
+              remaining.results = [{
+                role: 'tool',
+                toolCallId: remaining.call.id,
+                content: 'Cancelled: run is blocked pending user confirmation',
+                isError: true,
+              }]
+            }
+          }
+          break
+        }
+
+        if (this.canExecuteTool(tool.isConcurrencySafe)) {
+          await this.executeTrackedTool(tool)
+        } else {
+          if (!tool.isConcurrencySafe) break
+          i++
+        }
       }
+    } finally {
+      this.processQueueRunning = false
+      this.resolveProcessQueueDone?.()
     }
   }
 
-  private async executeTool(tracked: TrackedTool): Promise<void> {
+  private async executeTrackedTool(tracked: TrackedTool): Promise<void> {
+    // Don't start executing if the run is already blocked (e.g. a sibling
+    // tool deferred permission).
+    if (this.context.goal.status === 'blocked') {
+      tracked.status = 'completed'
+      tracked.results = [{
+        role: 'tool',
+        toolCallId: tracked.call.id,
+        content: 'Cancelled: run is blocked pending user confirmation',
+        isError: true,
+      }]
+      return
+    }
+
     tracked.status = 'executing'
 
     const collectResults = async () => {
@@ -198,6 +245,9 @@ export class StreamingToolExecutor {
           if (decision === 'defer') {
             this.context.goal.status = 'blocked'
             this.context.goal.remainingIssues = [`Awaiting user confirmation for ${tool.name}`]
+            // Abort sibling tools — the run is blocked, no further tools
+            // should produce side-effects.
+            this.siblingAbortController.abort('permission_deferred')
             messages.push({
               role: 'tool',
               toolCallId: tracked.call.id,
@@ -436,7 +486,6 @@ export class StreamingToolExecutor {
     const promise = collectResults()
     tracked.promise = promise
     await promise
-    void this.processQueue()
   }
 
   /**

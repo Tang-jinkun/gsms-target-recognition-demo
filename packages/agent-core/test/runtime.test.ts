@@ -532,3 +532,257 @@ test('runtime emits auditable action events without exposing sensitive tool inpu
   assert.equal(input.apiKey, '[redacted]')
   assert.equal(events.at(-1)?.eventType, 'run.completed')
 })
+
+// ── P0 Regression Tests ──────────────────────────────────────────────────────
+// These tests guard the runtime execution contract fixed in
+// fix/runtime-execution-contract.  See docs/suggestion0609.md for context.
+
+test('P0: hidden tool cannot execute even if model guesses its name', async () => {
+  // The model asks for 'secret_admin' which is registered but filtered out by
+  // toolFilter.  The executor must re-check visibility at execution time and
+  // deny it — even though the tool exists in the registry.
+  let secretExecuted = false
+  const secretTool: AgentTool = {
+    name: 'secret_admin',
+    description: 'Admin-only tool',
+    risk: 'execute',
+    inputSchema: { type: 'object' },
+    async execute() {
+      secretExecuted = true
+      return { content: 'admin action taken' }
+    },
+  }
+  const model = new FakeModelAdapter([
+    // Model guesses the hidden tool name
+    { content: '', toolCalls: [{ id: '1', name: 'secret_admin', input: {} }] },
+    // Then finishes
+    { content: '', toolCalls: [{ id: '2', name: 'finish', input: { status: 'blocked', summary: 'Hidden tool unavailable', remainingIssues: [] } }] },
+  ])
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([secretTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    toolFilter: tool => tool.name === 'finish',  // only finish is visible
+  }).run('Try to guess the hidden tool')
+
+  assert.equal(secretExecuted, false, 'Hidden tool must not execute')
+  assert.ok(
+    result.messages.some(m => m.role === 'tool' && m.content.includes('not available')),
+    'Tool result should indicate the tool is not available',
+  )
+})
+
+test('P0: skill activation restricts tool scope for subsequent turns', async () => {
+  // The read-only skill allows only read_file.  After activation, write_file
+  // must be denied by the executor's toolGuard even though permissions allow it.
+  const skills = new SkillRegistry()
+  skills.replace([{
+    name: 'read-only',
+    description: 'Read-only inspection',
+    instructions: 'Only inspect files.',
+    source: 'user',
+    allowedTools: ['read_file'],
+    userInvocable: true,
+    modelInvocable: true,
+    execution: 'inline',
+  }])
+
+  let writeFileExecuted = false
+  const guardedWriteFile: AgentTool = {
+    ...writeFileTool,
+    async execute(input, context) {
+      writeFileExecuted = true
+      return writeFileTool.execute(input, context)
+    },
+  }
+
+  const model = new FakeModelAdapter([
+    // Turn 1: activate the skill
+    { content: '', toolCalls: [{ id: '1', name: 'skill', input: { skill: 'read-only' } }] },
+    // Turn 2: try to write (outside skill scope)
+    { content: '', toolCalls: [{ id: '2', name: 'write_file', input: { path: 'x.txt', content: 'bad' } }] },
+    // Turn 3: finish
+    { content: '', toolCalls: [{ id: '3', name: 'finish', input: { status: 'blocked', summary: 'Write denied by skill scope', remainingIssues: [] } }] },
+  ])
+
+  const tools = new ToolRegistry([readFileTool, guardedWriteFile, finishTool])
+  tools.register(createSkillAgentTool(new SkillTool(skills), {
+    availableTools: () => ['read_file', 'write_file'],
+  }))
+
+  const result = await new AgentRuntime({
+    model,
+    tools,
+    skills,
+    workspace: process.cwd(),
+    permissions: new PermissionManager({ approve: () => 'allow' }),
+  }).run('Inspect files with read-only skill')
+
+  assert.equal(writeFileExecuted, false, 'write_file must be denied after skill activation')
+  assert.ok(
+    result.messages.some(m => m.role === 'tool' && m.content.includes('not available')),
+    'Tool result should indicate write_file is not available in current scope',
+  )
+})
+
+test('P0: tool diagnostics appear in final run result', async () => {
+  // A tool that returns diagnostics — they must appear in result.diagnostics.
+  const diagnosticTool: AgentTool = {
+    name: 'check_data',
+    description: 'Check data quality',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return {
+        content: 'Data check complete',
+        diagnostics: [
+          { code: 'MISSING_CRS', message: 'CRS metadata is missing', severity: 'warning' as const },
+          { code: 'LOW_COVERAGE', message: 'Only 60% spatial coverage', severity: 'info' as const },
+        ],
+      }
+    },
+  }
+
+  const model = new FakeModelAdapter([
+    { content: '', toolCalls: [{ id: '1', name: 'check_data', input: {} }] },
+    { content: '', toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Checked data', evidence: ['check_data result'] } }] },
+  ])
+
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([diagnosticTool, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+  }).run('Check data quality')
+
+  assert.equal(result.goal.status, 'completed')
+  const codes = result.diagnostics.map(d => d.code)
+  assert.ok(codes.includes('MISSING_CRS'), 'MISSING_CRS diagnostic should be present')
+  assert.ok(codes.includes('LOW_COVERAGE'), 'LOW_COVERAGE diagnostic should be present')
+  assert.ok(
+    result.transcript.some(e => e.type === 'diagnostic'),
+    'Transcript should record diagnostic events',
+  )
+})
+
+test('P0: two state-mutating read tools do not execute concurrently', async () => {
+  // Both tools are risk:'read' but mutate domain state.  If they ran
+  // concurrently the state patches would race.  The executor must run them
+  // sequentially because isConcurrencySafe defaults to false.
+  const executionOrder: string[] = []
+  const stateSnapshot = () => JSON.stringify(result?.domainState ?? {})
+
+  let result: Awaited<ReturnType<AgentRuntime['run']>> | undefined
+
+  const toolA: AgentTool = {
+    name: 'set_model',
+    description: 'Set the active model',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      executionOrder.push('set_model:start')
+      await new Promise(resolve => setTimeout(resolve, 10))
+      executionOrder.push('set_model:end')
+      return { content: 'Model set', statePatch: { modelId: 'carbon' } }
+    },
+  }
+  const toolB: AgentTool = {
+    name: 'set_scene',
+    description: 'Set the active scene',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      executionOrder.push('set_scene:start')
+      await new Promise(resolve => setTimeout(resolve, 10))
+      executionOrder.push('set_scene:end')
+      return { content: 'Scene set', statePatch: { sceneId: 'scene-1' } }
+    },
+  }
+
+  const model = new FakeModelAdapter([
+    // Both tools in one turn — must NOT run concurrently
+    { content: '', toolCalls: [
+      { id: '1', name: 'set_model', input: {} },
+      { id: '2', name: 'set_scene', input: {} },
+    ]},
+    { content: '', toolCalls: [{ id: '3', name: 'finish', input: { summary: 'Done', evidence: ['set_model', 'set_scene'] } }] },
+  ])
+
+  result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([toolA, toolB, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+  }).run('Set model and scene')
+
+  assert.equal(result.goal.status, 'completed')
+  // Verify sequential execution: A fully finishes before B starts
+  assert.deepEqual(executionOrder, [
+    'set_model:start', 'set_model:end',
+    'set_scene:start', 'set_scene:end',
+  ], 'State-mutating read tools must execute sequentially, not concurrently')
+  // Both state patches should be applied (no race)
+  assert.deepEqual(result.domainState, { modelId: 'carbon', sceneId: 'scene-1' })
+})
+
+test('P0: permission deferred stops remaining tools from producing side-effects', async () => {
+  // Tool A is auto-approved, tool B requires approval (deferred).  After B is
+  // deferred the run pauses — tool C must NOT execute.
+  let toolCExecuted = false
+
+  const toolA: AgentTool = {
+    name: 'safe_read',
+    description: 'Safe read',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: 'Read OK', artifacts: [{ id: 'read-card', type: 'data-card', createdBy: 'tool' as const, data: {} }] }
+    },
+  }
+  const toolB: AgentTool = {
+    name: 'needs_approval',
+    description: 'Needs approval',
+    risk: 'write',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: 'Should not reach here' }
+    },
+  }
+  const toolC: AgentTool = {
+    name: 'after_approval',
+    description: 'Runs after approval',
+    risk: 'write',
+    inputSchema: { type: 'object' },
+    async execute() {
+      toolCExecuted = true
+      return { content: 'Side effect happened' }
+    },
+  }
+
+  const model = new FakeModelAdapter([
+    // Three tools in one turn — B will be deferred, C must not run
+    { content: '', toolCalls: [
+      { id: '1', name: 'safe_read', input: {} },
+      { id: '2', name: 'needs_approval', input: {} },
+      { id: '3', name: 'after_approval', input: {} },
+    ]},
+  ])
+
+  const result = await new AgentRuntime({
+    model,
+    tools: new ToolRegistry([toolA, toolB, toolC, finishTool]),
+    skills: new SkillRegistry(),
+    workspace: process.cwd(),
+    permissions: new PermissionManager({
+      approve: (tool) => tool.name === 'needs_approval' ? 'defer' : 'allow',
+    }),
+  }).run('Do something that needs approval')
+
+  assert.equal(result.goal.status, 'blocked')
+  assert.equal(toolCExecuted, false, 'Tool C must not execute after B is deferred')
+  assert.ok(
+    result.messages.some(m => m.role === 'tool' && m.content.includes('Permission deferred')),
+    'Should see deferred message for tool B',
+  )
+})
