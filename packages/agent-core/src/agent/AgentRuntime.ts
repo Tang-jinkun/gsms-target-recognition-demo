@@ -10,6 +10,7 @@ import type {
   AgentActionEvent,
   AgentMessage,
   AgentRunResult,
+  AgentTool,
   ArtifactRepository,
   Diagnostic,
   DomainState,
@@ -76,6 +77,8 @@ export class AgentRuntime {
     let noProgressCount = 0
     const maxNoProgressSteer = 2   // inject steering after this many no-progress turns
     const maxNoProgressStop = 4    // force stop after this many no-progress turns
+    let failedToolName: string | undefined
+    let failedToolCount = 0
     await this.#emit({
       runId,
       turn: 0,
@@ -89,6 +92,7 @@ export class AgentRuntime {
       this.options.signal?.throwIfAborted()
       goal.turnCount++
       const artifactCountBefore = artifacts.list().length
+      const canonicalStateBefore = canonical(domainState.snapshot())
 
       const visibleTools = this.#visibleToolDefinitions(context)
       const modelRequest = {
@@ -97,14 +101,24 @@ export class AgentRuntime {
         signal: this.options.signal,
       }
 
-      // Create executor for this turn
+      // Create executor for this turn.
+      // toolGuard re-checks visibility (skillScope + toolFilter) AND permissions
+      // at execution time — this is the enforcement that prevents hidden tools
+      // from being executed even if the model guesses their names.
+      const toolGuard = {
+        check: async (tool: AgentTool, input: unknown, ctx: AgentContext): Promise<'allow' | 'deny' | 'defer'> => {
+          if (!this.#isToolVisible(tool, ctx)) return 'deny'
+          return this.#permissions.check(tool, input, ctx)
+        },
+      }
       const executor = new StreamingToolExecutor(
         this.options.tools,
         context,
         this.options.eventSink,
         runId,
         goal.turnCount,
-        this.#permissions,
+        toolGuard,
+        transcript,
         this.options.signal,
       )
 
@@ -141,14 +155,6 @@ export class AgentRuntime {
       messages.push(assistant)
       transcript.record('message', assistant)
 
-      // In non-streaming mode, register tools after model.responded event
-      // (streaming mode already registered them during #streamWithExecutor)
-      if (!this.options.model.completeStreaming) {
-        for (const call of response.toolCalls ?? []) {
-          executor.addTool(call)
-        }
-      }
-
       if (!response.toolCalls?.length) {
         toolCallHistory.length = 0
         messages.push({
@@ -159,7 +165,8 @@ export class AgentRuntime {
         continue
       }
 
-      // Loop detection
+      // Loop detection — MUST happen before tool execution to prevent
+      // the triggering call from executing.
       const toolCallSignature = canonicalToolCalls(response.toolCalls)
       toolCallHistory.push(toolCallSignature)
       const maxRepeatedToolCalls = this.options.maxRepeatedToolCalls ?? 4
@@ -187,12 +194,24 @@ export class AgentRuntime {
         break
       }
 
-      // Collect tool results from executor
-      // Filter out hidden progress messages — they must not appear between
-      // an assistant message with tool_calls and its tool result messages,
-      // as the OpenAI-compatible API requires tool messages to directly follow.
+      // Register tools AFTER loop detection.
+      // In non-streaming mode, register and execute tools now.
+      // In streaming mode, tools were already registered during #streamWithExecutor.
+      if (!this.options.model.completeStreaming) {
+        for (const call of response.toolCalls) {
+          executor.addTool(call)
+        }
+        await executor.flush()
+      }
+
+      // Collect tool results from executor.
+      // Hidden messages (skill instructions, progress) are collected
+      // separately and pushed AFTER all tool results, so they don't
+      // interleave between assistant/tool message pairs.
+      const pendingHiddenMessages: AgentMessage[] = []
       for (const msg of executor.getCompletedResults()) {
-        if (msg.hidden) {
+        if ('hidden' in msg && msg.hidden) {
+          pendingHiddenMessages.push(msg)
           transcript.record('message', msg)
           continue
         }
@@ -202,7 +221,8 @@ export class AgentRuntime {
 
       // Wait for remaining tools
       for await (const msg of executor.getRemainingResults()) {
-        if (msg.hidden) {
+        if ('hidden' in msg && msg.hidden) {
+          pendingHiddenMessages.push(msg)
           transcript.record('message', msg)
           continue
         }
@@ -210,32 +230,90 @@ export class AgentRuntime {
         if (msg.role === 'tool') transcript.record('tool_result', msg)
       }
 
+      // Push hidden messages after all tool results
+      messages.push(...pendingHiddenMessages)
+
       // Check if blocked (permission deferred)
       if (executor.hasBlockedOnPermission()) {
         break
       }
 
-      // Tool failure tracking
-      const toolResults = messages.filter(m => m.role === 'tool' && m.toolCallId)
-      const lastToolResult = toolResults[toolResults.length - 1]
-      if (lastToolResult?.isError) {
-        const failedCall = response.toolCalls.find(c => c.id === lastToolResult.toolCallId)
-        if (failedCall) {
-          const diagnostic: Diagnostic = {
-            code: 'AGENT_TOOL_FAILURE',
-            message: `Tool ${failedCall.name} failed: ${summarizeText(lastToolResult.content)}`,
-            severity: 'error',
+      // Merge diagnostics collected by the executor (from tool result.diagnostics)
+      if (executor.collectedDiagnostics.length > 0) {
+        diagnostics.push(...executor.collectedDiagnostics)
+      }
+
+      // Per-tool failure loop detection: if the same tool fails 3 consecutive
+      // times without producing new artifacts or state changes, stop the run.
+      // This is a strict guard against a tool that is fundamentally broken.
+      {
+        let toolFailedWithoutProgress = false
+        for (const call of response.toolCalls) {
+          const toolResult = [...messages].reverse().find(
+            m => m.role === 'tool' && m.toolCallId === call.id,
+          )
+          if (toolResult?.role !== 'tool' || !toolResult.isError) {
+            // Successful tool — reset per-tool failure counter
+            failedToolName = undefined
+            failedToolCount = 0
+            continue
           }
-          diagnostics.push(diagnostic)
-          transcript.record('diagnostic', diagnostic)
+          // Tool failed — check if it produced any side-effects
+          const madeProgress =
+            artifacts.list().length > artifactCountBefore ||
+            canonical(domainState.snapshot()) !== canonicalStateBefore
+          if (madeProgress) {
+            failedToolName = undefined
+            failedToolCount = 0
+            continue
+          }
+          if (failedToolName === call.name) {
+            failedToolCount++
+          } else {
+            failedToolName = call.name
+            failedToolCount = 1
+          }
+          if (failedToolCount >= 3) {
+            const diagnostic: Diagnostic = {
+              code: 'AGENT_TOOL_FAILURE_LOOP',
+              message: `Tool ${call.name} failed ${failedToolCount} consecutive times without producing progress. Last error: ${summarizeText(toolResult.content)}`,
+              severity: 'error',
+            }
+            diagnostics.push(diagnostic)
+            transcript.record('diagnostic', diagnostic)
+            await this.#emit({
+              runId,
+              turn: goal.turnCount,
+              eventType: 'diagnostic.created',
+              summary: diagnostic.message,
+              status: 'failed',
+              data: { code: diagnostic.code, tool: call.name, failedToolCount },
+              timestamp: new Date().toISOString(),
+            })
+            goal.status = 'failed'
+            goal.remainingIssues.push(diagnostic.message)
+            toolFailedWithoutProgress = true
+            break
+          }
         }
+        if (toolFailedWithoutProgress) break
       }
 
       // Diminishing-returns detection: if no new artifacts were created this
-      // turn, the agent is likely looping without progress.  After
-      // maxNoProgressSteer consecutive no-progress turns, inject a steering
+      // turn AND at least one tool failed, the agent is likely stuck.
+      // After maxNoProgressSteer consecutive stuck turns, inject a steering
       // message; after maxNoProgressStop, force-stop the run.
-      if (artifacts.list().length === artifactCountBefore) {
+      //
+      // Note: successful tool calls that don't create artifacts (e.g.
+      // read_file, write_file) are NOT counted as "no progress" — the agent
+      // made progress by successfully executing a tool.  Only failures
+      // without side-effects count toward the diminishing-returns counter.
+      const lastToolResult = [...messages].reverse().find(
+        m => m.role === 'tool' && m.toolCallId,
+      )
+      const lastToolFailed = lastToolResult?.role === 'tool' && lastToolResult.isError
+      const noNewArtifacts = artifacts.list().length === artifactCountBefore
+      if (lastToolFailed && noNewArtifacts) {
         noProgressCount++
         if (noProgressCount === maxNoProgressSteer) {
           messages.push({
@@ -248,7 +326,7 @@ export class AgentRuntime {
         if (noProgressCount >= maxNoProgressStop) {
           const diagnostic: Diagnostic = {
             code: 'AGENT_NO_PROGRESS',
-            message: `Agent produced no new artifacts for ${noProgressCount} consecutive turns — stopping.`,
+            message: `Agent produced no new artifacts for ${noProgressCount} consecutive failing turns — stopping.`,
             severity: 'error',
           }
           diagnostics.push(diagnostic)
@@ -333,7 +411,7 @@ export class AgentRuntime {
    * Streaming mode: process model stream and start executing tools as they arrive.
    */
   async #streamWithExecutor(
-    request: { messages: readonly AgentMessage[]; tools: readonly ReturnType<ToolRegistry['list']>[number][]; signal?: AbortSignal },
+    request: { messages: readonly AgentMessage[]; tools: readonly { name: string; description: string; inputSchema: Record<string, unknown> }[]; signal?: AbortSignal },
     executor: StreamingToolExecutor,
     runId: string,
     turn: number,

@@ -5,10 +5,12 @@ import type {
   AgentMessage,
   AgentTool,
   AgentToolResult,
+  Diagnostic,
   ToolCall,
   ToolProgressEvent,
 } from '../types.ts'
 import type { ToolRegistry } from '../tools/ToolRegistry.ts'
+import type { Transcript } from '../transcript/Transcript.ts'
 
 type ToolStatus = 'queued' | 'executing' | 'completed' | 'yielded'
 
@@ -24,14 +26,24 @@ interface TrackedTool {
 
 export interface ToolExecutorResult {
   messages: AgentMessage[]
-  diagnostics: Array<{ code: string; message: string; severity: string }>
+  diagnostics: Diagnostic[]
 }
 
 /**
  * Executes tools as they stream in with concurrency control.
- * - Concurrent-safe tools (risk: 'read') can execute in parallel
- * - Non-concurrent tools (risk: 'write'/'execute') must execute alone
- * - Results are buffered and emitted in the order tools were received
+ *
+ * Runtime contract — every tool execution passes through `toolGuard`, which
+ * re-checks tool visibility (skillScope, toolFilter) AND permissions at
+ * execution time, not just at advertisement time.  This prevents the model
+ * from executing hidden tools even if it guesses their names.
+ *
+ * Concurrency rules:
+ * - Tools with `isConcurrencySafe === true` may execute in parallel.
+ * - All other tools must execute alone (no concurrent tools at all).
+ * - `isConcurrencySafe` is an explicit opt-in on the AgentTool interface;
+ *   it is NOT derived from `risk`.
+ *
+ * Results are buffered and yielded in tool-registration order.
  *
  * Ported from Claude Code's StreamingToolExecutor.
  */
@@ -42,6 +54,8 @@ export class StreamingToolExecutor {
   private siblingAbortController: AbortController
   private discarded = false
   private progressAvailableResolve?: () => void
+  private readonly diagnostics: Diagnostic[] = []
+  private pendingProcess?: Promise<void>
 
   constructor(
     private readonly toolRegistry: ToolRegistry,
@@ -49,9 +63,10 @@ export class StreamingToolExecutor {
     private readonly eventSink?: AgentEventSink,
     private readonly runId = '',
     private readonly turn = 0,
-    private readonly permissions?: {
+    private readonly toolGuard?: {
       check: (tool: AgentTool, input: unknown, context: AgentContext) => Promise<'allow' | 'deny' | 'defer'>
     },
+    private readonly transcript?: Transcript,
     parentSignal?: AbortSignal,
   ) {
     this.siblingAbortController = new AbortController()
@@ -71,7 +86,7 @@ export class StreamingToolExecutor {
    */
   addTool(call: ToolCall): void {
     const tool = this.toolRegistry.resolve(call.name)
-    const isConcurrencySafe = tool?.risk === 'read'
+    const isConcurrencySafe = tool?.isConcurrencySafe === true
 
     this.tools.push({
       call,
@@ -81,7 +96,21 @@ export class StreamingToolExecutor {
       pendingProgress: [],
     })
 
-    void this.processQueue()
+    this.pendingProcess = this.processQueue().finally(() => {
+      this.pendingProcess = undefined
+    })
+  }
+
+  /**
+   * Wait for all pending tool executions to complete.
+   * In non-streaming mode, call this after addTool() to ensure all tools
+   * have finished and their results are in the messages array before
+   * continuing to the next turn.
+   */
+  async flush(): Promise<void> {
+    while (this.pendingProcess) {
+      await this.pendingProcess
+    }
   }
 
   private canExecuteTool(isConcurrencySafe: boolean): boolean {
@@ -145,6 +174,9 @@ export class StreamingToolExecutor {
       const tool = tracked.tool
       const startedAt = Date.now()
 
+      // Record tool call in transcript for audit trail
+      this.transcript?.record('tool_call', tracked.call)
+
       await this.emit({
         runId: this.runId,
         turn: this.turn,
@@ -152,14 +184,17 @@ export class StreamingToolExecutor {
         summary: `Started ${tracked.call.name}`,
         status: 'started',
         toolCallId: tracked.call.id,
-        data: { tool: tracked.call.name },
+        data: { tool: tracked.call.name, input: sanitizeForEvent(tracked.call.input) },
         timestamp: new Date().toISOString(),
       })
 
       try {
-        // Check permissions
-        if (this.permissions) {
-          const decision = await this.permissions.check(tool, tracked.call.input, this.context)
+        // ── Runtime contract: visibility + permission guard ──────────────
+        // Re-check tool visibility (skillScope, toolFilter) AND permissions
+        // at execution time.  This is the enforcement that prevents hidden
+        // tools from being executed even if the model guesses their names.
+        if (this.toolGuard) {
+          const decision = await this.toolGuard.check(tool, tracked.call.input, this.context)
           if (decision === 'defer') {
             this.context.goal.status = 'blocked'
             this.context.goal.remainingIssues = [`Awaiting user confirmation for ${tool.name}`]
@@ -184,19 +219,29 @@ export class StreamingToolExecutor {
             tracked.status = 'completed'
             return
           }
-          if (decision !== 'deny') {
-            // 'allow' — proceed
-          } else {
+          if (decision === 'deny') {
             messages.push({
               role: 'tool',
               toolCallId: tracked.call.id,
-              content: `Permission denied: ${tool.name}`,
+              content: `Tool not available: ${tool.name} is not permitted in the current workflow phase or skill scope.`,
               isError: true,
+            })
+            await this.emit({
+              runId: this.runId,
+              turn: this.turn,
+              eventType: 'tool.failed',
+              summary: `Denied ${tracked.call.name} — not visible in current scope`,
+              status: 'failed',
+              toolCallId: tracked.call.id,
+              data: { tool: tool.name, reason: 'visibility_denied' },
+              durationMs: Date.now() - startedAt,
+              timestamp: new Date().toISOString(),
             })
             tracked.results = messages
             tracked.status = 'completed'
             return
           }
+          // 'allow' — proceed
         }
 
         // Execute tool with onProgress callback
@@ -236,7 +281,7 @@ export class StreamingToolExecutor {
           const persisted = this.context.artifacts.create({
             id: artifactId,
             type: 'tool-result',
-            createdBy: tool.name,
+            createdBy: 'tool' as const,
             data: { tool: tool.name, input: tracked.call.input, fullContent: result.content },
           })
           await this.emit({
@@ -252,7 +297,9 @@ export class StreamingToolExecutor {
           result.content = `${truncated}\n\n[Full result persisted as artifact "${artifactId}" (${result.content.length} chars). Use get_artifact to retrieve if needed.]`
         }
 
-        // Process result
+        // ── Process result ──────────────────────────────────────────────
+
+        // Artifacts
         if (result.artifacts?.length) {
           const created = this.context.artifacts.createMany(result.artifacts)
           for (const artifact of created) {
@@ -265,8 +312,15 @@ export class StreamingToolExecutor {
               data: { artifactId: artifact.id, artifactType: artifact.type },
               timestamp: new Date().toISOString(),
             })
+            this.transcript?.record('artifact', {
+              action: 'created',
+              id: artifact.id,
+              type: artifact.type,
+            })
           }
         }
+
+        // Domain state
         if (result.statePatch) {
           const state = this.context.domainState.applyPatch(result.statePatch)
           await this.emit({
@@ -278,8 +332,52 @@ export class StreamingToolExecutor {
             data: { patch: result.statePatch },
             timestamp: new Date().toISOString(),
           })
+          this.transcript?.record('state', {
+            action: 'patched',
+            patch: result.statePatch,
+          })
         }
+
+        // Goal
         if (result.goalUpdate) Object.assign(this.context.goal, result.goalUpdate)
+
+        // ── Runtime contract: activateSkill ─────────────────────────────
+        // When a tool returns activateSkill, set the context's skillScope
+        // so that subsequent tool executions are constrained to the skill's
+        // allowed tools.  This is the enforcement of Skill boundaries.
+        if (result.activateSkill) {
+          this.context.skillScope = {
+            name: result.activateSkill.name,
+            allowedTools: new Set(result.activateSkill.allowedTools),
+            activatedAtTurn: this.turn,
+          }
+          await this.emit({
+            runId: this.runId,
+            turn: this.turn,
+            eventType: 'state.changed',
+            summary: `Activated skill "${result.activateSkill.name}" with ${result.activateSkill.allowedTools.length} allowed tools`,
+            status: 'completed',
+            data: { skill: result.activateSkill.name, allowedTools: result.activateSkill.allowedTools },
+            timestamp: new Date().toISOString(),
+          })
+        }
+
+        // ── Runtime contract: diagnostics ───────────────────────────────
+        if (result.diagnostics?.length) {
+          this.diagnostics.push(...result.diagnostics)
+          for (const diag of result.diagnostics) {
+            this.transcript?.record('diagnostic', diag)
+            await this.emit({
+              runId: this.runId,
+              turn: this.turn,
+              eventType: 'diagnostic.created',
+              summary: diag.message,
+              status: diag.severity === 'error' ? 'failed' : 'completed',
+              data: { code: diag.code, severity: diag.severity },
+              timestamp: new Date().toISOString(),
+            })
+          }
+        }
 
         messages.push({
           role: 'tool',
@@ -337,9 +435,8 @@ export class StreamingToolExecutor {
 
     const promise = collectResults()
     tracked.promise = promise
-    void promise.finally(() => {
-      void this.processQueue()
-    })
+    await promise
+    void this.processQueue()
   }
 
   /**
@@ -424,6 +521,13 @@ export class StreamingToolExecutor {
     return this.context.goal.status === 'blocked'
   }
 
+  /**
+   * Diagnostics collected from tool results during this executor's lifetime.
+   */
+  get collectedDiagnostics(): readonly Diagnostic[] {
+    return this.diagnostics
+  }
+
   private async emit(event: AgentActionEvent): Promise<void> {
     try {
       await this.eventSink?.emit(event)
@@ -431,4 +535,28 @@ export class StreamingToolExecutor {
       // Observability must never prevent the Agent from completing its work.
     }
   }
+}
+
+function summarizeText(value: string, maxLength = 1000): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact
+}
+
+function sanitizeForEvent(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '[truncated]'
+  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeForEvent(item, depth + 1))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 40)
+        .map(([key, item]) => [
+          key,
+          /api.?key|token|secret|password|authorization/i.test(key)
+            ? '[redacted]'
+            : sanitizeForEvent(item, depth + 1),
+        ]),
+    )
+  }
+  if (typeof value === 'string') return summarizeText(value, 1000)
+  return value
 }

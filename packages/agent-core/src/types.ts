@@ -136,6 +136,7 @@ export interface ArtifactRepository {
   createMany(inputs: readonly ArtifactInput[]): Artifact[]
   get<T = unknown>(id: string): Artifact<T> | undefined
   list(type?: string): Artifact[]
+  delete(id: string): boolean
 }
 
 export interface DomainStateRepository {
@@ -177,6 +178,13 @@ export interface AgentTool {
   description: string
   inputSchema: Record<string, unknown>
   risk: ToolRisk
+  /**
+   * When true, this tool may execute concurrently with other safe tools.
+   * Must ONLY be true when the tool has zero side-effects: no state patches,
+   * no artifact writes, no backend mutations.  Defaults to false.
+   * Do NOT derive this from `risk` — a 'read' tool may still mutate domain state.
+   */
+  isConcurrencySafe?: boolean
   /** If set and result.content exceeds this many bytes, the full content is
    *  persisted as a `tool-result` artifact and only a compact pointer is
    *  returned to the model. Keeps the context window lean for large outputs. */
