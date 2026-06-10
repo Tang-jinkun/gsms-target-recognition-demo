@@ -860,8 +860,8 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
       },
     },
     buildTool({
-      name: 'assess_scene_runnable_models',
-      description: 'One-shot assessment: which registered InVEST models can this scene run? Returns per-model data-sufficiency and runner availability.',
+      name: 'assess_scene_model_readiness',
+      description: 'One-shot assessment: for each registered InVEST model, determine the highest readiness level this scene can prove. Asserts up to data-sufficiency only — does NOT claim validation, user confirmation, or runnability.',
       persistResultAboveBytes: 8_000,
       inputSchema: {
         type: 'object',
@@ -884,6 +884,19 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         })).parse(rawModels)
         const cards = normalizeDataCards(rawCards)
 
+        // Readiness ladder (ascending). This tool may only assert up to
+        // 'preliminary_data_sufficient'. Higher levels require relation checks,
+        // official InVEST validation, or user confirmation — none of which
+        // this tool performs.
+        type ReadinessLevel =
+          | 'runner_available'
+          | 'preliminary_data_sufficient'
+          // --- the following are NOT assertable by this tool ---
+          // | 'ready_for_validation'
+          // | 'validated'
+          // | 'confirmed'
+          // | 'runnable_now'
+
         const assessments: Array<{
           modelId: string
           displayName: string
@@ -891,7 +904,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           runnerStatus: string
           dataSufficient: boolean
           slots: Array<{ slot: string; required: boolean; status: 'available' | 'missing'; candidateCount: number }>
-          runnable: boolean
+          readinessLevel?: ReadinessLevel
         }> = []
 
         for (const model of models) {
@@ -907,7 +920,6 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               runnerStatus,
               dataSufficient: false,
               slots: [],
-              runnable: false,
             })
             continue
           }
@@ -923,7 +935,6 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               runnerStatus,
               dataSufficient: false,
               slots: [],
-              runnable: false,
             })
             continue
           }
@@ -941,6 +952,11 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
             })
 
           const dataSufficient = slotResults.every(s => s.status === 'available')
+          const readinessLevel: ReadinessLevel | undefined =
+            !runnerAvailable ? undefined :
+            dataSufficient ? 'preliminary_data_sufficient' :
+            'runner_available'
+
           assessments.push({
             modelId: model.id,
             displayName: model.name,
@@ -948,21 +964,21 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
             runnerStatus,
             dataSufficient,
             slots: slotResults,
-            runnable: dataSufficient && runnerAvailable,
+            readinessLevel,
           })
         }
 
-        const runnableModels = assessments.filter(a => a.runnable)
-        const summary = runnableModels.length
-          ? `Runnable models: ${runnableModels.map(a => a.displayName).join(', ')}.`
-          : 'No models are currently runnable with the available scene data.'
+        const preliminaryReadyModels = assessments.filter(a => a.readinessLevel === 'preliminary_data_sufficient')
+        const summary = preliminaryReadyModels.length
+          ? `Preliminarily data-sufficient models: ${preliminaryReadyModels.map(a => a.displayName).join(', ')}.`
+          : 'No models are preliminarily data-sufficient with the available scene data.'
 
         return {
           content: JSON.stringify({ summary, sceneId, assessments }, null, 2),
           artifacts: [{
-            type: 'scene-runnable-assessment',
+            type: 'scene-model-readiness',
             createdBy: 'tool',
-            data: { sceneId, assessments, runnableModels: runnableModels.map(a => a.modelId) },
+            data: { sceneId, assessments, preliminaryReadyModels: preliminaryReadyModels.map(a => a.modelId) },
             metadata: { sceneId },
           }],
         }

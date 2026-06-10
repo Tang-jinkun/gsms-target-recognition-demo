@@ -108,7 +108,7 @@ const matchingTools = new Set([
   'check_data_relation',
   'finalize_data_matching',
   'finalize_sufficiency_assessment',
-  'assess_scene_runnable_models',
+  'assess_scene_model_readiness',
   'run_reconnaissance',
 ])
 
@@ -211,7 +211,7 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
   const has = (type: string) => currentArtifacts.some(a => a.type === type)
 
   // Terminal evidence: always allows finish
-  if (has('sufficiency-report') || has('binding-report') || has('invest-report') || has('scene-runnable-assessment')) return true
+  if (has('sufficiency-report') || has('binding-report') || has('invest-report') || has('scene-model-readiness')) return true
 
   // If the agent started matching (has candidate-sets), it MUST complete the
   // binding report. Cannot finish with just candidates — that's an incomplete workflow.

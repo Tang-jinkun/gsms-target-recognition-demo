@@ -10,7 +10,7 @@ allowed-tools:
   - check_data_relation
   - finalize_data_matching
   - finalize_sufficiency_assessment
-  - assess_scene_runnable_models
+  - assess_scene_model_readiness
   - validate_binding_report
   - confirm_validation_snapshot
   - execute_validated_snapshot
@@ -37,7 +37,7 @@ When the user asks "what data exists" or "can this model run":
 5. Call `finish` with the sufficiency report findings.
 
 **For "which models can run" (multi-model survey):**
-1. Call `assess_scene_runnable_models` with the sceneId — this does all models in one call.
+1. Call `assess_scene_model_readiness` with the sceneId — this does all models in one call.
 2. Call `finish` with the assessment findings. Do NOT loop over models individually.
 
 ## Mode B: Data Matching (match-inputs)
