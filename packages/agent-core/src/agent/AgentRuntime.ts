@@ -125,10 +125,10 @@ export class AgentRuntime {
       let response: ModelResponse
 
       if (this.options.model.completeStreaming) {
-        // Streaming mode: start executing tools as they arrive
-        response = await this.#streamWithExecutor(modelRequest, executor, runId, goal.turnCount)
+        // Streaming mode: reassemble the stream (emits incremental UI events)
+        // into a full response, then execute via the shared path below.
+        response = await this.#reassembleStream(modelRequest, runId, goal.turnCount)
       } else {
-        // Non-streaming mode: wait for full response, then execute tools
         response = await this.options.model.complete(modelRequest)
       }
 
@@ -194,15 +194,14 @@ export class AgentRuntime {
         break
       }
 
-      // Register tools AFTER loop detection.
-      // In non-streaming mode, register and execute tools now.
-      // In streaming mode, tools were already registered during #streamWithExecutor.
-      if (!this.options.model.completeStreaming) {
-        for (const call of response.toolCalls) {
-          executor.addTool(call)
-        }
-        await executor.flush()
+      // Register and execute tools AFTER loop detection.
+      // Both streaming and non-streaming paths converge here:
+      // streaming collects tool calls from the stream, non-streaming gets them
+      // from complete().  Either way, loop detection runs first.
+      for (const call of response.toolCalls) {
+        executor.addTool(call)
       }
+      await executor.flush()
 
       // Collect tool results from executor.
       // Hidden messages (skill instructions, progress) are collected
@@ -408,30 +407,24 @@ export class AgentRuntime {
   }
 
   /**
-   * Streaming mode: process model stream and start executing tools as they arrive.
+   * Consume the model's streaming output, emit incremental UI events, and
+   * reassemble it into a single ModelResponse.
+   *
+   * Tools are NOT executed here.  They are returned in the response so the
+   * main loop runs loop detection BEFORE any tool side-effects — the same
+   * ordering the non-streaming path guarantees.  The only streaming-specific
+   * behaviour is the `model.streaming` events, which let the frontend render
+   * text deltas and tool cards before the turn completes.
    */
-  async #streamWithExecutor(
+  async #reassembleStream(
     request: { messages: readonly AgentMessage[]; tools: readonly { name: string; description: string; inputSchema: Record<string, unknown> }[]; signal?: AbortSignal },
-    executor: StreamingToolExecutor,
     runId: string,
     turn: number,
   ): Promise<ModelResponse> {
     let content = ''
-    const toolCallAccumulator = new Map<number, { id: string; name: string; arguments: string }>()
-    let lastCompletedId: string | undefined
-
-    const finalizeToolCall = () => {
-      if (lastCompletedId === undefined) return
-      const tc = toolCallAccumulator.get([...toolCallAccumulator.values()].findIndex(t => t.id === lastCompletedId))
-      if (tc && tc.arguments) {
-        executor.addTool({
-          id: tc.id,
-          name: tc.name,
-          input: parseArguments(tc.arguments),
-        })
-      }
-      lastCompletedId = undefined
-    }
+    // Insertion order preserved; one entry per tool call, arguments accreted
+    // across however many delta chunks the provider sends.
+    const toolCalls = new Map<string, { name: string; arguments: string }>()
 
     for await (const chunk of this.options.model.completeStreaming!(request)) {
       switch (chunk.type) {
@@ -448,7 +441,6 @@ export class AgentRuntime {
           })
           break
         case 'tool_call_start':
-          // Emit tool start as streaming event so frontend can show tool card immediately
           await this.#emit({
             runId,
             turn,
@@ -458,38 +450,27 @@ export class AgentRuntime {
             data: { tool: chunk.name, tool_call_id: chunk.id },
             timestamp: new Date().toISOString(),
           })
-          // Finalize previous tool call if any
-          finalizeToolCall()
-          toolCallAccumulator.set(toolCallAccumulator.size, {
-            id: chunk.id,
-            name: chunk.name,
-            arguments: '',
-          })
-          lastCompletedId = chunk.id
+          toolCalls.set(chunk.id, { name: chunk.name, arguments: '' })
           break
         case 'tool_call_delta': {
-          const entry = [...toolCallAccumulator.values()].find(tc => tc.id === chunk.id)
+          const entry = toolCalls.get(chunk.id)
           if (entry) entry.arguments += chunk.argumentsDelta
           break
         }
         case 'done':
-          finalizeToolCall()
           break
       }
     }
 
-    // Finalize any remaining tool call (stream ended without 'done')
-    finalizeToolCall()
-
-    const toolCalls = [...toolCallAccumulator.values()].map(tc => ({
-      id: tc.id,
+    const calls = [...toolCalls.entries()].map(([id, tc]) => ({
+      id,
       name: tc.name,
       input: parseArguments(tc.arguments),
     }))
 
     return {
       content,
-      toolCalls: toolCalls.length ? toolCalls : undefined,
+      toolCalls: calls.length ? calls : undefined,
     }
   }
 
