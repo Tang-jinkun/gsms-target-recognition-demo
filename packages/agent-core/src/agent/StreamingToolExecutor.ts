@@ -350,6 +350,18 @@ export class StreamingToolExecutor {
 
         // Artifacts
         if (result.artifacts?.length) {
+          // Defense-in-depth: createdBy:'user' is only trustworthy when the
+          // tool went through the permission system's defer/approve cycle,
+          // which only applies to risk:'write'|'execute' tools.  Read/control
+          // tools are auto-allowed by the PermissionManager and their artifacts
+          // must not claim to be user-authored.
+          if (tool.risk !== 'write' && tool.risk !== 'execute') {
+            for (const artifact of result.artifacts) {
+              if (artifact.createdBy === 'user') {
+                artifact.createdBy = 'tool'
+              }
+            }
+          }
           const created = this.context.artifacts.createMany(result.artifacts)
           for (const artifact of created) {
             await this.emit({

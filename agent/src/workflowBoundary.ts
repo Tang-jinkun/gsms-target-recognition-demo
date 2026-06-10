@@ -110,6 +110,7 @@ const matchingTools = new Set([
   'finalize_sufficiency_assessment',
   'assess_scene_model_readiness',
   'run_reconnaissance',
+  'record_user_disambiguation',
 ])
 
 const validationTools = new Set(['validate_binding_report'])

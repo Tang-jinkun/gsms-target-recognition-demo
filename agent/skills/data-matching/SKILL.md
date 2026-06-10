@@ -11,6 +11,7 @@ allowed-tools:
   - finalize_data_matching
   - finalize_sufficiency_assessment
   - assess_scene_model_readiness
+  - record_user_disambiguation
   - validate_binding_report
   - confirm_validation_snapshot
   - execute_validated_snapshot
@@ -57,8 +58,9 @@ When the user requests to match data or configure a run:
 8. **If matching comes back `needs_review` (an unresolved ambiguity):** stop. Present the
    competing candidates to the user and ask which one to use. Do not validate, confirm, or run a
    sufficiency assessment — those tools are hidden until the ambiguity is resolved. Once the user
-   chooses, re-call `finalize_data_matching` for that slot with the chosen `selectedAssetId` and
-   `userConfirmed: true`, then continue.
+   chooses, call `record_user_disambiguation` with the chosen `slot` and `selectedAssetId`
+   (this is gated through the permission system and creates the trustworthy user-choice record),
+   then re-call `finalize_data_matching` for that slot.
 9. After validation passes, call `confirm_validation_snapshot` once with the exact snapshot and
    `confirmed: true`. This requests confirmation through the permission system; it does not imply
    the user has already approved. Do not repeat validation while awaiting confirmation.

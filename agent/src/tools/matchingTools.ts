@@ -54,7 +54,6 @@ const finalizeSchema = z.object({
     status: bindingStatusSchema,
     confidence: z.number().min(0).max(1),
     reasoning: z.string().min(1),
-    userConfirmed: z.boolean().optional(),
   })),
   unresolvedQuestions: z.array(z.string()).default([]),
 })
@@ -74,6 +73,19 @@ function contextualArtifacts(context: AgentContext, type: string) {
   return context.artifacts
     .list(type)
     .filter(artifact => artifact.metadata?.matchingContextId === matchingContextId)
+}
+
+/** Check if a real user disambiguation exists for (slot, assetId). */
+function userDisambiguated(context: AgentContext, slot: string, assetId: string): boolean {
+  const matchingContextId = currentMatchingContext(context)
+  return context.artifacts
+    .list('user-disambiguation')
+    .some(a =>
+      a.createdBy === 'user' &&
+      a.metadata?.matchingContextId === matchingContextId &&
+      a.metadata?.slot === slot &&
+      a.metadata?.assetId === assetId,
+    )
 }
 
 export const retrieveInputCandidatesTool: AgentTool = {
@@ -209,10 +221,6 @@ export const finalizeDataMatchingTool: AgentTool = {
             status: { enum: ['matched', 'ambiguous', 'missing', 'rejected'] },
             confidence: { type: 'number', minimum: 0, maximum: 1 },
             reasoning: { type: 'string' },
-            userConfirmed: {
-              type: 'boolean',
-              description: 'Set true ONLY when the user explicitly chose this asset among equally-scored candidates. Without it, a required slot whose top candidates tie is forced to ambiguous.',
-            },
           },
         },
       },
@@ -270,11 +278,13 @@ export const finalizeDataMatchingTool: AgentTool = {
       // Deterministic tie-break guard: a required slot claimed as a certain
       // 'matched' is not justified when its candidates have no unique best
       // (top score tied). Force it to 'ambiguous' so the gate routes to a user
-      // decision — unless the user already disambiguated (userConfirmed).
+      // decision — unless a real createdBy:'user' disambiguation artifact exists.
+      const disambiguated = decision.selectedAssetId &&
+        userDisambiguated(context, slot.name, decision.selectedAssetId)
       const forcedAmbiguous =
         slot.required &&
         decision.status === 'matched' &&
-        !decision.userConfirmed &&
+        !disambiguated &&
         hasTopScoreTie(candidateSet)
 
       if (forcedAmbiguous) {
@@ -284,7 +294,7 @@ export const finalizeDataMatchingTool: AgentTool = {
           confidence: decision.confidence,
           status: 'ambiguous' as const,
           facts: [],
-          agentReasoning: `${decision.reasoning} [Auto-flagged ambiguous: ${candidateAssetIds.length} candidates share the top score; the user must choose one.]`,
+          agentReasoning: `${decision.reasoning} [Auto-flagged ambiguous: ${candidateAssetIds.length} candidates share the top score; the user must choose one via record_user_disambiguation.]`,
         }
       }
 
@@ -296,7 +306,7 @@ export const finalizeDataMatchingTool: AgentTool = {
         status: decision.status,
         facts: selected?.evidence ?? [],
         agentReasoning: decision.reasoning,
-        userConfirmed: decision.userConfirmed,
+        userConfirmed: disambiguated,
       }
     })
     const persistedChecks = contextualArtifacts(context, 'relation-check')
@@ -457,8 +467,68 @@ export const finalizeDataMatchingTool: AgentTool = {
   },
 }
 
+const recordUserDisambiguationTool: AgentTool = {
+  name: 'record_user_disambiguation',
+  description: 'Record the user\'s explicit choice among tied candidates for a required slot. Must be called after the user selects an asset; the result is gated through the permission system.',
+  risk: 'write',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['matchingContextId', 'slot', 'selectedAssetId'],
+    properties: {
+      matchingContextId: { type: 'string' },
+      slot: { type: 'string' },
+      selectedAssetId: { type: 'string' },
+    },
+  },
+  async execute(input, context) {
+    const { matchingContextId, slot, selectedAssetId } = input as {
+      matchingContextId: string
+      slot: string
+      selectedAssetId: string
+    }
+
+    // Validate that selectedAssetId is in the persisted candidate-set for this slot
+    const candidateSets = context.artifacts
+      .list('candidate-set')
+      .filter(a => a.metadata?.matchingContextId === matchingContextId && a.metadata?.slot === slot)
+
+    if (candidateSets.length === 0) {
+      throw toolFailure(
+        'CANDIDATE_SET_NOT_FOUND',
+        `No candidate-set found for slot '${slot}' in matching context '${matchingContextId}'.`,
+        { invalidFields: [`slot:${slot}`] },
+      )
+    }
+
+    const candidateSet = candidateSetSchema.safeParse(candidateSets[0]!.data)
+    if (!candidateSet.success) {
+      throw toolFailure('INVALID_CANDIDATE_SET', `Candidate set for slot '${slot}' is malformed.`)
+    }
+
+    const validAssetIds = new Set(candidateSet.data.candidates.map(c => c.assetId))
+    if (!validAssetIds.has(selectedAssetId)) {
+      throw toolFailure(
+        'SELECTED_ASSET_NOT_CANDIDATE',
+        `Asset '${selectedAssetId}' is not in the candidate set for slot '${slot}'. Valid: ${[...validAssetIds].join(', ')}.`,
+        { invalidFields: [`selectedAssetId:${selectedAssetId}`] },
+      )
+    }
+
+    return {
+      content: `Recorded user disambiguation: slot '${slot}' → asset '${selectedAssetId}'.`,
+      artifacts: [{
+        type: 'user-disambiguation',
+        createdBy: 'user' as const,
+        data: { matchingContextId, slot, selectedAssetId },
+        metadata: { matchingContextId, slot, assetId: selectedAssetId },
+      }],
+    }
+  },
+}
+
 export function createMatchingTools(): AgentTool[] {
-  return [retrieveInputCandidatesTool, retrieveRequiredInputCandidatesTool, finalizeDataMatchingTool]
+  return [retrieveInputCandidatesTool, retrieveRequiredInputCandidatesTool, finalizeDataMatchingTool, recordUserDisambiguationTool]
 }
 
 function toolFailure(

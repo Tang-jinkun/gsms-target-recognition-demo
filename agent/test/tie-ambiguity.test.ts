@@ -79,10 +79,38 @@ test('gate forces needs_review when a required slot claims matched on a top-scor
   assert.ok(result.blockingReasons.some(r => /equally-scored/.test(r)), `reasons: ${result.blockingReasons.join(' | ')}`)
 })
 
-test('gate trusts a tie-broken match when userConfirmed is set', () => {
+test('gate ignores model-supplied userConfirmed boolean (security)', () => {
+  // The model can set userConfirmed:true on the binding, but the gate must
+  // NOT trust it — only a real createdBy:'user' disambiguation artifact counts.
   const result = checkDataMatchingGate(gateContext(), tiedReport({ lulcUserConfirmed: true }))
+  assert.equal(result.status, 'needs_review')
+  assert.equal(result.passed, false)
+})
+
+test('gate trusts a tie-broken match when user-disambiguation artifact exists', () => {
+  const ctx = gateContext()
+  ctx.artifacts.create({
+    type: 'user-disambiguation',
+    createdBy: 'user',
+    data: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', selectedAssetId: 'lulc-a' },
+    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a' },
+  })
+  const result = checkDataMatchingGate(ctx, tiedReport())
   assert.equal(result.status, 'ready_for_validation')
   assert.equal(result.passed, true)
+})
+
+test('gate rejects forged disambiguation with createdBy:tool', () => {
+  const ctx = gateContext()
+  ctx.artifacts.create({
+    type: 'user-disambiguation',
+    createdBy: 'tool',
+    data: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', selectedAssetId: 'lulc-a' },
+    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a' },
+  })
+  const result = checkDataMatchingGate(ctx, tiedReport())
+  assert.equal(result.status, 'needs_review')
+  assert.equal(result.passed, false)
 })
 
 // ── finalize_data_matching mirrors the override ─────────────────────────────────
@@ -133,7 +161,7 @@ test('finalize_data_matching forces a tied required slot to ambiguous', async ()
   assert.equal(parsed.recommendedNextAction, 'request-user-input')
 })
 
-test('finalize_data_matching trusts a tied required slot when userConfirmed is set', async () => {
+test('finalize_data_matching trusts a tied required slot when disambiguation artifact exists', async () => {
   const ctx = finalizeContext()
   // A passed relation check is required once lulc is a real match.
   ctx.artifacts.create({
@@ -141,11 +169,19 @@ test('finalize_data_matching trusts a tied required slot when userConfirmed is s
     data: { id: 'code-coverage:lulc-a:carbon-pools:lucode', kind: 'code-coverage', leftAssetId: 'lulc-a', rightAssetId: 'carbon-pools', status: 'passed', facts: ['ok'] },
     metadata: { modelId: 'carbon', matchingContextId: 'ctx-carbon' },
   })
+  // A real user-disambiguation artifact (createdBy:'user') — the only proof
+  // the gate and finalize will trust.
+  ctx.artifacts.create({
+    type: 'user-disambiguation',
+    createdBy: 'user',
+    data: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', selectedAssetId: 'lulc-a' },
+    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a' },
+  })
   const tool = createMatchingTools().find(t => t.name === 'finalize_data_matching')!
   const result = await tool.execute({
     modelId: 'carbon',
     decisions: [
-      { slot: 'lulc_bas_path', selectedAssetId: 'lulc-a', status: 'matched', confidence: 0.5, reasoning: 'user chose a', userConfirmed: true },
+      { slot: 'lulc_bas_path', selectedAssetId: 'lulc-a', status: 'matched', confidence: 0.5, reasoning: 'user chose a' },
       { slot: 'carbon_pools_path', selectedAssetId: 'carbon-pools', status: 'matched', confidence: 0.9, reasoning: 'only pools' },
     ],
   }, ctx)

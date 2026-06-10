@@ -129,6 +129,16 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
     .filter(r => r.success)
     .map(r => r.data)
 
+  // User disambiguation records — the ONLY trustworthy proof that a user
+  // chose among tied candidates.  Must be createdBy:'user' (minted through
+  // the worker's defer/approve confirmation flow).
+  const disambiguations = artifacts
+    .filter(a => a.type === 'user-disambiguation' && ctxFilter(a) && a.createdBy === 'user')
+    .map(a => a.data as { slot?: string; selectedAssetId?: string })
+
+  const userChose = (slot: string, assetId: string) =>
+    disambiguations.some(d => d.slot === slot && d.selectedAssetId === assetId)
+
   const dataCardAssetIds = new Set(dataCards.map(c => c.assetId))
   const candidateMap = new Map(candidateSets.map(cs => [cs.slot, cs]))
 
@@ -183,8 +193,10 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
     // Check 7b: deterministic tie-break guard. A required slot claimed as a certain
     // 'matched' is not justified when its candidate set has no unique best (top
     // score tied). Authoritative here — the gate does not trust a self-reported
-    // 'matched' over the evidence, unless the user explicitly disambiguated.
-    if (isRequired && binding.status === 'matched' && !binding.userConfirmed && hasTopScoreTie(candidateSet)) {
+    // 'matched' or a model-supplied userConfirmed boolean.  Only a real
+    // createdBy:'user' disambiguation artifact can override this guard.
+    const userDisambiguated = binding.selectedAssetId && userChose(binding.slot, binding.selectedAssetId)
+    if (isRequired && binding.status === 'matched' && !userDisambiguated && hasTopScoreTie(candidateSet)) {
       issue = `Required slot '${binding.slot}' has multiple equally-scored candidates; a user decision is required`
       hasAmbiguous = true
     }
