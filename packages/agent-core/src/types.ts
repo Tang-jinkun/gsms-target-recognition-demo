@@ -79,7 +79,14 @@ export interface Artifact<T = unknown> {
   data: T
   metadata?: Record<string, unknown>
   // ── Evidence Ledger ──
-  /** Scope key "turn:N" or "turn:N:skill:name". Injected by runtime. */
+  /**
+   * Stable identity of the logical entity this artifact represents. Two
+   * artifacts with the same logicalKey are versions of the same thing — a
+   * newer one supersedes the older, regardless of which turn produced it.
+   * Defaults to `id` when not set. scopeKey is NOT part of identity.
+   */
+  logicalKey?: string
+  /** Scope key "turn:N" or "turn:N:skill:name". Provenance only. Injected by runtime. */
   scopeKey?: string
   /** ID of the artifact this one supersedes (version chain). */
   supersedes?: string
@@ -95,8 +102,15 @@ export interface ArtifactInput<T = unknown> {
   createdBy: ArtifactCreator
   data: T
   metadata?: Record<string, unknown>
+  /** See Artifact.logicalKey. Defaults to `id` when omitted. */
+  logicalKey?: string
   scopeKey?: string
   supersedes?: string
+  /**
+   * Set on rehydration (restoring a persisted ledger): preserve the
+   * artifact's superseded flag verbatim instead of recomputing supersedes.
+   */
+  superseded?: boolean
 }
 
 export type DomainState = Record<string, unknown>
@@ -222,7 +236,14 @@ export interface AgentRunResult {
   goal: GoalState
   messages: AgentMessage[]
   transcript: TranscriptEvent[]
+  /** Active evidence set (superseded artifacts excluded). For gates/reports. */
   artifacts: Artifact[]
+  /**
+   * Full append-only ledger including superseded artifacts. Persisted at
+   * checkpoint so the version history survives a resume; rehydrated via
+   * ArtifactStore.createMany (entries carry scopeKey → rehydration path).
+   */
+  artifactLedger: Artifact[]
   domainState: DomainState
   diagnostics: Diagnostic[]
 }

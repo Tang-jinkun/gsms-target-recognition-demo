@@ -403,6 +403,7 @@ export class AgentRuntime {
       messages,
       transcript: transcript.events,
       artifacts: artifacts.list(),
+      artifactLedger: artifacts.list(undefined, { includeSuperseded: true }),
       domainState: domainState.snapshot(),
       diagnostics,
     }

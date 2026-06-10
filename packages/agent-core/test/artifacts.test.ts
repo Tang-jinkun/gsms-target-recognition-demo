@@ -61,14 +61,17 @@ test('domain state store applies nested merge patches and supports deletion', ()
 
 // ── Evidence Ledger ──────────────────────────────────────────────────────────
 
-test('supersedes chain: same scope+type auto-supersedes previous', () => {
+test('supersedes chain: same logicalKey auto-supersedes previous (across turns)', () => {
   const store = new ArtifactStore()
+
+  // Two versions of the SAME logical entity, produced in DIFFERENT turns.
+  // Identity is logicalKey, not scopeKey — so the newer one supersedes the
+  // older even though their scopeKeys differ.
   store.currentScopeKey = 'turn:1'
+  const a = store.create({ id: 'a', type: 'report', logicalKey: 'report:main', createdBy: 'tool', data: { v: 1 } })
+  store.currentScopeKey = 'turn:2'
+  const b = store.create({ id: 'b', type: 'report', logicalKey: 'report:main', createdBy: 'tool', data: { v: 2 } })
 
-  const a = store.create({ id: 'a', type: 'report', createdBy: 'tool', data: { v: 1 } })
-  const b = store.create({ id: 'b', type: 'report', createdBy: 'tool', data: { v: 2 } })
-
-  // Re-read from store — a should be marked superseded
   const aLive = store.get('a')!
   assert.equal(aLive.superseded, true)
   assert.equal(b.supersedes, 'a')
@@ -79,6 +82,54 @@ test('supersedes chain: same scope+type auto-supersedes previous', () => {
   assert.equal(store.list('report')[0].id, 'b')
 
   // Include superseded shows both
+  assert.equal(store.list('report', { includeSuperseded: true }).length, 2)
+})
+
+test('distinct logicalKeys in same scope+type coexist (no false supersede)', () => {
+  const store = new ArtifactStore()
+  store.currentScopeKey = 'turn:1'
+
+  // Two relation-checks for DIFFERENT relations in the same turn — both must
+  // survive (regression for the same-turn false-supersede bug).
+  store.create({ id: 'rc-1', type: 'relation-check', logicalKey: 'rc:a', createdBy: 'tool', data: {} })
+  store.create({ id: 'rc-2', type: 'relation-check', logicalKey: 'rc:b', createdBy: 'tool', data: {} })
+
+  assert.equal(store.get('rc-1')!.superseded, false)
+  assert.equal(store.get('rc-2')!.superseded, false)
+  assert.equal(store.list('relation-check').length, 2)
+})
+
+test('logicalKey defaults to id when omitted (independent artifacts coexist)', () => {
+  const store = new ArtifactStore()
+  store.currentScopeKey = 'turn:1'
+
+  const a = store.create({ id: 'a', type: 'report', createdBy: 'tool', data: { v: 1 } })
+  const b = store.create({ id: 'b', type: 'report', createdBy: 'tool', data: { v: 2 } })
+
+  // No shared logicalKey → no supersede.
+  assert.equal(store.get('a')!.superseded, false)
+  assert.equal(store.get('b')!.superseded, false)
+  assert.equal(store.list('report').length, 2)
+  assert.equal(a.logicalKey, 'a')
+  assert.equal(b.logicalKey, 'b')
+})
+
+test('rehydration preserves superseded flags without resurrecting or recomputing', () => {
+  // Simulate restoring a persisted ledger: entries carry scopeKey (and some
+  // superseded:true). createMany must preserve them verbatim.
+  const store = new ArtifactStore()
+  store.createMany([
+    { id: 'v1', type: 'report', logicalKey: 'report:main', createdBy: 'tool', data: { v: 1 },
+      scopeKey: 'turn:1', superseded: true, supersedes: undefined },
+    { id: 'v2', type: 'report', logicalKey: 'report:main', createdBy: 'tool', data: { v: 2 },
+      scopeKey: 'turn:2', superseded: false, supersedes: 'v1' },
+  ])
+
+  // v1 stays superseded (not resurrected), v2 stays active.
+  assert.equal(store.get('v1')!.superseded, true)
+  assert.equal(store.get('v2')!.superseded, false)
+  assert.equal(store.list('report').length, 1)
+  assert.equal(store.list('report')[0].id, 'v2')
   assert.equal(store.list('report', { includeSuperseded: true }).length, 2)
 })
 

@@ -141,7 +141,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const models = await client.listModels()
         return {
           content: JSON.stringify(models),
-          artifacts: [{ type: 'gsms-model-list', createdBy: 'tool', data: models }],
+          artifacts: [{ type: 'gsms-model-list', logicalKey: 'gsms-model-list', createdBy: 'tool', data: models }],
         }
       },
     }),
@@ -182,12 +182,14 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           artifacts: [
             {
               type: 'gsms-model-schema',
+              logicalKey: `gsms-model-schema:${modelId}`,
               createdBy: 'tool',
               data: schema,
               metadata: { modelId },
             },
             {
               type: 'model-input-schema',
+              logicalKey: `model-input-schema:${modelId}`,
               createdBy: 'tool',
               data: adapted,
               metadata: { modelId, source: 'gsms' },
@@ -235,12 +237,14 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           artifacts: [
             {
               type: 'gsms-scene-data-cards',
+              logicalKey: `gsms-scene-data-cards:${sceneDataContextId}`,
               createdBy: 'tool',
               data: result,
               metadata: { sceneId, modelId: schemaArtifact?.modelId, sceneDataContextId },
             },
             ...cards.map(card => ({
               type: 'data-card',
+              logicalKey: `data-card:${sceneDataContextId}:${card.assetId}`,
               createdBy: 'tool' as const,
               data: card,
               metadata: {
@@ -326,6 +330,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           artifacts: [
             {
               type: 'gsms-relation-check',
+              logicalKey: `gsms-relation-check:${matchingContextId}:${check.id}`,
               createdBy: 'tool',
               data: result,
               metadata: {
@@ -458,6 +463,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify(result),
           artifacts: [{
             type: 'validation-report',
+            logicalKey: `validation-report:${typeof state.matchingContextId === 'string' ? state.matchingContextId : parsed.modelId}`,
             createdBy: 'tool',
             data: result,
             metadata: {
@@ -525,7 +531,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const result = await client.confirmValidationSnapshot(parsed.snapshotId, parsed.confirmed)
         return {
           content: JSON.stringify(result),
-          artifacts: [{ type: 'confirmation-record', createdBy: 'user', data: result }],
+          artifacts: [{ type: 'confirmation-record', logicalKey: `confirmation-record:${parsed.snapshotId}`, createdBy: 'user', data: result }],
           statePatch: {
             phase: parsed.confirmed ? 'confirmed-for-execution' : 'confirmation-rejected',
             confirmationStatus: parsed.confirmed ? 'confirmed' : 'rejected',
@@ -561,7 +567,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const source = result as { job_id?: unknown }
         return {
           content: JSON.stringify(result),
-          artifacts: [{ type: 'model-job', createdBy: 'tool', data: result }],
+          artifacts: [{ type: 'model-job', logicalKey: `model-job:${parsed.snapshotId}`, createdBy: 'tool', data: result }],
           statePatch: {
             phase: 'job-running',
             jobId: typeof source.job_id === 'string' ? source.job_id : undefined,
@@ -598,6 +604,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify(result),
           artifacts: [{
             type: 'job-status',
+            logicalKey: `job-status:${parsed.jobId}`,
             createdBy: 'tool',
             data: result,
             metadata: { sceneId: parsed.sceneId, jobId: parsed.jobId, status },
@@ -648,6 +655,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify(outputs),
           artifacts: [{
             type: 'job-output-inventory',
+            logicalKey: `job-output-inventory:${parsed.jobId}`,
             createdBy: 'tool',
             data: outputs,
             metadata: {
@@ -703,6 +711,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify(result),
           artifacts: [{
             type: 'result-analysis',
+            logicalKey: `result-analysis:${parsed.jobId}`,
             createdBy: 'tool',
             data: result,
             metadata: {
@@ -779,6 +788,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify(interpretation),
           artifacts: [{
             type: 'result-interpretation-context',
+            logicalKey: `result-interpretation-context:${parsed.jobId}`,
             createdBy: 'tool',
             data: interpretation,
             metadata: { sceneId: parsed.sceneId, jobId: parsed.jobId, dataHubFile: published },
@@ -851,6 +861,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify(report, null, 2),
           artifacts: [{
             type: 'sufficiency-report',
+            logicalKey: `sufficiency-report:${parsed.sceneId}:${parsed.modelId}`,
             createdBy: 'tool',
             data: report,
             metadata: { modelId: parsed.modelId, sceneId: parsed.sceneId },
@@ -977,6 +988,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
           content: JSON.stringify({ summary, sceneId, assessments }, null, 2),
           artifacts: [{
             type: 'scene-model-readiness',
+            logicalKey: `scene-model-readiness:${sceneId}`,
             createdBy: 'tool',
             data: { sceneId, assessments, preliminaryReadyModels: preliminaryReadyModels.map(a => a.modelId) },
             metadata: { sceneId },

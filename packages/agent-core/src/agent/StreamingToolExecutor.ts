@@ -323,13 +323,12 @@ export class StreamingToolExecutor {
         // Auto-persist large results to artifact to keep context window lean
         if (tool.persistResultAboveBytes && result.content.length > tool.persistResultAboveBytes) {
           const inputKey = JSON.stringify(tracked.call.input).slice(0, 120)
-          // Find previous auto-persist for supersedes chain (append-only, new ID each time)
-          const existing = this.context.artifacts.list(undefined, { includeSuperseded: true })
-            .find(a => a.type === 'tool-result' && a.metadata?.inputKey === inputKey)
+          // tool-result identity is per (tool input). A newer run of the same
+          // tool+input supersedes the older persisted result via logicalKey.
           const persisted = this.context.artifacts.create({
             type: 'tool-result',
+            logicalKey: `tool-result:${tool.name}:${inputKey}`,
             createdBy: 'tool' as const,
-            supersedes: existing?.id,
             metadata: { inputKey },
             data: { tool: tool.name, input: tracked.call.input, fullContent: result.content },
           })

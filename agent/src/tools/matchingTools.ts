@@ -421,6 +421,7 @@ export const finalizeDataMatchingTool: AgentTool = {
     const artifactResult = existing ? [] : [{
       id: artifactId,
       type: 'binding-report',
+      logicalKey: `binding-report:${matchingContextId}`,
       createdBy: 'agent' as const,
       data: report,
       metadata: {

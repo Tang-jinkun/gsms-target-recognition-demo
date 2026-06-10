@@ -5,30 +5,6 @@ function clone<T>(value: T): T {
   return structuredClone(value)
 }
 
-/**
- * Two artifacts are metadata-compatible for supersedes purposes when they
- * represent the SAME logical entity.  Key distinguishing fields:
- *  - `slot`: candidate-set / user-disambiguation are per-slot
- *  - `assetId`: data-card is per-asset
- *  - `inputKey`: tool-result auto-persist is per-input
- *
- * If neither artifact carries any of these fields, they are considered
- * compatible (the old supersedes-by-scopeKey+type default).
- */
-function metadataCompatible(
-  oldMeta: Record<string, unknown> | undefined,
-  newMeta: Record<string, unknown> | undefined,
-): boolean {
-  for (const key of ['slot', 'assetId', 'inputKey']) {
-    const oldVal = oldMeta?.[key]
-    const newVal = newMeta?.[key]
-    if (oldVal !== undefined || newVal !== undefined) {
-      return oldVal === newVal
-    }
-  }
-  return true
-}
-
 export class ArtifactStore {
   readonly #artifacts = new Map<string, Artifact>()
   #currentScopeKey = ''
@@ -52,36 +28,39 @@ export class ArtifactStore {
       seen.add(id)
     }
 
-    // Phase 2: create artifacts (supersedes chains resolved incrementally).
+    // Phase 2: create artifacts.
     const artifacts: Artifact[] = []
     for (const { input, id } of resolved) {
+      // Rehydration path: an input that already carries a scopeKey is a
+      // restored ledger entry (fresh tool outputs never set scopeKey — the
+      // runtime injects it). Preserve its superseded/supersedes/scopeKey
+      // verbatim; do NOT recompute identity or resurrect superseded records.
+      const isRehydration = input.scopeKey !== undefined
+
       const scopeKey = input.scopeKey ?? (this.#currentScopeKey || undefined)
+      const logicalKey = input.logicalKey ?? id
 
-      // ── Supersedes handling ──
       let supersedesId = input.supersedes
+      let superseded = input.superseded ?? false
 
-      // If no explicit supersedes, find the latest artifact with the same
-      // scopeKey + type that is not already superseded.  Crucially:
-      //  1. Skip artifacts from the CURRENT batch (siblings, not supersessions).
-      //  2. Require metadata compatibility — a candidate-set for slot A must
-      //     not supersede one for slot B, even if they share scopeKey + type.
-      if (!supersedesId && scopeKey) {
-        for (const existing of this.#artifacts.values()) {
-          if (seen.has(existing.id)) continue  // same batch — not a supersedes target
-          if (existing.scopeKey === scopeKey &&
-              existing.type === input.type &&
-              !existing.superseded &&
-              metadataCompatible(existing.metadata, input.metadata)) {
-            supersedesId = existing.id
-            break
+      if (!isRehydration) {
+        // Fresh creation: auto-supersede by logicalKey (identity), NOT scopeKey
+        // (provenance). A newer version of the same logical entity supersedes
+        // the older one regardless of which turn produced it. Skip same-batch
+        // siblings — two distinct logicalKeys created together coexist.
+        if (!supersedesId) {
+          for (const existing of this.#artifacts.values()) {
+            if (seen.has(existing.id)) continue
+            if (existing.logicalKey === logicalKey && !existing.superseded) {
+              supersedesId = existing.id
+              break
+            }
           }
         }
-      }
-
-      // Mark the superseded artifact
-      if (supersedesId) {
-        const old = this.#artifacts.get(supersedesId)
-        if (old) old.superseded = true
+        if (supersedesId) {
+          const old = this.#artifacts.get(supersedesId)
+          if (old) old.superseded = true
+        }
       }
 
       const artifact: Artifact = {
@@ -92,9 +71,10 @@ export class ArtifactStore {
         createdBy: input.createdBy,
         data: clone(input.data),
         metadata: input.metadata ? clone(input.metadata) : undefined,
+        logicalKey,
         scopeKey,
         supersedes: supersedesId,
-        superseded: false,
+        superseded,
       }
 
       this.#artifacts.set(id, artifact)

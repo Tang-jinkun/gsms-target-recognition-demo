@@ -185,7 +185,7 @@ export class InvestAgentWorker {
         await this.#sessionApi.checkpoint(session.id, {
           action: 'pause',
           domain_state: result.domainState,
-          artifacts: result.artifacts,
+          artifacts: result.artifactLedger,
         })
         return
       }
@@ -196,7 +196,7 @@ export class InvestAgentWorker {
         await this.#sessionApi.checkpoint(session.id, {
           action: 'fail',
           domain_state: result.domainState,
-          artifacts: result.artifacts,
+          artifacts: result.artifactLedger,
           assistant_message: `Agent stopped before completing the requested action: ${issue}`,
           error: issue,
         })
@@ -210,7 +210,7 @@ export class InvestAgentWorker {
     await this.#sessionApi.checkpoint(session.id, {
       action: result.goal.status === 'failed' ? 'fail' : 'complete',
       domain_state: result.domainState,
-      artifacts: result.artifacts,
+      artifacts: result.artifactLedger,
       assistant_message:
         result.goal.finalSummary ??
         (result.goal.status === 'failed'

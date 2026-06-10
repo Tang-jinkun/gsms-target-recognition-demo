@@ -353,10 +353,13 @@ test('worker resets mid-execution phase (results-analyzed) on new run', async ()
     const complete = checkpoints.find(c => c.action === 'complete')
     // Phase should be reset to discovering-data, not stuck at results-analyzed
     assert.equal((complete?.domain_state as Record<string, unknown>)?.phase, 'discovering-data')
-    const remaining = complete?.artifacts as Array<{ type: string }> | undefined
+    // The persisted ledger is append-only (includes superseded for audit), so
+    // assert on the ACTIVE set — what gates/finish actually see on resume.
+    const ledger = complete?.artifacts as Array<{ type: string; superseded?: boolean }> | undefined
+    const remaining = ledger?.filter(a => !a.superseded)
     // Matching artifacts preserved
     assert.ok(remaining?.some(a => a.type === 'model-input-schema'), 'schema preserved')
-    // Execution artifacts cleared
+    // Execution artifacts cleared from the active set
     for (const type of ['model-job', 'job-status', 'validation-report', 'confirmation-record', 'result-analysis']) {
       assert.equal(remaining?.some(a => a.type === type), false, `${type} should be cleared`)
     }
