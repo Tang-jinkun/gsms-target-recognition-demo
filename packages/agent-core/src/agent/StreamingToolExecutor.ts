@@ -204,13 +204,14 @@ export class StreamingToolExecutor {
         return
       }
 
-      // Tool not found
+      // Tool not found — do NOT echo the full tool registry (enumeration leak).
+      // The model can discover available tools from the system prompt or by
+      // calling ToolSearch; the error just names the unknown tool.
       if (!tracked.tool) {
-        const visibleTools = this.toolRegistry.list().map(t => t.name)
         messages.push({
           role: 'tool',
           toolCallId: tracked.call.id,
-          content: `Unknown tool: ${tracked.call.name}. Available tools: ${visibleTools.join(', ')}`,
+          content: `Unknown tool: ${tracked.call.name}.`,
           isError: true,
         })
         tracked.results = messages
