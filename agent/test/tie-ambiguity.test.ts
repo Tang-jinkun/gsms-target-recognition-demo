@@ -93,7 +93,7 @@ test('gate trusts a tie-broken match when user-disambiguation artifact exists', 
     type: 'user-disambiguation',
     createdBy: 'user',
     data: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', selectedAssetId: 'lulc-a' },
-    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a' },
+    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a', confirmationId: 'conf-123' },
   })
   const result = checkDataMatchingGate(ctx, tiedReport())
   assert.equal(result.status, 'ready_for_validation')
@@ -175,7 +175,7 @@ test('finalize_data_matching trusts a tied required slot when disambiguation art
     type: 'user-disambiguation',
     createdBy: 'user',
     data: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', selectedAssetId: 'lulc-a' },
-    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a' },
+    metadata: { matchingContextId: 'ctx-carbon', slot: 'lulc_bas_path', assetId: 'lulc-a', confirmationId: 'conf-456' },
   })
   const tool = createMatchingTools().find(t => t.name === 'finalize_data_matching')!
   const result = await tool.execute({

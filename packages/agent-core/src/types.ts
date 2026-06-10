@@ -177,6 +177,11 @@ export interface AgentContext {
   domainState: DomainStateRepository
   skillScope?: SkillScope
   signal?: AbortSignal
+  /** Set by the worker when it consumes a user confirmation; read by tools
+   *  that mint user-authored artifacts (confirmation-record, disambiguation)
+   *  so the artifact carries a cryptographic binding to the specific
+   *  confirmation, not just the tool's risk profile. */
+  lastConsumedConfirmationId?: string
 }
 
 export interface AgentToolResult {

@@ -164,7 +164,7 @@ export class InvestAgentWorker {
       },
       permissions: new PermissionManager({
         approve: (tool, input, context) =>
-          this.#approveOrDefer(session.id, confirmations, tool, input, context.domainState.snapshot()),
+          this.#approveOrDefer(session.id, confirmations, tool, input, context.domainState.snapshot(), context),
       }),
     })
     const resumedState = domainState.snapshot()
@@ -227,6 +227,7 @@ export class InvestAgentWorker {
     tool: AgentTool,
     input: unknown,
     state: Record<string, unknown>,
+    context?: { lastConsumedConfirmationId?: string },
   ): Promise<'allow' | 'defer'> {
     const authorizationKey = permissionAuthorizationKey(tool, input, state)
     const approved = confirmations.find(
@@ -242,6 +243,11 @@ export class InvestAgentWorker {
     )
     if (approved) {
       await this.#sessionApi.consumeConfirmation(sessionId, approved.id)
+      // Bind the consumed confirmation to the context so tools that mint
+      // createdBy:'user' artifacts can carry confirmationId + approvedInputHash.
+      if (context) {
+        context.lastConsumedConfirmationId = approved.id
+      }
       return 'allow'
     }
     await this.#sessionApi.requestConfirmation(sessionId, {

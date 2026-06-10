@@ -349,14 +349,22 @@ export class StreamingToolExecutor {
 
         // Artifacts
         if (result.artifacts?.length) {
-          // Defense-in-depth: createdBy:'user' is only trustworthy when the
-          // tool went through the permission system's defer/approve cycle,
-          // which only applies to risk:'write'|'execute' tools.  Read/control
-          // tools are auto-allowed by the PermissionManager and their artifacts
-          // must not claim to be user-authored.
-          if (tool.risk !== 'write' && tool.risk !== 'execute') {
-            for (const artifact of result.artifacts) {
-              if (artifact.createdBy === 'user') {
+          // Defense-in-depth: createdBy:'user' is only trustworthy when:
+          //  (a) the tool is risk:'write'|'execute' (auto-allowed read/control
+          //      tools must never claim user authorship), AND
+          //  (b) the artifact carries a confirmationId — a cryptographic
+          //      binding to a real user confirmation consumed by the Worker.
+          //      Without it, a risk:'write' tool that runs without a consumed
+          //      confirmation (e.g. model bypasses the defer/approve cycle)
+          //      cannot mint user-authored evidence.
+          for (const artifact of result.artifacts) {
+            if (artifact.createdBy === 'user') {
+              const isWriteOrExecute = tool.risk === 'write' || tool.risk === 'execute'
+              const hasConfirmationBinding =
+                isWriteOrExecute &&
+                typeof artifact.metadata?.confirmationId === 'string' &&
+                artifact.metadata.confirmationId.length > 0
+              if (!hasConfirmationBinding) {
                 artifact.createdBy = 'tool'
               }
             }

@@ -130,10 +130,18 @@ export function checkDataMatchingGate(context: AgentContext, reportOverride?: Bi
     .map(r => r.data)
 
   // User disambiguation records — the ONLY trustworthy proof that a user
-  // chose among tied candidates.  Must be createdBy:'user' (minted through
-  // the worker's defer/approve confirmation flow).
+  // chose among tied candidates.  Must be createdBy:'user' AND carry a
+  // confirmationId (binding to a real user confirmation consumed by the
+  // Worker).  Without confirmationId, the createdBy:'user' flag could be
+  // forged by a model-invoked tool.
   const disambiguations = artifacts
-    .filter(a => a.type === 'user-disambiguation' && ctxFilter(a) && a.createdBy === 'user')
+    .filter(a =>
+      a.type === 'user-disambiguation' &&
+      ctxFilter(a) &&
+      a.createdBy === 'user' &&
+      typeof a.metadata?.confirmationId === 'string' &&
+      a.metadata.confirmationId.length > 0,
+    )
     .map(a => a.data as { slot?: string; selectedAssetId?: string })
 
   const userChose = (slot: string, assetId: string) =>

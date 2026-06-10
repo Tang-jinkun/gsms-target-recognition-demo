@@ -522,7 +522,12 @@ const recordUserDisambiguationTool: AgentTool = {
         type: 'user-disambiguation',
         createdBy: 'user' as const,
         data: { matchingContextId, slot, selectedAssetId },
-        metadata: { matchingContextId, slot, assetId: selectedAssetId },
+        metadata: {
+          matchingContextId,
+          slot,
+          assetId: selectedAssetId,
+          confirmationId: context.lastConsumedConfirmationId,
+        },
       }],
     }
   },

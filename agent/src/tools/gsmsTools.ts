@@ -531,7 +531,16 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const result = await client.confirmValidationSnapshot(parsed.snapshotId, parsed.confirmed)
         return {
           content: JSON.stringify(result),
-          artifacts: [{ type: 'confirmation-record', logicalKey: `confirmation-record:${parsed.snapshotId}`, createdBy: 'user', data: result }],
+          artifacts: [{
+            type: 'confirmation-record',
+            logicalKey: `confirmation-record:${parsed.snapshotId}`,
+            createdBy: 'user',
+            data: result,
+            metadata: {
+              confirmationId: context.lastConsumedConfirmationId,
+              snapshotId: parsed.snapshotId,
+            },
+          }],
           statePatch: {
             phase: parsed.confirmed ? 'confirmed-for-execution' : 'confirmation-rejected',
             confirmationStatus: parsed.confirmed ? 'confirmed' : 'rejected',
