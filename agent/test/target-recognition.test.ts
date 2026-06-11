@@ -79,12 +79,50 @@ test('target workflow selects latest data, validates query, executes, and presen
   }, ctx))[0]
   analysisContextId = (query.data as { analysisContextId: string }).analysisContextId
 
-  const analysis = apply(ctx, await tool(tools, 'execute_target_query').execute({ artifactId: query.id }, ctx))[0]
+  assert.equal(query.id, `target-query:${analysisContextId}`)
+  const analysis = apply(ctx, await tool(tools, 'execute_target_query').execute({ analysisContextId }, ctx))[0]
   assert.equal((analysis.data as { matchedFeatureCount: number }).matchedFeatureCount, 8)
+  assert.equal(analysis.id, `target-analysis:${analysisContextId}`)
 
-  const presentation = apply(ctx, await tool(tools, 'present_target_result').execute({ artifactId: analysis.id }, ctx))[0]
+  const presentation = apply(ctx, await tool(tools, 'present_target_result').execute({ analysisContextId }, ctx))[0]
   assert.equal(presentation.type, 'map-presentation')
   assert.equal((presentation.data as { layers: Array<{ assetId: string }> }).layers[0]?.assetId, 'result-asset')
+})
+
+test('target execution reuses stable analysis evidence instead of creating duplicates', async () => {
+  let calls = 0
+  const client = {
+    async runTargetQuery(input: Record<string, unknown>) {
+      calls += 1
+      return {
+        ...input,
+        analysisContextId: 'ctx-1',
+        matchedFeatureCount: 2,
+        outputAsset: { id: 'result-asset' },
+      }
+    },
+    async publishGeneratedFile() { return { id: 'published' } },
+  }
+  const tools = createTargetRecognitionTools(client as never)
+  const ctx = context()
+  ctx.artifacts.create({
+    id: 'target-query:ctx-1',
+    type: 'target-query',
+    createdBy: 'agent',
+    data: {
+      sceneId: 'scene-1',
+      selectedAssetIds: ['latest'],
+      targetDescription: 'targets',
+      conditions: [{ field: 'point_type', operator: 'equals', value: '积水点' }],
+      analysisContextId: 'ctx-1',
+    },
+  })
+
+  apply(ctx, await tool(tools, 'execute_target_query').execute({ analysisContextId: 'ctx-1' }, ctx))
+  const reused = await tool(tools, 'execute_target_query').execute({ analysisContextId: 'ctx-1' }, ctx)
+  assert.equal(calls, 1)
+  assert.equal(reused.artifacts?.length ?? 0, 0)
+  assert.equal(JSON.parse(reused.content).evidenceReused, true)
 })
 
 test('target query rejects values not supported by a complete property profile', async () => {

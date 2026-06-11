@@ -34,8 +34,9 @@ Identify targets from factual GeoJSON property profiles. Never invent fields, va
 3. Interpret the date represented by every current GeoJSON filename. Submit every candidate to `finalize_dataset_selection`; do not omit inconvenient candidates.
 4. Map the user's target to an AND list of conditions using only fields and values supported by the property profiles.
 5. If the wording maps to multiple plausible values or fields, call `request_target_clarification` and ask the user instead of guessing.
-6. Call `finalize_target_query`, then `execute_target_query` with the returned target-query artifact ID.
-7. Call `present_target_result` with the target-analysis artifact ID.
-8. Finish with the selected dataset, conditions, deterministic count, diagnostics, and map-highlight status.
+6. Call `finalize_target_query`, then follow its `nextAction` exactly by calling `execute_target_query` with the returned `analysisContextId`.
+7. Follow the execution result's `nextAction` exactly by calling `present_target_result` with the same `analysisContextId`.
+8. Never pass an asset ID or an internal random artifact ID to execution or presentation tools.
+9. Finish with the selected dataset, conditions, deterministic count, diagnostics, and map-highlight status.
 
 The tool performs filtering and counting. Do not calculate counts yourself.

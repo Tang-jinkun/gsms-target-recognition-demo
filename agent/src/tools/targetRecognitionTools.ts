@@ -43,7 +43,7 @@ const targetQuerySchema = z.object({
   unresolvedQuestions: z.array(z.string()).default([]),
 })
 
-const artifactIdSchema = z.object({ artifactId: z.string().min(1) })
+const analysisContextSchema = z.object({ analysisContextId: z.string().min(1) })
 
 type VectorProfile = {
   assetId: string
@@ -230,9 +230,18 @@ export function createTargetRecognitionTools(client: GsmsClient): AgentTool[] {
           version: '1',
         })
         const data = { ...parsed, analysisContextId }
+        const existingQuery = context.artifacts.get(targetQueryArtifactId(analysisContextId))
         return {
-          content: JSON.stringify(data),
-          artifacts: [{
+          content: JSON.stringify({
+            ...data,
+            evidenceReused: Boolean(existingQuery),
+            nextAction: {
+              tool: 'execute_target_query',
+              input: { analysisContextId },
+            },
+          }),
+          artifacts: existingQuery ? [] : [{
+            id: targetQueryArtifactId(analysisContextId),
             type: 'target-query',
             createdBy: 'agent',
             logicalKey: `target-query:${analysisContextId}`,
@@ -250,12 +259,12 @@ export function createTargetRecognitionTools(client: GsmsClient): AgentTool[] {
       inputSchema: {
         type: 'object',
         additionalProperties: false,
-        required: ['artifactId'],
-        properties: { artifactId: { type: 'string' } },
+        required: ['analysisContextId'],
+        properties: { analysisContextId: { type: 'string' } },
       },
       async execute(input, context) {
-        const { artifactId } = artifactIdSchema.parse(input)
-        const artifact = context.artifacts.get(artifactId)
+        const { analysisContextId } = analysisContextSchema.parse(input)
+        const artifact = context.artifacts.get(targetQueryArtifactId(analysisContextId))
         if (!artifact || artifact.type !== 'target-query') throw new Error('Target query artifact not found')
         const query = artifact.data as {
           sceneId: string
@@ -263,6 +272,19 @@ export function createTargetRecognitionTools(client: GsmsClient): AgentTool[] {
           targetDescription: string
           conditions: Array<{ field: string; operator: string; value: unknown }>
           analysisContextId: string
+        }
+        const existingAnalysis = context.artifacts.get(targetAnalysisArtifactId(query.analysisContextId))
+        if (existingAnalysis) {
+          return {
+            content: JSON.stringify({
+              ...(existingAnalysis.data as Record<string, unknown>),
+              evidenceReused: true,
+              nextAction: {
+                tool: 'present_target_result',
+                input: { analysisContextId: query.analysisContextId },
+              },
+            }),
+          }
         }
         const result = await client.runTargetQuery({
           sceneId: query.sceneId,
@@ -293,9 +315,16 @@ export function createTargetRecognitionTools(client: GsmsClient): AgentTool[] {
         })
         const outputAsset = result.outputAsset as { id?: string } | undefined
         return {
-          content: JSON.stringify(result),
+          content: JSON.stringify({
+            ...result,
+            nextAction: {
+              tool: 'present_target_result',
+              input: { analysisContextId: query.analysisContextId },
+            },
+          }),
           artifacts: [
             {
+              id: targetAnalysisArtifactId(query.analysisContextId),
               type: 'target-analysis',
               createdBy: 'tool',
               logicalKey: `target-analysis:${query.analysisContextId}`,
@@ -338,16 +367,26 @@ export function createTargetRecognitionTools(client: GsmsClient): AgentTool[] {
       inputSchema: {
         type: 'object',
         additionalProperties: false,
-        required: ['artifactId'],
-        properties: { artifactId: { type: 'string' } },
+        required: ['analysisContextId'],
+        properties: { analysisContextId: { type: 'string' } },
       },
       async execute(input, context) {
-        const { artifactId } = artifactIdSchema.parse(input)
-        const analysis = context.artifacts.get(artifactId)
+        const { analysisContextId } = analysisContextSchema.parse(input)
+        const analysis = context.artifacts.get(targetAnalysisArtifactId(analysisContextId))
         if (!analysis || analysis.type !== 'target-analysis') throw new Error('Target analysis artifact not found')
         const data = analysis.data as Record<string, unknown>
         const outputAsset = data.outputAsset as { id?: string } | undefined
         if (!outputAsset?.id) throw new Error('Target analysis did not publish an output GeoJSON asset')
+        const existingPresentation = context.artifacts.get(mapPresentationArtifactId(analysisContextId))
+        if (existingPresentation) {
+          return {
+            content: JSON.stringify({
+              ...(existingPresentation.data as Record<string, unknown>),
+              evidenceReused: true,
+            }),
+            statePatch: { phase: 'target-presented' },
+          }
+        }
         const presentation = {
           sceneId: data.sceneId,
           analysisContextId: data.analysisContextId,
@@ -364,6 +403,7 @@ export function createTargetRecognitionTools(client: GsmsClient): AgentTool[] {
         return {
           content: JSON.stringify(presentation),
           artifacts: [{
+            id: mapPresentationArtifactId(String(data.analysisContextId)),
             type: 'map-presentation',
             createdBy: 'tool',
             logicalKey: `map-presentation:${String(data.analysisContextId)}`,
@@ -386,6 +426,18 @@ function vectorCandidates(value: unknown): VectorProfile[] {
   if (!value || typeof value !== 'object') return []
   const candidates = (value as { candidates?: unknown }).candidates
   return Array.isArray(candidates) ? candidates as VectorProfile[] : []
+}
+
+function targetQueryArtifactId(analysisContextId: string): string {
+  return `target-query:${analysisContextId}`
+}
+
+function targetAnalysisArtifactId(analysisContextId: string): string {
+  return `target-analysis:${analysisContextId}`
+}
+
+function mapPresentationArtifactId(analysisContextId: string): string {
+  return `map-presentation:${analysisContextId}`
 }
 
 function currentProfiles(context: AgentContext, sceneId: string): VectorProfile[] {
