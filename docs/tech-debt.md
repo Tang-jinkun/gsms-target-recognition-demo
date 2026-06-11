@@ -88,4 +88,18 @@
 
 ---
 
+## 7. Agent/Data Hub 流程存在专项硬编码
+
+**发现时间**：2026-06-11
+
+**位置**：`agent/src/workflowBoundary.ts`、`agent/src/worker/InvestAgentWorker.ts`、`frontend/pages/workbench/[sceneId].tsx`
+
+**问题**：Data Hub 主动探测、用户确认导入、确认后续跑、前端确认卡渲染已经形成可用闭环，但部分行为仍依赖具体工具名和特定场景条件，例如空场景 Data Hub-first gate、Data Hub import payload 专门解析。
+
+**当前行为**：用一组明确 guardrail 保证 Carbon 空场景流程可跑通。`import_data_hub_files_to_scene` direct execution 已收敛为 `AgentTool.policy.confirmation`；空场景外部数据发现 gate 已集中到 `evaluateDataAvailabilityPolicy()`；Data Hub import 已通过 `AgentTool.policy.mutation.refreshesArtifacts` 声明会刷新场景数据事实，finish gate 也会消费该 contract，避免 mutation 后基于旧事实结束；推荐导入确认卡已优先消费 `payload.ui.type === "data-import-proposal"`，不再依赖工具名作为主路径；`DataSourceProvider` registry 已落地，Data Hub 是默认 provider；Data Hub discovery 已产出通用 `data-source-discovery-report` 作为证据层和通用 `confirmation-proposal` 作为用户动作层，同时保留旧 `data-hub-import-proposal` fallback。workflow policy、真实多 provider 工具、共享 UI schema 尚未完全抽象。
+
+**理想方案**：按 `docs/agent-data-hub-hardcoding-audit.md` 的路线，先把硬编码收敛为声明式 policy，再把 Data Hub-first 抽象成通用 data-source discovery policy。
+
+---
+
 *此文档应随设计演进持续更新。每解决一条债务，标注解决时间和方案。*
