@@ -1,8 +1,16 @@
 ---
 name: data-matching
 description: Match data to InVEST model inputs or assess which models a scene can run
-when-to-use: User asks about data availability, model compatibility, input matching, or "which models can run"
-allowed-tools:
+when_to_use: User asks about data availability, model compatibility, input matching, or "which models can run"
+intent_tags:
+  - match-inputs
+  - assess-data-sufficiency
+  - assess-runnable-models
+trigger_examples:
+  - 帮我匹配 Carbon 模型输入
+  - 当前场景的数据能不能跑 Carbon
+  - 当前场景能跑哪些模型
+allowed_tools:
   - list_invest_models
   - get_invest_model_schema
   - list_scene_data_cards

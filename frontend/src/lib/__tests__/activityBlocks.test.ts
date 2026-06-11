@@ -35,6 +35,17 @@ test('a tool call between text runs starts a new text block (segment boundary)',
   assert.deepEqual(textOf(blocks), ['Now I', 'Habitat'])
 })
 
+test('internal control tools do not render as activity cards', () => {
+  const blocks: TurnBlock[] = []
+  applyEventToBlocks(blocks, tok('Two'))
+  applyEventToBlocks(blocks, toolStart('finish'))
+  applyEventToBlocks(blocks, toolDone('finish'))
+  applyEventToBlocks(blocks, toolStart('update_goal'))
+  applyEventToBlocks(blocks, toolDone('update_goal'))
+
+  assert.deepEqual(blocks, [{ type: 'text', text: 'Two', status: 'streaming' }])
+})
+
 // The regression this fixes: under the polling fallback, a batch can carry the
 // run's just-persisted assistant message AND that run's still-arriving tokens, so
 // rebuildTurns() runs finalizeBlocks() on the run (marking its text 'done')

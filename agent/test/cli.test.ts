@@ -37,6 +37,9 @@ test('CLI config reuses the default GSMS provider and injects the API key from e
   assert.equal(config.model, 'qwen-plus')
   assert.equal(config.modelBaseUrl, 'https://example.test/v1')
   assert.equal(config.apiKey, 'secret')
+  assert.equal(config.intentClassifierModel, 'qwen-plus')
+  assert.equal(config.intentClassifierBaseUrl, 'https://example.test/v1')
+  assert.equal(config.intentClassifierApiKey, 'secret')
   assert.equal(config.sceneId, 'scene-1')
 })
 
@@ -85,6 +88,43 @@ test('CLI flags override GSMS provider metadata', async () => {
   assert.equal(config.modelBaseUrl, 'http://localhost:11434/v1')
   assert.equal(config.maxTurns, 12)
   assert.equal(config.yes, true)
+})
+
+test('CLI config can enable a separate intent classifier model', async () => {
+  const config = await resolveCliConfig(
+    parseCliArguments([
+      '--model=model-main',
+      '--base-url',
+      'http://main.example/v1',
+      '--api-key',
+      'main-key',
+      '--intent-classifier-model',
+      'intent-small',
+      '--intent-classifier-base-url',
+      'http://intent.example/v1/',
+      '--intent-classifier-api-key',
+      'intent-key',
+    ]),
+    {
+      fetch: async () => new Response('[]', { status: 200 }),
+      env: {},
+    },
+  )
+
+  assert.equal(config.intentClassifierModel, 'intent-small')
+  assert.equal(config.intentClassifierBaseUrl, 'http://intent.example/v1')
+  assert.equal(config.intentClassifierApiKey, 'intent-key')
+})
+
+test('CLI config can disable intent classifier fallback', async () => {
+  const config = await resolveCliConfig(parseCliArguments(['--model=main', '--api-key=key', '--disable-intent-classifier']), {
+    fetch: async () => new Response('[]', { status: 200 }),
+    env: {},
+  })
+
+  assert.equal(config.intentClassifierModel, undefined)
+  assert.equal(config.intentClassifierBaseUrl, undefined)
+  assert.equal(config.intentClassifierApiKey, undefined)
 })
 
 test('GSMS bootstrap client verifies health and lists scenes', async () => {
@@ -147,10 +187,46 @@ test('multi-turn session preserves domain state and artifacts between user messa
     approve: () => 'allow',
   })
 
-  await session.send('Remember the scene fact')
+  await session.send('Assess which InVEST models the current scene can run')
   await session.send('Use what you remembered')
 
   assert.equal(session.status().turns, 2)
   assert.equal(session.domainState.snapshot().rememberedValue, 42)
   assert.equal(session.artifacts.list('scene-fact').length, 1)
+})
+
+test('CLI session routes general answers without exposing domain tools or changing domain state', async () => {
+  const domainTool: AgentTool = {
+    name: 'get_invest_model_schema',
+    description: 'Should not be visible for general answers',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: 'unexpected', statePatch: { phase: 'discovering-data' } }
+    },
+  }
+  const model = new FakeModelAdapter([
+    {
+      content: '',
+      toolCalls: [{ id: '1', name: 'finish', input: { summary: '1+1=2', evidence: ['arithmetic'] } }],
+    },
+  ])
+  const registry = new ToolRegistry([domainTool])
+  const skills = new SkillRegistry()
+  registerSessionControlTools(registry, skills, () => [domainTool.name])
+  const session = new InvestAgentSession({
+    model,
+    tools: registry,
+    skills,
+    workspace: process.cwd(),
+    sceneId: 'scene-1',
+    maxTurns: 5,
+    approve: () => 'allow',
+  })
+
+  const result = await session.send('1+1=?')
+
+  assert.equal(result.goal.finalSummary, '1+1=2')
+  assert.deepEqual(model.requests[0]?.tools.map(tool => tool.name).sort(), ['finish', 'update_goal'])
+  assert.deepEqual(session.domainState.snapshot(), { sceneId: 'scene-1', phase: 'conversation-ready' })
 })

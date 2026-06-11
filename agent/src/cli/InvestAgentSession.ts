@@ -13,6 +13,7 @@ import {
   type PermissionDecision,
 } from '@gsms/agent-core'
 import { SkillRegistry, SkillTool } from '@gsms/skills-core'
+import { TurnIntentRouter, summarizeTurnPlan, type TurnPlan } from '../intent/TurnIntentRouter.ts'
 import { isExecutionPhase, WAITING_PHASES, workflowPhaseFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentSessionOptions {
@@ -27,6 +28,7 @@ export interface InvestAgentSessionOptions {
     input: unknown,
     context: Parameters<PermissionManager['check']>[2],
   ) => PermissionDecision | Promise<PermissionDecision>
+  intentClassifierModel?: ModelAdapter
   onSkillInvocation?: (message: string) => void
 }
 
@@ -34,12 +36,36 @@ export class InvestAgentSession {
   readonly artifacts = new ArtifactStore()
   readonly domainState: DomainStateStore
   readonly #history: Array<{ user: string; summary: string }> = []
+  readonly #controlTools = new ToolRegistry([updateGoalTool, finishTool])
 
   constructor(readonly options: InvestAgentSessionOptions) {
     this.domainState = new DomainStateStore({ sceneId: options.sceneId, phase: 'conversation-ready' })
   }
 
   async send(message: string): Promise<AgentRunResult> {
+    const plan = await new TurnIntentRouter({
+      classifierModel: this.options.intentClassifierModel,
+    }).route({
+      userMessage: message,
+      domainState: this.domainState.snapshot(),
+      artifacts: this.artifacts.list(undefined, { includeSuperseded: true }),
+      skillSummaries: this.options.skills.listForModel(),
+    })
+    if (plan.intent === 'ambiguous') {
+      return this.#runPlainTurn(
+        message,
+        plan,
+        plan.promptContext.clarificationQuestion ?? 'Ask one concise clarifying question. Do not assume the user wants an InVEST workflow.',
+      )
+    }
+    if (plan.intent === 'general-answer') {
+      return this.#runPlainTurn(
+        message,
+        plan,
+        'Answer directly. Do not use GSMS scene context, InVEST workflow tools, skills, artifacts, or domain state.',
+      )
+    }
+
     const currentPhase = String(this.domainState.snapshot().phase ?? 'conversation-ready')
     if (!isExecutionPhase(currentPhase) && !WAITING_PHASES.has(currentPhase)) {
       // Preserve matchingContextId — allows "继续" / "验证刚才的绑定" to work
@@ -56,6 +82,7 @@ export class InvestAgentSession {
       `Current user request:\n${message}`,
       `Current phase: ${String(this.domainState.snapshot().phase ?? 'conversation-ready')}. ` +
       `Execution phases enforce strict sequential order; matching phases allow rollback and revision.`,
+      `Top-level turn plan: ${JSON.stringify(summarizeTurnPlan(plan))}.`,
       'The current user request overrides earlier planning state. If it names or implies a different InVEST model, select that model again before matching or validation.',
       'Act on the current request using the persisted artifacts and domain state from this session.',
     ]
@@ -81,6 +108,46 @@ export class InvestAgentSession {
         `${result.goal.status}; phase=${String(result.domainState.phase ?? 'unknown')}`,
     })
     return result
+  }
+
+  async #runPlainTurn(message: string, plan: TurnPlan, instruction: string): Promise<AgentRunResult> {
+    const objective = [
+      `Current user request:\n${message}`,
+      `Top-level turn plan: ${JSON.stringify(summarizeTurnPlan(plan))}.`,
+      instruction,
+      this.#history.length
+        ? `Previous conversation summaries:\n${this.#history
+            .slice(-6)
+            .map(item => `- User: ${item.user}\n  Agent: ${item.summary}`)
+            .join('\n')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+    const runtime = new AgentRuntime({
+      model: this.options.model,
+      tools: this.#controlTools,
+      skills: new SkillRegistry(),
+      workspace: this.options.workspace,
+      permissions: new PermissionManager({ approve: this.options.approve }),
+      artifacts: new ArtifactStore(),
+      domainState: new DomainStateStore(),
+      maxTurns: Math.min(this.options.maxTurns, 6),
+    })
+    const result = await runtime.run(objective)
+    this.#history.push({
+      user: message,
+      summary:
+        result.goal.finalSummary ??
+        result.goal.progress ??
+        `${result.goal.status}; intent=${plan.intent}`,
+    })
+    return {
+      ...result,
+      artifacts: this.artifacts.list(),
+      artifactLedger: this.artifacts.list(undefined, { includeSuperseded: true }),
+      domainState: this.domainState.snapshot(),
+    }
   }
 
   status(): Record<string, unknown> {

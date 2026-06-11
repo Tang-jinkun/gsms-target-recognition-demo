@@ -7,6 +7,8 @@ import {
   OpenAICompatibleAdapter,
   PermissionManager,
   ToolRegistry,
+  finishTool,
+  updateGoalTool,
   type AgentTool,
   type ArtifactInput,
   type ModelAdapter,
@@ -18,6 +20,7 @@ import { createMatchingTools } from '../tools/matchingTools.ts'
 import { createReportTools } from '../tools/reportTools.ts'
 import { createReconTool } from '../tools/reconTools.ts'
 import { modelInputSchemaSchema } from '../domain/schemas.ts'
+import { TurnIntentRouter, summarizeTurnPlan } from '../intent/TurnIntentRouter.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import {
   AgentSessionApiClient,
@@ -34,6 +37,7 @@ export interface InvestAgentWorkerOptions {
   maxTurns?: number
   sessionApi?: AgentSessionApiClient
   modelFactory?: (session: PersistedAgentSession) => ModelAdapter
+  intentClassifierFactory?: (session: PersistedAgentSession) => ModelAdapter | undefined
   /** Enable run_reconnaissance sub-agent (experimental). Off by default. */
   experimentalRecon?: boolean
 }
@@ -77,51 +81,8 @@ export class InvestAgentWorker {
     const artifacts = new ArtifactStore()
     if (session.artifacts.length) artifacts.createMany(session.artifacts as ArtifactInput[])
     const domainState = new DomainStateStore(session.domain_state)
-    const currentPhase = typeof session.domain_state.phase === 'string' ? session.domain_state.phase : ''
-    // Execution phases that must persist across runs:
-    //   - Active: job-running (polling), confirmed-for-execution (user confirmed, ready to run)
-    //   - Terminal: results-ready-for-interpretation, report-written (execution complete,
-    //     user may ask to write/revise the report)
-    // Earlier execution phases (job-succeeded, outputs-inspected, results-analyzed) are
-    // mid-execution and reset so the model doesn't skip steps on a fresh request.
-    const PERSISTED_EXECUTION_PHASES = new Set([
-      'job-running', 'confirmed-for-execution',
-      'results-ready-for-interpretation', 'report-written',
-    ])
-    const shouldResetPhase =
-      !WAITING_PHASES.has(currentPhase) &&
-      (!isExecutionPhase(currentPhase) || !PERSISTED_EXECUTION_PHASES.has(currentPhase))
-    if (shouldResetPhase) {
-      // Preserve matchingContextId if scene hasn't changed — allows "继续" / "验证刚才的绑定" to work
-      const previousSceneId = typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined
-      if (previousSceneId && previousSceneId !== session.scene_id) {
-        // Scene changed — full reset
-        domainState.applyPatch({ phase: 'discovering-data', matchingContextId: null, slots: null, bindingStatus: null })
-      } else {
-        // Same scene — preserve context, just reset phase for re-discovery
-        domainState.applyPatch({ phase: 'discovering-data' })
-      }
-      // Clear stale execution artifacts from previous completed run so the model
-      // does not skip execution steps when the user requests a fresh run.
-      // Matching artifacts (schema, candidates, bindings, data cards) are preserved.
-      const staleExecutionTypes = [
-        // job lifecycle
-        'model-job', 'job-status',
-        // validation & confirmation
-        'validation-report', 'confirmation-record',
-        // results & interpretation
-        'job-output-inventory', 'result-analysis', 'result-interpretation-context',
-        'invest-report', 'raster-statistics', 'job-execution-log', 'output-inventory',
-      ]
-      for (const type of staleExecutionTypes) {
-        for (const a of artifacts.list(type)) {
-          artifacts.delete(a.id)
-        }
-      }
-    }
     const sessionWorkspace = resolve(this.options.workspace, 'sessions', session.id)
     await mkdir(sessionWorkspace, { recursive: true })
-    const registry = new ToolRegistry()
     const gsmsClient = new GsmsClient({ baseUrl: this.options.gsmsUrl })
     const model = this.options.modelFactory?.(session) ??
       new OpenAICompatibleAdapter({
@@ -129,6 +90,18 @@ export class InvestAgentWorker {
         model: String(session.model_config.model_id ?? 'gsms-default'),
         baseUrl: `${this.options.gsmsUrl.replace(/\/+$/, '')}/api/agent`,
       })
+    const plan = await new TurnIntentRouter({
+      classifierModel: this.options.intentClassifierFactory?.(session),
+    }).route({
+      userMessage: latestUser.content,
+      domainState: session.domain_state,
+      artifacts: session.artifacts,
+      skillSummaries: this.options.skills.listForModel(),
+    })
+    await this.#sessionApi.appendEvent(session.id, 'turn.planned', summarizeTurnPlan(plan))
+    if (plan.intent === 'invest-workflow' || plan.intent === 'workflow-continue') {
+      prepareWorkflowState(session, domainState, artifacts)
+    }
     const coreTools: AgentTool[] = [
       ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
@@ -138,18 +111,51 @@ export class InvestAgentWorker {
     if (this.options.experimentalRecon) {
       domainTools.push(createReconTool(coreTools, () => model))
     }
-    for (const tool of domainTools) registry.register(tool)
-    registerSessionControlTools(registry, this.options.skills, () => domainTools.map(tool => tool.name))
+    const registry = new ToolRegistry()
+    let runtimeArtifacts = artifacts
+    let runtimeDomainState = domainState
+    let runtimeSkills = this.options.skills
+    let toolFilter: InvestAgentWorkerRuntimeFilter | undefined = workflowPhaseFilter()
+    let objective: string
+    if (!plan.toolPolicy.exposeGsmsTools) {
+      registry.register(updateGoalTool)
+      registry.register(finishTool)
+      runtimeArtifacts = new ArtifactStore()
+      runtimeDomainState = new DomainStateStore()
+      runtimeSkills = new SkillRegistry()
+      toolFilter = undefined
+      objective = [
+        `Current user request:\n${latestUser.content}`,
+        `Top-level turn plan: ${JSON.stringify(summarizeTurnPlan(plan))}.`,
+        plan.intent === 'ambiguous'
+          ? plan.promptContext.clarificationQuestion ?? 'Ask one concise clarifying question. Do not assume the user wants an InVEST workflow.'
+          : 'Answer directly. Do not use GSMS scene context, InVEST workflow tools, skills, artifacts, or domain state.',
+      ].join('\n\n')
+    } else {
+      for (const tool of domainTools) registry.register(tool)
+      registerSessionControlTools(registry, this.options.skills, () => domainTools.map(tool => tool.name))
+      const resumedState = domainState.snapshot()
+      objective = [
+        `Current GSMS scene ID: ${session.scene_id}`,
+        `Current user request: ${latestUser.content}`,
+        `Top-level turn plan: ${JSON.stringify(summarizeTurnPlan(plan))}.`,
+        `Current phase: ${String(domainState.snapshot().phase ?? 'conversation-ready')}. ` +
+        `Execution phases enforce strict sequential order; matching phases allow rollback and revision.`,
+        'The current user request overrides persisted planning state. If it names or implies a different InVEST model, call get_invest_model_schema for that model before matching or validation.',
+        `Persisted domain state from earlier turns, adjusted for the current request boundary: ${JSON.stringify(resumedState)}`,
+        buildWorkflowResumeContext(resumedState, session.artifacts),
+      ].join('\n\n')
+    }
 
     const runtime = new AgentRuntime({
       model,
       tools: registry,
-      skills: this.options.skills,
+      skills: runtimeSkills,
       workspace: sessionWorkspace,
-      artifacts,
-      domainState,
+      artifacts: runtimeArtifacts,
+      domainState: runtimeDomainState,
       maxTurns: this.options.maxTurns ?? 30,
-      toolFilter: workflowPhaseFilter(),
+      toolFilter,
       eventSink: {
         emit: event =>
           this.#sessionApi.appendEvent(session.id, event.eventType, {
@@ -167,25 +173,22 @@ export class InvestAgentWorker {
           this.#approveOrDefer(session.id, confirmations, tool, input, context.domainState.snapshot(), context),
       }),
     })
-    const resumedState = domainState.snapshot()
-    const result = await runtime.run(
-      [
-        `Current GSMS scene ID: ${session.scene_id}`,
-        `Current user request: ${latestUser.content}`,
-        `Current phase: ${String(domainState.snapshot().phase ?? 'conversation-ready')}. ` +
-        `Execution phases enforce strict sequential order; matching phases allow rollback and revision.`,
-        'The current user request overrides persisted planning state. If it names or implies a different InVEST model, call get_invest_model_schema for that model before matching or validation.',
-        `Persisted domain state from earlier turns, adjusted for the current request boundary: ${JSON.stringify(resumedState)}`,
-        buildWorkflowResumeContext(resumedState, session.artifacts),
-      ].join('\n\n'),
-    )
+    const result = await runtime.run(objective)
+    const persistedDomainState =
+      !plan.toolPolicy.exposeGsmsTools
+        ? domainState.snapshot()
+        : result.domainState
+    const persistedArtifacts =
+      !plan.toolPolicy.exposeGsmsTools
+        ? artifacts.list(undefined, { includeSuperseded: true })
+        : result.artifactLedger
     if (result.goal.status === 'blocked') {
       const current = await this.#sessionApi.getConfirmations(session.id)
       if (current.some(confirmation => confirmation.status === 'pending')) {
         await this.#sessionApi.checkpoint(session.id, {
           action: 'pause',
-          domain_state: result.domainState,
-          artifacts: result.artifactLedger,
+          domain_state: persistedDomainState,
+          artifacts: persistedArtifacts,
         })
         return
       }
@@ -195,8 +198,8 @@ export class InvestAgentWorker {
           'Agent stopped before completing the current workflow action.'
         await this.#sessionApi.checkpoint(session.id, {
           action: 'fail',
-          domain_state: result.domainState,
-          artifacts: result.artifactLedger,
+          domain_state: persistedDomainState,
+          artifacts: persistedArtifacts,
           assistant_message: `Agent stopped before completing the requested action: ${issue}`,
           error: issue,
         })
@@ -209,8 +212,8 @@ export class InvestAgentWorker {
     }
     await this.#sessionApi.checkpoint(session.id, {
       action: result.goal.status === 'failed' ? 'fail' : 'complete',
-      domain_state: result.domainState,
-      artifacts: result.artifactLedger,
+      domain_state: persistedDomainState,
+      artifacts: persistedArtifacts,
       assistant_message:
         result.goal.finalSummary ??
         (result.goal.status === 'failed'
@@ -256,6 +259,57 @@ export class InvestAgentWorker {
       payload: { tool: tool.name, risk: tool.risk, input, authorizationKey },
     })
     return 'defer'
+  }
+}
+
+type InvestAgentWorkerRuntimeFilter = NonNullable<ConstructorParameters<typeof AgentRuntime>[0]['toolFilter']>
+
+function prepareWorkflowState(
+  session: PersistedAgentSession,
+  domainState: DomainStateStore,
+  artifacts: ArtifactStore,
+): void {
+  const currentPhase = typeof session.domain_state.phase === 'string' ? session.domain_state.phase : ''
+  // Execution phases that must persist across runs:
+  //   - Active: job-running (polling), confirmed-for-execution (user confirmed, ready to run)
+  //   - Terminal: results-ready-for-interpretation, report-written (execution complete,
+  //     user may ask to write/revise the report)
+  // Earlier execution phases (job-succeeded, outputs-inspected, results-analyzed) are
+  // mid-execution and reset so the model doesn't skip steps on a fresh request.
+  const PERSISTED_EXECUTION_PHASES = new Set([
+    'job-running', 'confirmed-for-execution',
+    'results-ready-for-interpretation', 'report-written',
+  ])
+  const shouldResetPhase =
+    !WAITING_PHASES.has(currentPhase) &&
+    (!isExecutionPhase(currentPhase) || !PERSISTED_EXECUTION_PHASES.has(currentPhase))
+  if (!shouldResetPhase) return
+
+  // Preserve matchingContextId if scene hasn't changed — allows "继续" / "验证刚才的绑定" to work
+  const previousSceneId = typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined
+  if (previousSceneId && previousSceneId !== session.scene_id) {
+    // Scene changed — full reset
+    domainState.applyPatch({ phase: 'discovering-data', matchingContextId: null, slots: null, bindingStatus: null })
+  } else {
+    // Same scene — preserve context, just reset phase for re-discovery
+    domainState.applyPatch({ phase: 'discovering-data' })
+  }
+  // Clear stale execution artifacts from previous completed run so the model
+  // does not skip execution steps when the user requests a fresh run.
+  // Matching artifacts (schema, candidates, bindings, data cards) are preserved.
+  const staleExecutionTypes = [
+    // job lifecycle
+    'model-job', 'job-status',
+    // validation & confirmation
+    'validation-report', 'confirmation-record',
+    // results & interpretation
+    'job-output-inventory', 'result-analysis', 'result-interpretation-context',
+    'invest-report', 'raster-statistics', 'job-execution-log', 'output-inventory',
+  ]
+  for (const type of staleExecutionTypes) {
+    for (const a of artifacts.list(type)) {
+      artifacts.delete(a.id)
+    }
   }
 }
 

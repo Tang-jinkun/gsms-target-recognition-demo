@@ -1,7 +1,15 @@
 ---
 name: interpret-invest-results
 description: Monitor a GSMS InVEST job and prepare an evidence-backed interpretation of its outputs
-allowed-tools:
+when_to_use: User asks to inspect InVEST outputs, interpret model results, or write an evidence-backed report
+intent_tags:
+  - inspect-results
+  - write-report
+trigger_examples:
+  - 解读刚才的运行结果
+  - 帮我生成报告
+  - Write report
+allowed_tools:
   - get_invest_job_status
   - inspect_invest_job_outputs
   - analyze_invest_results

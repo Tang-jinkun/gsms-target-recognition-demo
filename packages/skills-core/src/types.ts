@@ -6,6 +6,8 @@ export interface SkillDefinition {
   name: string
   description: string
   whenToUse?: string
+  intentTags?: string[]
+  triggerExamples?: string[]
   instructions: string
   source: SkillSource
   allowedTools?: string[]
@@ -21,6 +23,8 @@ export interface SkillSummary {
   name: string
   description: string
   whenToUse?: string
+  intentTags?: string[]
+  triggerExamples?: string[]
   source: SkillSource
   execution: SkillExecution
 }

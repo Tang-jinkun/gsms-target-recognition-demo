@@ -66,7 +66,7 @@ test('worker claims a queued session and checkpoints a completed Agent run', asy
 
     assert.equal(await worker.runOnce(), true)
     assert.deepEqual(actions, ['start', 'complete'])
-    assert.deepEqual(events, ['run.started', 'model.streaming', 'model.responded', 'tool.started', 'tool.completed', 'run.completed'])
+    assert.deepEqual(events, ['turn.planned', 'run.started', 'model.streaming', 'model.responded', 'tool.started', 'tool.completed', 'run.completed'])
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
@@ -96,6 +96,9 @@ test('worker requests confirmation and pauses before a write tool', async () => 
     const url = String(input)
     if (url.includes('status=queued')) return response([current])
     if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Write report' }])
+    if (url.endsWith('/events') && init?.method === 'POST') {
+      return response({ id: 1, type: 'event', data: {} }, 201)
+    }
     if (url.endsWith('/checkpoint')) {
       const body = JSON.parse(String(init?.body))
       actions.push(body.action)
@@ -177,6 +180,9 @@ test('approved report permission survives regenerated report wording for the sam
     const url = String(input)
     if (url.includes('status=queued')) return response([current])
     if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Write report' }])
+    if (url.endsWith('/events') && init?.method === 'POST') {
+      return response({ id: 1, type: 'event', data: {} }, 201)
+    }
     if (url.endsWith('/confirmations/approved-report/consume')) {
       confirmations[0]!.status = 'consumed'
       return response(confirmations[0])
@@ -323,6 +329,9 @@ test('worker resets mid-execution phase (results-analyzed) on new run', async ()
     if (url.includes('status=queued')) return response([current])
     if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: 'Run carbon model' }])
     if (url.endsWith('/confirmations')) return response([])
+    if (url.endsWith('/events') && init?.method === 'POST') {
+      return response({ id: 1, type: 'event', data: {} }, 201)
+    }
     if (url.endsWith('/checkpoint')) {
       const body = JSON.parse(String(init?.body))
       checkpoints.push(body)
@@ -363,6 +372,63 @@ test('worker resets mid-execution phase (results-analyzed) on new run', async ()
     for (const type of ['model-job', 'job-status', 'validation-report', 'confirmation-record', 'result-analysis']) {
       assert.equal(remaining?.some(a => a.type === type), false, `${type} should be cleared`)
     }
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('worker answers a general question without resetting phase or exposing GSMS tools', async () => {
+  const checkpoints: Array<Record<string, unknown>> = []
+  const current = session()
+  current.domain_state = {
+    sceneId: 'scene-1',
+    modelId: 'carbon',
+    matchingContextId: 'ctx-carbon',
+    phase: 'results-analyzed',
+  }
+  current.artifacts = [
+    { id: 'analysis', type: 'result-analysis', createdBy: 'tool', createdAt: new Date().toISOString(), data: {}, metadata: { modelId: 'carbon' } },
+  ]
+  const model = new FakeModelAdapter([
+    {
+      content: '',
+      toolCalls: [{ id: '1', name: 'finish', input: { summary: '1+1=2', evidence: ['arithmetic'] } }],
+    },
+  ])
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('status=queued')) return response([current])
+    if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: '1+1=?' }])
+    if (url.endsWith('/confirmations')) return response([])
+    if (url.endsWith('/events') && init?.method === 'POST') {
+      return response({ id: 1, type: 'event', data: {} }, 201)
+    }
+    if (url.endsWith('/checkpoint')) {
+      const body = JSON.parse(String(init?.body))
+      checkpoints.push(body)
+      current.status = body.action === 'start' ? 'running' : 'idle'
+      return response(current)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-worker-'))
+  try {
+    const worker = new InvestAgentWorker({
+      gsmsUrl: 'http://gsms',
+      proxyToken: 'token',
+      workspace,
+      skills: new SkillRegistry(),
+      sessionApi: new AgentSessionApiClient('http://gsms', fetch),
+      modelFactory: () => model,
+    })
+
+    assert.equal(await worker.runOnce(), true)
+    const visibleToolNames = model.requests[0]?.tools.map(tool => tool.name) ?? []
+    assert.deepEqual(visibleToolNames.sort(), ['finish', 'update_goal'])
+    assert.equal(visibleToolNames.includes('get_invest_model_schema'), false)
+    const complete = checkpoints.find(c => c.action === 'complete')
+    assert.equal((complete?.domain_state as Record<string, unknown>)?.phase, 'results-analyzed')
+    assert.equal((complete?.artifacts as unknown[] | undefined)?.length, 1)
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }

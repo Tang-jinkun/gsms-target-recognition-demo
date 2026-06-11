@@ -15,6 +15,18 @@ test('loads skills and lets project skills override user skills', async () => {
   await writeSkill(user, 'deploy', {
     extraFrontmatter: 'model-invocable: false\n',
   })
+  await writeSkill(user, 'match-data', {
+    extraFrontmatter: [
+      'when_to_use: Match scene data to model inputs',
+      'intent_tags:',
+      '  - match-inputs',
+      'trigger_examples:',
+      '  - 帮我匹配 Carbon 模型输入',
+      'allowed_tools:',
+      '  - list_scene_data_cards',
+      '',
+    ].join('\n'),
+  })
 
   const result = await new SkillLoader({
     userSkillsDir: user,
@@ -22,11 +34,16 @@ test('loads skills and lets project skills override user skills', async () => {
   }).load()
 
   assert.deepEqual(result.diagnostics, [])
-  assert.equal(result.skills.length, 2)
+  assert.equal(result.skills.length, 3)
   assert.equal(
     result.skills.find(skill => skill.name === 'review')?.description,
     'project review',
   )
+  const matchData = result.skills.find(skill => skill.name === 'match-data')
+  assert.equal(matchData?.whenToUse, 'Match scene data to model inputs')
+  assert.deepEqual(matchData?.intentTags, ['match-inputs'])
+  assert.deepEqual(matchData?.triggerExamples, ['帮我匹配 Carbon 模型输入'])
+  assert.deepEqual(matchData?.allowedTools, ['list_scene_data_cards'])
 })
 
 test('strictly validates frontmatter and directory names', async () => {

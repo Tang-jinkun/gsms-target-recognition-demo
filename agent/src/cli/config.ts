@@ -5,6 +5,10 @@ export interface CliArguments {
   model?: string
   baseUrl?: string
   apiKey?: string
+  intentClassifierModel?: string
+  intentClassifierBaseUrl?: string
+  intentClassifierApiKey?: string
+  disableIntentClassifier?: boolean
   maxTurns?: number
   yes: boolean
   help: boolean
@@ -17,6 +21,9 @@ export interface AgentCliConfig {
   model: string
   modelBaseUrl: string
   apiKey: string
+  intentClassifierModel?: string
+  intentClassifierBaseUrl?: string
+  intentClassifierApiKey?: string
   maxTurns: number
   yes: boolean
   /** Enable run_reconnaissance sub-agent (experimental). Off by default. */
@@ -36,7 +43,7 @@ interface ProviderMetadata {
 }
 
 export function parseCliArguments(argv: string[]): CliArguments {
-  const result: CliArguments = { yes: false, help: false }
+  const result: CliArguments = { yes: false, help: false, disableIntentClassifier: false }
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!
     if (arg === '--yes' || arg === '-y') {
@@ -45,6 +52,10 @@ export function parseCliArguments(argv: string[]): CliArguments {
     }
     if (arg === '--help' || arg === '-h') {
       result.help = true
+      continue
+    }
+    if (arg === '--disable-intent-classifier') {
+      result.disableIntentClassifier = true
       continue
     }
     const [name, inlineValue] = arg.split('=', 2)
@@ -56,6 +67,9 @@ export function parseCliArguments(argv: string[]): CliArguments {
     else if (name === '--model') result.model = value
     else if (name === '--base-url') result.baseUrl = value
     else if (name === '--api-key') result.apiKey = value
+    else if (name === '--intent-classifier-model') result.intentClassifierModel = value
+    else if (name === '--intent-classifier-base-url') result.intentClassifierBaseUrl = value
+    else if (name === '--intent-classifier-api-key') result.intentClassifierApiKey = value
     else if (name === '--max-turns') result.maxTurns = positiveInteger(value, name)
     else throw new Error(`Unknown argument: ${name}`)
   }
@@ -97,6 +111,22 @@ export async function resolveCliConfig(
         'For a trusted local endpoint, set INVEST_AGENT_ALLOW_NO_API_KEY=true.',
     )
   }
+  const disableIntentClassifier =
+    args.disableIntentClassifier ||
+    env.INVEST_AGENT_DISABLE_INTENT_CLASSIFIER === '1' ||
+    env.INVEST_AGENT_INTENT_CLASSIFIER === 'off'
+  const intentClassifierModel = disableIntentClassifier
+    ? undefined
+    : args.intentClassifierModel ??
+      env.INVEST_AGENT_INTENT_CLASSIFIER_MODEL ??
+      env.INVEST_AGENT_CLASSIFIER_MODEL ??
+      model
+  const intentClassifierBaseUrl = intentClassifierModel
+    ? trimSlash(args.intentClassifierBaseUrl ?? text(env.INVEST_AGENT_INTENT_CLASSIFIER_BASE_URL) ?? modelBaseUrl)
+    : undefined
+  const intentClassifierApiKey = intentClassifierModel
+    ? args.intentClassifierApiKey ?? text(env.INVEST_AGENT_INTENT_CLASSIFIER_API_KEY) ?? apiKey
+    : undefined
   return {
     gsmsUrl,
     sceneId: args.sceneId ?? env.GSMS_SCENE_ID,
@@ -104,6 +134,9 @@ export async function resolveCliConfig(
     model,
     modelBaseUrl,
     apiKey,
+    intentClassifierModel,
+    intentClassifierBaseUrl,
+    intentClassifierApiKey,
     maxTurns: args.maxTurns ?? positiveInteger(env.INVEST_AGENT_MAX_TURNS ?? '30', 'max turns'),
     yes: args.yes,
     experimentalRecon: env.INVEST_AGENT_EXPERIMENTAL_RECON === '1',

@@ -51,10 +51,12 @@ export class SkillRegistry {
   #list(predicate: (skill: SkillDefinition) => boolean): SkillSummary[] {
     return [...this.#skills.values()]
       .filter(predicate)
-      .map(({ name, description, whenToUse, source, execution }) => ({
+      .map(({ name, description, whenToUse, intentTags, triggerExamples, source, execution }) => ({
         name,
         description,
         whenToUse,
+        intentTags,
+        triggerExamples,
         source,
         execution,
       }))

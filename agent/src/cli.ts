@@ -13,6 +13,7 @@ import { createReconTool } from './tools/reconTools.ts'
 import { GsmsBootstrapClient, type GsmsScene } from './cli/GsmsBootstrapClient.ts'
 import { InvestAgentSession, registerSessionControlTools } from './cli/InvestAgentSession.ts'
 import { parseCliArguments, resolveCliConfig } from './cli/config.ts'
+import { createIntentClassifier } from './intent/createIntentClassifier.ts'
 
 const HELP = `Usage: invest-agent [options]
 
@@ -23,6 +24,10 @@ Options:
   --model ID           OpenAI-compatible model ID
   --base-url URL       OpenAI-compatible API base URL
   --api-key KEY        API key (prefer INVEST_AGENT_API_KEY env var)
+  --intent-classifier-model ID       Override model ID for intent classification
+  --intent-classifier-base-url URL   Override classifier API base URL
+  --intent-classifier-api-key KEY    Override classifier API key
+  --disable-intent-classifier        Disable LLM fallback intent classification
   --max-turns N        Maximum autonomous turns per user message
   --yes, -y            Approve write/execute tools without prompting
   --help, -h           Show this help
@@ -30,6 +35,8 @@ Options:
 Environment:
   GSMS_URL, GSMS_SCENE_ID, INVEST_AGENT_WORKSPACE
   INVEST_AGENT_MODEL, INVEST_AGENT_BASE_URL, INVEST_AGENT_API_KEY
+  INVEST_AGENT_INTENT_CLASSIFIER_MODEL, INVEST_AGENT_INTENT_CLASSIFIER_BASE_URL
+  INVEST_AGENT_INTENT_CLASSIFIER_API_KEY, INVEST_AGENT_DISABLE_INTENT_CLASSIFIER
   GSMS_AGENT_PROXY_TOKEN
   OPENAI_MODEL, OPENAI_BASE_URL, OPENAI_API_KEY
 `
@@ -60,6 +67,11 @@ async function main(): Promise<void> {
       model: config.model,
       baseUrl: config.modelBaseUrl,
     })
+    const intentClassifierModel = createIntentClassifier({
+      model: config.intentClassifierModel,
+      baseUrl: config.intentClassifierBaseUrl,
+      apiKey: config.intentClassifierApiKey,
+    })
     const coreTools: AgentTool[] = [
       ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
@@ -83,6 +95,7 @@ async function main(): Promise<void> {
       workspace,
       sceneId: scene.id,
       maxTurns: config.maxTurns,
+      intentClassifierModel,
       approve: async (tool: AgentTool) => {
         if (config.yes) return 'allow'
         const answer = await rl.question(`Allow ${tool.risk} tool "${tool.name}"? [y/N] `)
@@ -92,6 +105,9 @@ async function main(): Promise<void> {
     console.log(`Connected to GSMS: ${config.gsmsUrl}`)
     console.log(`Scene: ${scene.name} (${scene.id})`)
     console.log(`Model: ${config.model} @ ${config.modelBaseUrl}`)
+    if (config.intentClassifierModel) {
+      console.log(`Intent classifier: ${config.intentClassifierModel} @ ${config.intentClassifierBaseUrl}`)
+    }
     console.log('Commands: /status, /scenes, /help, /exit')
     while (true) {
       const message = (await rl.question('\nyou> ')).trim()

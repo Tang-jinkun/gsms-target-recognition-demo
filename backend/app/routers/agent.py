@@ -46,6 +46,7 @@ ACTION_EVENT_TYPES = {
     "artifact.created",
     "diagnostic.created",
     "loop.detected",
+    "turn.planned",
     "run.paused",
     "run.completed",
     "run.failed",

@@ -18,6 +18,8 @@ export type TurnBlock =
 
 export type Turn = { role: 'user' | 'assistant'; blocks: TurnBlock[]; streaming?: boolean }
 
+const INTERNAL_CONTROL_TOOLS = new Set(['finish', 'update_goal'])
+
 /** Apply one streaming/tool event to a run's accumulating activity blocks (mutates in place). */
 export function applyEventToBlocks(blocks: TurnBlock[], ev: AgentEvent) {
   if (ev.type === 'model.streaming') {
@@ -41,21 +43,25 @@ export function applyEventToBlocks(blocks: TurnBlock[], ev: AgentEvent) {
         blocks.push({ type: 'text', text: ev.data.text, status: 'streaming' })
       }
     } else if (ev.data.tool) {
+      if (INTERNAL_CONTROL_TOOLS.has(String(ev.data.tool))) return
       const id = ev.data.tool_call_id ?? ev.data.tool
       if (!blocks.some(b => b.type === 'tool' && b.id === id)) {
         blocks.push({ type: 'tool', id, name: ev.data.tool, status: 'running' })
       }
     }
   } else if (ev.type === 'tool.started') {
+    if (INTERNAL_CONTROL_TOOLS.has(String(ev.data.tool))) return
     const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
     if (!blocks.some(b => b.type === 'tool' && b.id === id)) {
       blocks.push({ type: 'tool', id, name: ev.data.tool ?? 'tool', status: 'running' })
     }
   } else if (ev.type === 'tool.progress') {
+    if (INTERNAL_CONTROL_TOOLS.has(String(ev.data.tool))) return
     const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
     const tb = blocks.find(b => b.type === 'tool' && b.id === id)
     if (tb && tb.type === 'tool') { tb.message = ev.data.message; tb.percentage = ev.data.percentage }
   } else if (ev.type === 'tool.completed' || ev.type === 'tool.failed') {
+    if (INTERNAL_CONTROL_TOOLS.has(String(ev.data.tool))) return
     const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
     const tb = blocks.find(b => b.type === 'tool' && b.id === id)
     if (tb && tb.type === 'tool') tb.status = ev.type === 'tool.completed' ? 'completed' : 'failed'

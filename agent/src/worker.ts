@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { SkillLoader, SkillRegistry } from '@gsms/skills-core'
 import { InvestAgentWorker } from './worker/InvestAgentWorker.ts'
+import { createIntentClassifier, intentClassifierConfigFromEnv } from './intent/createIntentClassifier.ts'
 
 const args = new Set(process.argv.slice(2))
 const once = args.has('--once')
@@ -19,7 +20,18 @@ const loaded = await new SkillLoader({ projectSkillsDir: builtinsDir }).load()
 const skills = new SkillRegistry()
 skills.replace(loaded.skills.map(skill => ({ ...skill, source: 'builtin' as const })))
 const experimentalRecon = process.env.INVEST_AGENT_EXPERIMENTAL_RECON === '1'
-const worker = new InvestAgentWorker({ gsmsUrl, proxyToken, workspace, skills, experimentalRecon })
+const worker = new InvestAgentWorker({
+  gsmsUrl,
+  proxyToken,
+  workspace,
+  skills,
+  experimentalRecon,
+  intentClassifierFactory: session => createIntentClassifier(intentClassifierConfigFromEnv(process.env, {
+    model: String(session.model_config.model_id ?? 'gsms-default'),
+    baseUrl: `${gsmsUrl}/api/agent`,
+    apiKey: proxyToken,
+  })),
+})
 
 do {
   const worked = await worker.runOnce()
