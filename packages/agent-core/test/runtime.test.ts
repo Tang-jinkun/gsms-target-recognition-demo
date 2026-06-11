@@ -6,14 +6,18 @@ import test from 'node:test'
 import { SkillRegistry, SkillTool } from '@gsms/skills-core'
 import {
   AgentRuntime,
+  ArtifactStore,
+  DomainStateStore,
   FakeModelAdapter,
   PermissionManager,
   ToolRegistry,
   createSkillAgentTool,
+  executeToolCall,
   finishTool,
   readFileTool,
   updateGoalTool,
   writeFileTool,
+  type AgentContext,
   type AgentTool,
 } from '../src/index.ts'
 
@@ -106,6 +110,72 @@ test('agent proactively selects a skill, acts, and finishes with evidence', asyn
     model.requests[1]!.tools.map(tool => tool.name).sort(),
     ['finish', 'read_file', 'skill', 'update_goal', 'write_file'].sort(),
   )
+})
+
+test('direct tool executor applies the same tool result contract as runtime', async () => {
+  const artifacts = new ArtifactStore()
+  const domainState = new DomainStateStore({ phase: 'before' })
+  const events: string[] = []
+  const context: AgentContext = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'direct',
+      status: 'active' as const,
+      turnCount: 1,
+      maxTurns: 1,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts,
+    domainState,
+    lastConsumedConfirmationId: 'confirm-1',
+  }
+  const tool: AgentTool = {
+    name: 'direct_contract_tool',
+    description: 'test direct execution',
+    risk: 'write',
+    inputSchema: { type: 'object' },
+    persistResultAboveBytes: 8,
+    async execute(_input, _context, onProgress) {
+      onProgress?.({ message: 'halfway', percentage: 50 })
+      return {
+        content: '0123456789abcdef',
+        artifacts: [{
+          type: 'direct-artifact',
+          createdBy: 'user',
+          data: { ok: true },
+          metadata: { confirmationId: 'confirm-1' },
+        }],
+        statePatch: { phase: 'after' },
+        diagnostics: [{ code: 'DIRECT_INFO', message: 'direct diagnostic', severity: 'info' }],
+        hiddenMessages: [{ role: 'user', hidden: true, content: 'hidden instruction' }],
+        goalUpdate: { progress: 'direct progress' },
+      }
+    },
+  }
+
+  const result = await executeToolCall({
+    tool,
+    call: { id: 'call-1', name: tool.name, input: { a: 1 } },
+    context,
+    runId: 'run-direct',
+    turn: 1,
+    eventSink: { emit: async event => { events.push(event.eventType) } },
+  })
+
+  assert.equal(result.messages.some(message => message.role === 'tool' && !message.isError), true)
+  assert.equal(result.messages.some(message => message.role === 'user' && message.hidden), true)
+  assert.equal(artifacts.list('direct-artifact')[0]?.createdBy, 'user')
+  assert.equal(artifacts.list('tool-result').length, 1)
+  assert.equal(domainState.snapshot().phase, 'after')
+  assert.equal(context.goal.progress, 'direct progress')
+  assert.ok(events.includes('tool.started'))
+  assert.ok(events.includes('tool.progress'))
+  assert.ok(events.includes('artifact.created'))
+  assert.ok(events.includes('state.changed'))
+  assert.ok(events.includes('diagnostic.created'))
+  assert.ok(events.includes('tool.completed'))
 })
 
 test('reloading the active inline skill is idempotent', async () => {

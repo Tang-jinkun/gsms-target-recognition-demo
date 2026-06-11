@@ -1,16 +1,14 @@
 import type {
-  AgentActionEvent,
   AgentContext,
   AgentEventSink,
   AgentMessage,
   AgentTool,
-  AgentToolResult,
   Diagnostic,
   ToolCall,
-  ToolProgressEvent,
 } from '../types.ts'
 import type { ToolRegistry } from '../tools/ToolRegistry.ts'
 import type { Transcript } from '../transcript/Transcript.ts'
+import { executeToolCall } from './ToolExecutionHost.ts'
 
 type ToolStatus = 'queued' | 'executing' | 'completed' | 'yielded'
 
@@ -221,282 +219,33 @@ export class StreamingToolExecutor {
       }
 
       const tool = tracked.tool
-      const startedAt = Date.now()
 
-      // Record tool call in transcript for audit trail
-      this.transcript?.record('tool_call', tracked.call)
-
-      await this.emit({
+      const execution = await executeToolCall({
+        tool,
+        call: tracked.call,
+        context: this.context,
+        eventSink: this.eventSink,
         runId: this.runId,
         turn: this.turn,
-        eventType: 'tool.started',
-        summary: `Started ${tracked.call.name}`,
-        status: 'started',
-        toolCallId: tracked.call.id,
-        data: { tool: tracked.call.name, input: sanitizeForEvent(tracked.call.input) },
-        timestamp: new Date().toISOString(),
-      })
-
-      try {
-        // ── Runtime contract: visibility + permission guard ──────────────
-        // Re-check tool visibility (skillScope, toolFilter) AND permissions
-        // at execution time.  This is the enforcement that prevents hidden
-        // tools from being executed even if the model guesses their names.
-        if (this.toolGuard) {
-          const decision = await this.toolGuard.check(tool, tracked.call.input, this.context)
-          if (decision === 'defer') {
-            this.context.goal.status = 'blocked'
-            this.context.goal.remainingIssues = [`Awaiting user confirmation for ${tool.name}`]
-            // Abort sibling tools — the run is blocked, no further tools
-            // should produce side-effects.
-            this.siblingAbortController.abort('permission_deferred')
-            messages.push({
-              role: 'tool',
-              toolCallId: tracked.call.id,
-              content: `Permission deferred pending user confirmation: ${tool.name}`,
-              isError: true,
-            })
-            await this.emit({
-              runId: this.runId,
-              turn: this.turn,
-              eventType: 'tool.deferred',
-              summary: `Waiting for user confirmation before ${tool.name}`,
-              status: 'waiting',
-              toolCallId: tracked.call.id,
-              data: { tool: tool.name },
-              durationMs: Date.now() - startedAt,
-              timestamp: new Date().toISOString(),
-            })
-            tracked.results = messages
-            tracked.status = 'completed'
-            return
-          }
-          if (decision === 'deny') {
-            messages.push({
-              role: 'tool',
-              toolCallId: tracked.call.id,
-              content: `Tool not available: ${tool.name} is not permitted in the current workflow phase or skill scope.`,
-              isError: true,
-            })
-            await this.emit({
-              runId: this.runId,
-              turn: this.turn,
-              eventType: 'tool.failed',
-              summary: `Denied ${tracked.call.name} — not visible in current scope`,
-              status: 'failed',
-              toolCallId: tracked.call.id,
-              data: { tool: tool.name, reason: 'visibility_denied' },
-              durationMs: Date.now() - startedAt,
-              timestamp: new Date().toISOString(),
-            })
-            tracked.results = messages
-            tracked.status = 'completed'
-            return
-          }
-          // 'allow' — proceed
-        }
-
-        // Execute tool with onProgress callback
-        const onProgress = (event: ToolProgressEvent) => {
-          const progressMsg: AgentMessage = {
-            role: 'user',
-            content: event.message,
-            hidden: true,
-          }
-          tracked.pendingProgress.push(progressMsg)
+        guard: this.toolGuard,
+        transcript: this.transcript,
+        diagnostics: this.diagnostics,
+        onProgressMessage: message => {
+          tracked.pendingProgress.push(message)
           if (this.progressAvailableResolve) {
             this.progressAvailableResolve()
             this.progressAvailableResolve = undefined
           }
-          this.emit({
-            runId: this.runId,
-            turn: this.turn,
-            eventType: 'tool.progress',
-            summary: event.message,
-            status: 'completed',
-            toolCallId: tracked.call.id,
-            data: { message: event.message, percentage: event.percentage },
-            timestamp: new Date().toISOString(),
-          })
-        }
-
-        const result = await tool.execute(tracked.call.input, this.context, onProgress)
-
-        // Auto-persist large results to artifact to keep context window lean
-        if (tool.persistResultAboveBytes && result.content.length > tool.persistResultAboveBytes) {
-          const inputKey = JSON.stringify(tracked.call.input).slice(0, 120)
-          // tool-result identity is per (tool input). A newer run of the same
-          // tool+input supersedes the older persisted result via logicalKey.
-          const persisted = this.context.artifacts.create({
-            type: 'tool-result',
-            logicalKey: `tool-result:${tool.name}:${inputKey}`,
-            createdBy: 'tool' as const,
-            metadata: { inputKey },
-            data: { tool: tool.name, input: tracked.call.input, fullContent: result.content },
-          })
-          await this.emit({
-            runId: this.runId,
-            turn: this.turn,
-            eventType: 'artifact.created',
-            summary: `Persisted large output from ${tool.name} (${result.content.length} chars)`,
-            status: 'completed',
-            data: { artifactId: persisted.id, artifactType: 'tool-result' },
-            timestamp: new Date().toISOString(),
-          })
-          const truncated = result.content.slice(0, 500)
-          result.content = `${truncated}\n\n[Full result persisted as artifact "${persisted.id}" (${result.content.length} chars). Use get_artifact to retrieve if needed.]`
-        }
-
-        // ── Process result ──────────────────────────────────────────────
-
-        // Artifacts
-        if (result.artifacts?.length) {
-          // Defense-in-depth: createdBy:'user' is only trustworthy when:
-          //  (a) the tool is risk:'write'|'execute' (auto-allowed read/control
-          //      tools must never claim user authorship), AND
-          //  (b) the artifact carries a confirmationId — a cryptographic
-          //      binding to a real user confirmation consumed by the Worker.
-          //      Without it, a risk:'write' tool that runs without a consumed
-          //      confirmation (e.g. model bypasses the defer/approve cycle)
-          //      cannot mint user-authored evidence.
-          for (const artifact of result.artifacts) {
-            if (artifact.createdBy === 'user') {
-              const isWriteOrExecute = tool.risk === 'write' || tool.risk === 'execute'
-              const hasConfirmationBinding =
-                isWriteOrExecute &&
-                typeof artifact.metadata?.confirmationId === 'string' &&
-                artifact.metadata.confirmationId.length > 0
-              if (!hasConfirmationBinding) {
-                artifact.createdBy = 'tool'
-              }
-            }
-          }
-          const created = this.context.artifacts.createMany(result.artifacts)
-          for (const artifact of created) {
-            await this.emit({
-              runId: this.runId,
-              turn: this.turn,
-              eventType: 'artifact.created',
-              summary: `Created ${artifact.type} artifact`,
-              status: 'completed',
-              data: { artifactId: artifact.id, artifactType: artifact.type },
-              timestamp: new Date().toISOString(),
-            })
-            this.transcript?.record('artifact', {
-              action: 'created',
-              id: artifact.id,
-              type: artifact.type,
-            })
-          }
-        }
-
-        // Domain state
-        if (result.statePatch) {
-          const state = this.context.domainState.applyPatch(result.statePatch)
-          await this.emit({
-            runId: this.runId,
-            turn: this.turn,
-            eventType: 'state.changed',
-            summary: `Updated workflow state${typeof state.phase === 'string' ? ` to ${state.phase}` : ''}`,
-            status: 'completed',
-            data: { patch: result.statePatch },
-            timestamp: new Date().toISOString(),
-          })
-          this.transcript?.record('state', {
-            action: 'patched',
-            patch: result.statePatch,
-          })
-        }
-
-        // Goal
-        if (result.goalUpdate) Object.assign(this.context.goal, result.goalUpdate)
-
-        // ── Runtime contract: activateSkill ─────────────────────────────
-        // When a tool returns activateSkill, set the context's skillScope
-        // so that subsequent tool executions are constrained to the skill's
-        // allowed tools.  This is the enforcement of Skill boundaries.
-        if (result.activateSkill) {
-          this.context.skillScope = {
-            name: result.activateSkill.name,
-            allowedTools: new Set(result.activateSkill.allowedTools),
-            activatedAtTurn: this.turn,
-          }
-          await this.emit({
-            runId: this.runId,
-            turn: this.turn,
-            eventType: 'state.changed',
-            summary: `Activated skill "${result.activateSkill.name}" with ${result.activateSkill.allowedTools.length} allowed tools`,
-            status: 'completed',
-            data: { skill: result.activateSkill.name, allowedTools: result.activateSkill.allowedTools },
-            timestamp: new Date().toISOString(),
-          })
-        }
-
-        // ── Runtime contract: diagnostics ───────────────────────────────
-        if (result.diagnostics?.length) {
-          this.diagnostics.push(...result.diagnostics)
-          for (const diag of result.diagnostics) {
-            this.transcript?.record('diagnostic', diag)
-            await this.emit({
-              runId: this.runId,
-              turn: this.turn,
-              eventType: 'diagnostic.created',
-              summary: diag.message,
-              status: diag.severity === 'error' ? 'failed' : 'completed',
-              data: { code: diag.code, severity: diag.severity },
-              timestamp: new Date().toISOString(),
-            })
-          }
-        }
-
-        messages.push({
-          role: 'tool',
-          toolCallId: tracked.call.id,
-          content: result.content,
-          isError: false,
-        })
-
-        await this.emit({
-          runId: this.runId,
-          turn: this.turn,
-          eventType: 'tool.completed',
-          summary: `Completed ${tracked.call.name}`,
-          status: 'completed',
-          toolCallId: tracked.call.id,
-          data: { tool: tracked.call.name },
-          durationMs: Date.now() - startedAt,
-          timestamp: new Date().toISOString(),
-        })
-
-        // Hidden messages (e.g., workflow directives)
-        if (result.hiddenMessages?.length) {
-          messages.push(...result.hiddenMessages)
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        messages.push({
-          role: 'tool',
-          toolCallId: tracked.call.id,
-          content: message,
-          isError: true,
-        })
-
-        // Track error for sibling cancellation
+        },
+      })
+      messages.push(...execution.messages)
+      if (execution.deferred) {
+        this.siblingAbortController.abort('permission_deferred')
+      }
+      if (execution.outcome === 'failed') {
         this.hasErrored = true
         this.erroredToolDescription = tracked.call.name
         this.siblingAbortController.abort('sibling_error')
-
-        await this.emit({
-          runId: this.runId,
-          turn: this.turn,
-          eventType: 'tool.failed',
-          summary: `Failed ${tracked.call.name}: ${message.slice(0, 200)}`,
-          status: 'failed',
-          toolCallId: tracked.call.id,
-          data: { tool: tracked.call.name, error: message.slice(0, 200) },
-          durationMs: Date.now() - startedAt,
-          timestamp: new Date().toISOString(),
-        })
       }
 
       tracked.results = messages
@@ -597,35 +346,4 @@ export class StreamingToolExecutor {
     return this.diagnostics
   }
 
-  private async emit(event: AgentActionEvent): Promise<void> {
-    try {
-      await this.eventSink?.emit(event)
-    } catch {
-      // Observability must never prevent the Agent from completing its work.
-    }
-  }
-}
-
-function summarizeText(value: string, maxLength = 1000): string {
-  const compact = value.replace(/\s+/g, ' ').trim()
-  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact
-}
-
-function sanitizeForEvent(value: unknown, depth = 0): unknown {
-  if (depth > 4) return '[truncated]'
-  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeForEvent(item, depth + 1))
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .slice(0, 40)
-        .map(([key, item]) => [
-          key,
-          /api.?key|token|secret|password|authorization/i.test(key)
-            ? '[redacted]'
-            : sanitizeForEvent(item, depth + 1),
-        ]),
-    )
-  }
-  if (typeof value === 'string') return summarizeText(value, 1000)
-  return value
 }
