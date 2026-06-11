@@ -117,18 +117,31 @@ def run_target_query(body: TargetQueryIn, db: Session = Depends(get_db)):
     }
     data_file = db.query(DataFile).filter(DataFile.path == stored_name).first()
     if not data_file:
-        data_file = DataFile(id=uuid.uuid4().hex, path=stored_name)
+        data_file = DataFile(
+            id=uuid.uuid4().hex,
+            name=output_name,
+            file_type="geojson",
+            file_format="geojson",
+            size=destination.stat().st_size,
+            path=stored_name,
+            folder_id=folder.id,
+            crs=metadata.get("crs"),
+            bounds=metadata.get("bounds"),
+            bounds_wgs84=metadata.get("bounds_wgs84"),
+            extra_meta=extra,
+        )
         db.add(data_file)
         db.flush()
-    data_file.name = output_name
-    data_file.file_type = "geojson"
-    data_file.file_format = "geojson"
-    data_file.size = destination.stat().st_size
-    data_file.folder_id = folder.id
-    data_file.crs = metadata.get("crs")
-    data_file.bounds = metadata.get("bounds")
-    data_file.bounds_wgs84 = metadata.get("bounds_wgs84")
-    data_file.extra_meta = extra
+    else:
+        data_file.name = output_name
+        data_file.file_type = "geojson"
+        data_file.file_format = "geojson"
+        data_file.size = destination.stat().st_size
+        data_file.folder_id = folder.id
+        data_file.crs = metadata.get("crs")
+        data_file.bounds = metadata.get("bounds")
+        data_file.bounds_wgs84 = metadata.get("bounds_wgs84")
+        data_file.extra_meta = extra
     if not db.get(SceneImport, {"scene_id": body.sceneId, "file_id": data_file.id}):
         db.add(SceneImport(scene_id=body.sceneId, file_id=data_file.id))
     db.commit()
