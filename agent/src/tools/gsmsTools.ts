@@ -34,6 +34,8 @@ const importDataHubSchema = z.object({
     score: z.number().optional(),
     reasons: z.array(z.string()).optional(),
     risks: z.array(z.string()).optional(),
+    recommended: z.boolean().optional(),
+    ambiguous: z.boolean().optional(),
   })).default([]),
 })
 const relationSchema = z.object({
@@ -149,6 +151,35 @@ function normalizeDataCards(result: unknown): DataCard[] {
     }
     return [dataCardSchema.parse(card)]
   })
+}
+
+type DataHubImportSelection = {
+  slot: string
+  fileId: string
+  name?: string
+  confidence?: string
+  score?: number
+  reasons: string[]
+  risks: string[]
+  recommended?: boolean
+  ambiguous?: boolean
+  required?: boolean
+}
+
+function dataHubImportUiRows(selections: readonly DataHubImportSelection[]) {
+  return selections.map(selection => ({
+    id: selection.fileId,
+    slot: selection.slot,
+    fileId: selection.fileId,
+    label: selection.name ?? selection.fileId,
+    confidence: selection.confidence,
+    score: selection.score,
+    reasons: selection.reasons,
+    risks: selection.risks,
+    recommended: selection.recommended,
+    ambiguous: selection.ambiguous,
+    required: selection.required,
+  }))
 }
 
 export function createGsmsTools(client: GsmsClient): AgentTool[] {
@@ -341,27 +372,33 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               })
             })
           : []
-        const selections = Array.isArray(source.slots)
+        const recommendedSet = new Set(recommendedFileIds)
+        const selections: DataHubImportSelection[] = Array.isArray(source.slots)
           ? source.slots.flatMap(slot => {
               if (!slot || typeof slot !== 'object') return []
-              const slotRecord = slot as { slot?: unknown; ambiguous?: unknown; candidates?: unknown }
+              const slotRecord = slot as { slot?: unknown; ambiguous?: unknown; required?: unknown; candidates?: unknown }
               if (!Array.isArray(slotRecord.candidates)) return []
-              const first = slotRecord.candidates[0]
-              if (!first || typeof first !== 'object') return []
-              const candidate = first as Record<string, unknown>
-              const fileId = candidate.file_id
-              if (typeof fileId !== 'string') return []
-              return [{
-                slot: String(slotRecord.slot ?? ''),
-                fileId,
-                name: typeof candidate.name === 'string' ? candidate.name : undefined,
-                score: typeof candidate.score === 'number' ? candidate.score : undefined,
-                confidence: typeof candidate.confidence === 'string' ? candidate.confidence : undefined,
-                reasons: Array.isArray(candidate.reasons) ? candidate.reasons.map(String) : [],
-                risks: Array.isArray(candidate.risks) ? candidate.risks.map(String) : [],
-              }]
+              return slotRecord.candidates.flatMap(candidate => {
+                if (!candidate || typeof candidate !== 'object') return []
+                const row = candidate as Record<string, unknown>
+                const fileId = row.file_id
+                if (typeof fileId !== 'string') return []
+                return [{
+                  slot: String(slotRecord.slot ?? ''),
+                  fileId,
+                  name: typeof row.name === 'string' ? row.name : undefined,
+                  score: typeof row.score === 'number' ? row.score : undefined,
+                  confidence: typeof row.confidence === 'string' ? row.confidence : undefined,
+                  reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
+                  risks: Array.isArray(row.risks) ? row.risks.map(String) : [],
+                  recommended: recommendedSet.has(fileId),
+                  ambiguous: slotRecord.ambiguous === true,
+                  required: slotRecord.required === true,
+                }]
+              })
             })
           : []
+        const defaultFileIds = [...new Set(recommendedFileIds)]
         const proposalKey = `data-hub-import-proposal:${parsed.sceneId}:${parsed.modelId}`
         const confirmationProposalKey = `confirmation-proposal:import_data_hub_files_to_scene:${parsed.sceneId}:${parsed.modelId}`
         const discoveryReportKey = `data-source-discovery-report:data-hub:${parsed.sceneId}:${parsed.modelId}`
@@ -409,26 +446,17 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
                 providerId: 'data-hub',
                 sceneId: parsed.sceneId,
                 modelId: parsed.modelId,
-                fileIds: [...new Set(proposedFileIds)],
+                fileIds: defaultFileIds,
                 selections,
                 slots: source.slots,
                 ui: {
                   type: 'data-import-proposal',
                   title: '推荐导入 Data Hub 文件',
                   description: 'Agent 找到这些文件可能适合当前模型输入。确认后只会把 Data Hub 文件引用写入当前场景，不复制文件。',
-                  fileIds: [...new Set(proposedFileIds)],
-                  rows: selections.map(selection => ({
-                    id: selection.fileId,
-                    slot: selection.slot,
-                    fileId: selection.fileId,
-                    label: selection.name ?? selection.fileId,
-                    confidence: selection.confidence,
-                    score: selection.score,
-                    reasons: selection.reasons,
-                    risks: selection.risks,
-                  })),
+                  fileIds: defaultFileIds,
+                  rows: dataHubImportUiRows(selections),
                   actions: {
-                    approveLabel: '全部导入',
+                    approveLabel: '导入所选',
                     rejectLabel: '取消',
                     allowPartial: true,
                   },
@@ -505,6 +533,9 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
                     score: typeof row.score === 'number' ? row.score : undefined,
                     reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
                     risks: Array.isArray(row.risks) ? row.risks.map(String) : [],
+                    recommended: typeof row.recommended === 'boolean' ? row.recommended : undefined,
+                    ambiguous: typeof row.ambiguous === 'boolean' ? row.ambiguous : undefined,
+                    required: typeof row.required === 'boolean' ? row.required : undefined,
                   }]
                 })
               : []
@@ -555,6 +586,9 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
                 score: { type: 'number' },
                 reasons: { type: 'array', items: { type: 'string' } },
                 risks: { type: 'array', items: { type: 'string' } },
+                recommended: { type: 'boolean' },
+                ambiguous: { type: 'boolean' },
+                required: { type: 'boolean' },
               },
             },
           },

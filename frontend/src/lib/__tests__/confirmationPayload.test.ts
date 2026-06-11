@@ -46,6 +46,27 @@ test('data import proposal renders from generic confirmation ui contract without
   })
 })
 
+test('data import proposal separates default selected ids from selectable candidate rows', () => {
+  const proposal = dataImportProposalFromPayload('import_data_hub_files_to_scene', {
+    ui: {
+      type: 'data-import-proposal',
+      fileIds: ['pools-1'],
+      rows: [
+        { fileId: 'pools-1', slot: 'carbon_pools_path', label: 'carbon_pools.csv', recommended: true, required: true },
+        { fileId: 'lulc-current', slot: 'lulc_bas_path', label: 'lulc_current.tif', ambiguous: true, required: true },
+        { fileId: 'lulc-future', slot: 'lulc_bas_path', label: 'lulc_future.tif', ambiguous: true, required: true },
+      ],
+      actions: { approveLabel: '导入所选', rejectLabel: '取消', allowPartial: true },
+    },
+  })
+
+  assert.deepEqual(proposal?.fileIds, ['pools-1'])
+  assert.deepEqual(proposal?.selections.map(selection => selection.fileId), ['pools-1', 'lulc-current', 'lulc-future'])
+  assert.equal(proposal?.selections[0]?.recommended, true)
+  assert.equal(proposal?.selections[1]?.ambiguous, true)
+  assert.equal(proposal?.selections[1]?.required, true)
+})
+
 test('data import proposal keeps legacy Data Hub payload fallback', () => {
   const proposal = dataImportProposalFromPayload('import_data_hub_files_to_scene', {
     summary: {

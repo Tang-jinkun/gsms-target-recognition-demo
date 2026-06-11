@@ -70,6 +70,7 @@ class ConfirmationCreateIn(BaseModel):
 
 class ConfirmationResolveIn(BaseModel):
     approved: bool
+    payload_override: dict | None = None
 
 
 class SessionCheckpointIn(BaseModel):
@@ -463,6 +464,8 @@ def resolve_agent_confirmation(
     if not session or not confirmation:
         raise HTTPException(status_code=404, detail="Agent confirmation not found")
     try:
+        if body.approved and body.payload_override is not None:
+            confirmation.payload = body.payload_override
         confirmation.status = next_confirmation_status(confirmation.status, body.approved)
         old_status = session.status
         session.status = next_session_status(

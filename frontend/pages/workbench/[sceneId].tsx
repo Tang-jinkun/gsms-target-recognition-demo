@@ -546,12 +546,16 @@ export default function WorkbenchPage() {
     }
   }
 
-  async function resolveAgentConfirmation(approved: boolean, confirmationId = pendingConfirmation?.id) {
+  async function resolveAgentConfirmation(
+    approved: boolean,
+    confirmationId = pendingConfirmation?.id,
+    payloadOverride?: Record<string, unknown>,
+  ) {
     if (!agentSession || !confirmationId) return
     try {
       updateConfirmationBlockStatus(confirmationId, approved ? 'approved' : 'rejected')
       rebuildTurns()
-      const result = await agentSessionsRepo.resolveConfirmation(agentSession.id, confirmationId, approved)
+      const result = await agentSessionsRepo.resolveConfirmation(agentSession.id, confirmationId, approved, payloadOverride)
       setPendingConfirmation(null)
       await refreshAfterAction(result.session)
     } catch {
@@ -562,18 +566,6 @@ export default function WorkbenchPage() {
   function pendingDataHubImport() {
     if (!pendingConfirmation) return null
     return dataImportProposalFromPayload(pendingConfirmation.kind, pendingConfirmation.payload)
-  }
-
-  async function importPartialRecommendation(fileIds: string[], confirmationId = pendingConfirmation?.id) {
-    if (!agentSession || !confirmationId || !sceneId || fileIds.length === 0) return
-    try {
-      const result = await workbenchRepo.importFiles(sceneId, fileIds)
-      toast(`已导入 ${result.imported} 个推荐文件`)
-      await refreshSceneFiles()
-      await resolveAgentConfirmation(false, confirmationId)
-    } catch {
-      setAgentError('Could not import the selected Data Hub files.')
-    }
   }
 
   function AgentConfirmationCard(props: { confirmation?: AgentConfirmation | null; compact?: boolean }) {
@@ -612,8 +604,54 @@ export default function WorkbenchPage() {
     const rows: DataHubImportSelection[] = proposal.selections.length
       ? proposal.selections
       : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
+    const activeConfirmation = confirmation
     const selectedIds = proposal.fileIds.filter(id => selected[id])
-    const allSelected = selectedIds.length === proposal.fileIds.length
+    const selectedRows = rows.filter(row => selectedIds.includes(row.fileId))
+    const slotCounts = rows.reduce<Record<string, number>>((acc, row) => {
+      acc[row.slot] = (acc[row.slot] ?? 0) + 1
+      return acc
+    }, {})
+    function setRowSelected(row: DataHubImportSelection, checked: boolean) {
+      setSelected(prev => {
+        const next = { ...prev, [row.fileId]: checked }
+        if (checked && slotCounts[row.slot] > 1) {
+          for (const candidate of rows) {
+            if (candidate.slot === row.slot && candidate.fileId !== row.fileId) {
+              next[candidate.fileId] = false
+            }
+          }
+        }
+        return next
+      })
+    }
+    function importSelected() {
+      const original = activeConfirmation.payload && typeof activeConfirmation.payload === 'object'
+        ? activeConfirmation.payload
+        : {}
+      const originalInput = original.input && typeof original.input === 'object'
+        ? original.input as Record<string, unknown>
+        : {}
+      const nextInput = {
+        ...originalInput,
+        fileIds: selectedIds,
+        selections: selectedRows,
+      }
+      const nextPayload = {
+        ...original,
+        input: nextInput,
+        summary: {
+          ...(original.summary && typeof original.summary === 'object' ? original.summary as Record<string, unknown> : {}),
+          fileIds: selectedIds,
+          selections: selectedRows,
+        },
+        ui: {
+          ...(original.ui && typeof original.ui === 'object' ? original.ui as Record<string, unknown> : {}),
+          fileIds: selectedIds,
+        },
+      }
+      delete (nextPayload as Record<string, unknown>).authorizationKey
+      resolveAgentConfirmation(true, activeConfirmation.id, nextPayload)
+    }
     return (
       <div className="agent-confirm import-proposal">
         <div className="confirm-main">
@@ -622,7 +660,7 @@ export default function WorkbenchPage() {
           <div className="proposal-list">
             {rows.map(row => (
               <label className="proposal-row" key={`${row.slot}:${row.fileId}`}>
-                <input type="checkbox" disabled={!isPending} checked={selected[row.fileId] !== false} onChange={e => setSelected(prev => ({ ...prev, [row.fileId]: e.target.checked }))} />
+                <input type="checkbox" disabled={!isPending} checked={selected[row.fileId] === true} onChange={e => setRowSelected(row, e.target.checked)} />
                 <span className="slot-pill">{row.slot}</span>
                 <div className="proposal-copy">
                   <div className="ftitle">{row.name || row.fileId}</div>
@@ -640,8 +678,7 @@ export default function WorkbenchPage() {
           {isPending
             ? <>
                 <button className="btn btn-sm" onClick={() => resolveAgentConfirmation(false, confirmation.id)}>{proposal.rejectLabel ?? '取消'}</button>
-                {proposal.allowPartial !== false && !allSelected && <button className="btn btn-sm" disabled={!selectedIds.length} onClick={() => importPartialRecommendation(selectedIds, confirmation.id)}>只导入所选</button>}
-                <button className="btn btn-sm btn-primary" disabled={!selectedIds.length || !allSelected} onClick={() => resolveAgentConfirmation(true, confirmation.id)}>{proposal.approveLabel ?? '全部导入'}</button>
+                <button className="btn btn-sm btn-primary" disabled={!selectedIds.length} onClick={importSelected}>{proposal.approveLabel ?? '导入所选'}</button>
               </>
             : <span className="confirm-status">{statusText}</span>}
         </div>

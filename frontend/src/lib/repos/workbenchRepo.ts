@@ -55,6 +55,9 @@ export type DataHubImportSelection = {
   score?: number
   reasons?: string[]
   risks?: string[]
+  recommended?: boolean
+  ambiguous?: boolean
+  required?: boolean
 }
 
 const BACKEND_TO_UI: Record<string, AssetType> = {

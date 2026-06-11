@@ -13,6 +13,7 @@ import {
   checkWorkflowPhaseTransition,
   evaluateDataAvailabilityPolicy,
   executionPhaseAllows,
+  enrichDataHubImportConfirmationUi,
   phaseResumeInstruction,
   workflowPhaseFilter,
   workflowEvidenceInstruction,
@@ -387,6 +388,51 @@ test('worker does not fail a session when another worker wins the claim', async 
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
+})
+
+test('data hub import confirmation ui is enriched from latest proposal when tool input is partial', () => {
+  const artifacts = new ArtifactStore()
+  artifacts.create({
+    type: 'confirmation-proposal',
+    createdBy: 'tool',
+    data: {
+      ui: {
+        type: 'data-import-proposal',
+        title: '推荐导入 Data Hub 文件',
+        fileIds: ['pools-1'],
+        rows: [
+          { fileId: 'pools-1', slot: 'carbon_pools_path', label: 'carbon_pools.csv', confidence: 'high', score: 0.935, recommended: true },
+          { fileId: 'lulc-current', slot: 'lulc_bas_path', label: 'lulc_current.tif', confidence: 'medium', score: 0.54, ambiguous: true },
+          { fileId: 'lulc-future', slot: 'lulc_bas_path', label: 'lulc_future.tif', confidence: 'medium', score: 0.495, ambiguous: true },
+        ],
+        actions: { approveLabel: '导入所选', rejectLabel: '取消', allowPartial: true },
+      },
+    },
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      actionTool: 'import_data_hub_files_to_scene',
+      proposedFileIds: ['pools-1', 'lulc-current', 'lulc-future'],
+    },
+  })
+
+  const ui = enrichDataHubImportConfirmationUi(
+    {
+      type: 'data-import-proposal',
+      fileIds: ['pools-1'],
+      rows: [{ fileId: 'pools-1', slot: 'carbon_pools_path', label: 'carbon_pools.csv' }],
+    },
+    { sceneId: 'scene-1', fileIds: ['pools-1'] },
+    { sceneId: 'scene-1', modelId: 'carbon' },
+    artifacts,
+  )
+
+  assert.deepEqual(ui?.fileIds, ['pools-1'])
+  assert.deepEqual(
+    (ui?.rows as Array<{ fileId: string }>).map(row => row.fileId),
+    ['pools-1', 'lulc-current', 'lulc-future'],
+  )
+  assert.equal(((ui?.rows as Array<{ ambiguous?: boolean }>)[1])?.ambiguous, true)
 })
 
 test('approved direct execution is driven by tool policy instead of tool name', () => {

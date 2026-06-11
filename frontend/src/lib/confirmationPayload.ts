@@ -34,7 +34,7 @@ function dataImportProposalFromUi(value: unknown): DataImportProposal | null {
         ? row.id
         : ''
     if (!fileId) return []
-    return [{
+    const selection: DataHubImportSelection = {
       slot: typeof row.slot === 'string' ? row.slot : 'input',
       fileId,
       name: typeof row.name === 'string'
@@ -46,7 +46,11 @@ function dataImportProposalFromUi(value: unknown): DataImportProposal | null {
       score: typeof row.score === 'number' ? row.score : undefined,
       reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
       risks: Array.isArray(row.risks) ? row.risks.map(String) : [],
-    }]
+    }
+    if (typeof row.recommended === 'boolean') selection.recommended = row.recommended
+    if (typeof row.ambiguous === 'boolean') selection.ambiguous = row.ambiguous
+    if (typeof row.required === 'boolean') selection.required = row.required
+    return [selection]
   })
   const normalizedFileIds = fileIds.length
     ? fileIds
@@ -84,7 +88,7 @@ function dataHubImportFallbackFromPayload(
         if (!item || typeof item !== 'object') return []
         const row = item as Record<string, unknown>
         if (typeof row.slot !== 'string' || typeof row.fileId !== 'string') return []
-        return [{
+        const selection: DataHubImportSelection = {
           slot: row.slot,
           fileId: row.fileId,
           name: typeof row.name === 'string' ? row.name : undefined,
@@ -92,7 +96,11 @@ function dataHubImportFallbackFromPayload(
           score: typeof row.score === 'number' ? row.score : undefined,
           reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
           risks: Array.isArray(row.risks) ? row.risks.map(String) : [],
-        }]
+        }
+        if (typeof row.recommended === 'boolean') selection.recommended = row.recommended
+        if (typeof row.ambiguous === 'boolean') selection.ambiguous = row.ambiguous
+        if (typeof row.required === 'boolean') selection.required = row.required
+        return [selection]
       })
     : []
   return fileIds.length ? { fileIds, selections } : null

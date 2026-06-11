@@ -77,9 +77,14 @@ export const agentSessionsRepo = {
   confirmations: (sessionId: string) =>
     api.get<AgentConfirmation[]>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/confirmations`),
 
-  resolveConfirmation: (sessionId: string, confirmationId: string, approved: boolean) =>
+  resolveConfirmation: (
+    sessionId: string,
+    confirmationId: string,
+    approved: boolean,
+    payloadOverride?: Record<string, unknown>,
+  ) =>
     api.post<{ session: AgentSession; confirmation: AgentConfirmation }>(
       `/api/agent/sessions/${encodeURIComponent(sessionId)}/confirmations/${encodeURIComponent(confirmationId)}`,
-      { approved },
+      payloadOverride ? { approved, payload_override: payloadOverride } : { approved },
     ),
 }
