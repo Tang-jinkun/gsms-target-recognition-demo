@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import type { AgentContext, AgentTool } from '@gsms/agent-core'
+import type { AgentContext, AgentTool, Artifact } from '@gsms/agent-core'
 import {
   bindingReportSchema,
   bindingStatusSchema,
@@ -29,9 +29,14 @@ function latestModelSchema(context: AgentContext): ModelInputSchema {
 
 function dataCards(context: AgentContext): DataCard[] {
   const sceneDataContextId = currentSceneDataContext(context)
-  return context.artifacts
+  const latestMutation = assertFreshSceneDataForMutations(context, sceneDataContextId)
+  const artifacts = context.artifacts
     .list('data-card')
     .filter(artifact => artifact.metadata?.sceneDataContextId === sceneDataContextId)
+  const currentArtifacts = latestMutation
+    ? artifacts.filter(artifact => artifactCreatedAfterRefresh(artifact, latestMutation))
+    : artifacts
+  return currentArtifacts
     .map(artifact => dataCardSchema.parse(artifact.data))
 }
 
@@ -66,6 +71,77 @@ function currentMatchingContext(context: AgentContext): string {
     })
   }
   return value
+}
+
+function assertFreshSceneDataForMutations(context: AgentContext, sceneDataContextId?: string): Artifact | undefined {
+  const sceneId = context.domainState.snapshot().sceneId
+  const mutationRecords = context.artifacts
+    .list()
+    .filter(artifact =>
+      artifact.type === 'scene-import-record' ||
+      artifact.metadata?.mutationTool === 'import_data_hub_files_to_scene',
+    )
+    .filter(artifact => !sceneId || !artifact.metadata?.sceneId || artifact.metadata.sceneId === sceneId)
+  const latestMutation = latestArtifact(mutationRecords)
+  if (!latestMutation) return undefined
+  if (!sceneDataContextId) {
+    throw toolFailure(
+      'SCENE_DATA_CONTEXT_MISSING',
+      'Scene data changed after a Data Hub import. Reload scene data cards before matching or finalizing.',
+      {
+        latestMutationId: latestMutation.id,
+        nextAction: { tool: 'list_scene_data_cards', input: { sceneId } },
+      },
+    )
+  }
+
+  const refreshedSceneData = latestArtifact(context.artifacts
+    .list('gsms-scene-data-cards')
+    .filter(artifact =>
+      artifact.metadata?.sceneDataContextId === sceneDataContextId &&
+      artifactCreatedAfterRefresh(artifact, latestMutation),
+    ))
+
+  const freshDataCards = context.artifacts
+    .list('data-card')
+    .filter(artifact =>
+      artifact.metadata?.sceneDataContextId === sceneDataContextId &&
+      artifactCreatedAfterRefresh(artifact, latestMutation),
+    )
+  const expectedCardCount = refreshedSceneData ? sceneDataCardCount(refreshedSceneData) : undefined
+
+  if (!refreshedSceneData || (typeof expectedCardCount === 'number' && expectedCardCount > 0 && freshDataCards.length === 0)) {
+    throw toolFailure(
+      'STALE_SCENE_DATA_CONTEXT',
+      'Scene data changed after a Data Hub import. Reload scene data cards before matching or finalizing.',
+      {
+        sceneDataContextId,
+        latestMutationId: latestMutation.id,
+        nextAction: { tool: 'list_scene_data_cards', input: { sceneId } },
+      },
+    )
+  }
+  return latestMutation
+}
+
+function latestArtifact(artifacts: readonly Artifact[]): Artifact | undefined {
+  return [...artifacts].sort((left, right) => {
+    const byTime = Date.parse(right.createdAt) - Date.parse(left.createdAt)
+    return byTime || right.id.localeCompare(left.id)
+  })[0]
+}
+
+function artifactCreatedAfterRefresh(candidate: Artifact, reference: Artifact): boolean {
+  return (
+    (candidate.metadata?.refreshedAfterMutation === true || candidate.metadata?.refreshedAfterImport === true) &&
+    Date.parse(candidate.createdAt) >= Date.parse(reference.createdAt)
+  )
+}
+
+function sceneDataCardCount(artifact: Artifact): number | undefined {
+  if (!artifact.data || typeof artifact.data !== 'object') return undefined
+  const cards = (artifact.data as { data_cards?: unknown }).data_cards
+  return Array.isArray(cards) ? cards.length : undefined
 }
 
 function contextualArtifacts(context: AgentContext, type: string) {
@@ -234,6 +310,11 @@ export const finalizeDataMatchingTool: AgentTool = {
     if (parsed.modelId !== schema.modelId) {
       throw toolFailure('MODEL_MISMATCH', `Matching model ${parsed.modelId} does not match ${schema.modelId}.`)
     }
+    const sceneDataContextId = context.domainState.snapshot().sceneDataContextId
+    assertFreshSceneDataForMutations(
+      context,
+      typeof sceneDataContextId === 'string' ? sceneDataContextId : undefined,
+    )
     const matchingContextId = currentMatchingContext(context)
     const candidateSets = contextualArtifacts(context, 'candidate-set')
       .map(artifact => candidateSetSchema.parse(artifact.data))

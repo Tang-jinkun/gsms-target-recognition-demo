@@ -5,6 +5,7 @@ import {
   assertReportCanProceed,
   buildBindingReport,
   computeMatchingContextId,
+  computeSceneDataContextId,
   createMatchingTools,
   retrieveCandidates,
 } from '../src/index.ts'
@@ -83,6 +84,106 @@ test('candidate retrieval accepts legacy asset-id aliases for schema path slots'
     candidateAssetIds: ['lulc-current'],
     status: 'candidates-found',
   })
+})
+
+test('candidate retrieval rejects scene data contexts that predate a Data Hub import', async () => {
+  const currentLulc = raster('lulc-current', 'lulc_current.tif', ['current land cover'], [1, 2])
+  const sceneDataContextId = computeSceneDataContextId('scene-1', [currentLulc])
+  const matchingContextId = computeMatchingContextId('scene-1', testCarbonModelSchema, [currentLulc])
+  const artifacts = new ArtifactStore()
+  artifacts.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: testCarbonModelSchema,
+      metadata: { modelId: 'carbon' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      type: 'gsms-scene-data-cards',
+      createdBy: 'tool',
+      data: { data_cards: [currentLulc] },
+      metadata: { sceneId: 'scene-1', modelId: 'carbon', sceneDataContextId },
+      createdAt: '2026-01-01T00:00:01.000Z',
+    },
+    {
+      type: 'data-card',
+      createdBy: 'tool',
+      data: currentLulc,
+      metadata: { sceneId: 'scene-1', modelId: 'carbon', sceneDataContextId, assetId: 'lulc-current' },
+      createdAt: '2026-01-01T00:00:01.000Z',
+    },
+    {
+      type: 'scene-import-record',
+      createdBy: 'user',
+      data: {},
+      metadata: { sceneId: 'scene-1', modelId: 'carbon', mutationTool: 'import_data_hub_files_to_scene' },
+      createdAt: '2026-01-01T00:00:02.000Z',
+    },
+  ])
+  const context: AgentContext = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'match carbon',
+      status: 'active',
+      turnCount: 1,
+      maxTurns: 5,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    } satisfies GoalState,
+    artifacts,
+    domainState: new DomainStateStore({
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      sceneDataContextId,
+      matchingContextId,
+    }),
+  }
+  const tool = createMatchingTools().find(candidate => candidate.name === 'retrieve_input_candidates')!
+
+  await assert.rejects(
+    tool.execute({ slot: 'lulc_bas_path' }, context),
+    /STALE_SCENE_DATA_CONTEXT/,
+  )
+
+  const finalizeTool = createMatchingTools().find(candidate => candidate.name === 'finalize_data_matching')!
+  await assert.rejects(
+    finalizeTool.execute({ modelId: 'carbon', decisions: [] }, context),
+    /STALE_SCENE_DATA_CONTEXT/,
+  )
+
+  artifacts.create({
+    type: 'gsms-scene-data-cards',
+    createdBy: 'tool',
+    data: { data_cards: [currentLulc] },
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      sceneDataContextId,
+      refreshedAfterMutation: true,
+      refreshedAfterImport: true,
+    },
+    createdAt: '2026-01-01T00:00:03.000Z',
+  })
+  artifacts.create({
+    type: 'data-card',
+    createdBy: 'tool',
+    data: currentLulc,
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      sceneDataContextId,
+      assetId: 'lulc-current',
+      refreshedAfterMutation: true,
+      refreshedAfterImport: true,
+    },
+    createdAt: '2026-01-01T00:00:03.000Z',
+  })
+
+  const result = await tool.execute({ slot: 'lulc_bas_path' }, context)
+  assert.equal(result.artifacts?.[0]?.type, 'candidate-set')
+  assert.deepEqual((result.statePatch?.slots as Record<string, { candidateAssetIds: string[] }>).lulc_bas_path.candidateAssetIds, ['lulc-current'])
 })
 
 test('matching context changes when current scene data provenance changes', () => {

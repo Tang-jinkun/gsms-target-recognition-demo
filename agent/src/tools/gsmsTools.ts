@@ -253,6 +253,16 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         const schemaArtifact = tryContextModelSchema(context)
         const sceneDataContextId = computeSceneDataContextId(sceneId, cards)
         const matchingContextId = computeMatchingContextId(sceneId, schemaArtifact, cards)
+        const refreshesDataHubImport = context.artifacts
+          .list()
+          .some(artifact =>
+            (artifact.type === 'scene-import-record' ||
+              artifact.metadata?.mutationTool === 'import_data_hub_files_to_scene') &&
+            artifact.metadata?.sceneId === sceneId,
+          )
+        const refreshMetadata = refreshesDataHubImport
+          ? { refreshedAfterMutation: true, refreshedAfterImport: true }
+          : {}
         return {
           content: JSON.stringify(result),
           artifacts: [
@@ -261,7 +271,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               logicalKey: `gsms-scene-data-cards:${sceneDataContextId}`,
               createdBy: 'tool',
               data: result,
-              metadata: { sceneId, modelId: schemaArtifact?.modelId, sceneDataContextId },
+              metadata: { sceneId, modelId: schemaArtifact?.modelId, sceneDataContextId, ...refreshMetadata },
             },
             ...cards.map(card => ({
               type: 'data-card',
@@ -273,6 +283,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
                 modelId: schemaArtifact?.modelId,
                 sceneDataContextId,
                 assetId: card.assetId,
+                ...refreshMetadata,
               },
             })),
           ],

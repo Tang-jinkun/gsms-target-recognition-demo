@@ -72,6 +72,50 @@ test('GSMS tools use backend schemas and data cards as authoritative artifacts',
   )
   assert.equal(cardsResult.artifacts?.[0]?.type, 'gsms-scene-data-cards')
   assert.equal(cardsResult.artifacts?.[1]?.type, 'data-card')
+  assert.equal(cardsResult.artifacts?.[0]?.metadata?.refreshedAfterMutation, undefined)
+})
+
+test('list_scene_data_cards marks refreshed facts after a Data Hub import record', async () => {
+  const fetch = async () => {
+    return new Response(JSON.stringify({
+      scene_id: 'scene-1',
+      data_cards: [
+        {
+          asset_id: 'lulc-1',
+          path: 'lulc.tif',
+          filename: 'lulc.tif',
+          asset_type: 'raster',
+          semantic_hints: ['current land cover'],
+          metadata: { band_count: 1, width: 10, height: 10 },
+          provenance: { size: 100 },
+        },
+      ],
+      diagnostics: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tools = createGsmsTools(new GsmsClient({ baseUrl: 'http://localhost:8000/', fetch }))
+  const ctx = context()
+  ctx.artifacts.create({
+    type: 'scene-import-record',
+    createdBy: 'user',
+    data: {},
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      mutationTool: 'import_data_hub_files_to_scene',
+    },
+  })
+
+  const result = await tools
+    .find(tool => tool.name === 'list_scene_data_cards')!
+    .execute({ sceneId: 'scene-1' }, ctx)
+
+  assert.equal(result.artifacts?.[0]?.metadata?.refreshedAfterMutation, true)
+  assert.equal(result.artifacts?.[0]?.metadata?.refreshedAfterImport, true)
+  assert.equal(result.artifacts?.[1]?.metadata?.refreshedAfterMutation, true)
 })
 
 test('GSMS relation tool sends a structured relation request', async () => {
