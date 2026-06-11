@@ -16,7 +16,7 @@ import { workbenchRepo, type DataHubImportSelection, type DataHubImportSlotGroup
 import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentMessage, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
 import { useAgentEventSource } from '../../src/lib/useAgentEventSource'
 import { applyEventToBlocks, buildTurnsFromMessagesAndRuns, type RunStatus, type Turn, type TurnBlock } from '../../src/lib/activityBlocks'
-import { dataImportProposalFromPayload } from '../../src/lib/confirmationPayload'
+import { buildDataHubImportConfirmationOverride, dataImportProposalFromPayload, selectedDataHubImportRows } from '../../src/lib/confirmationPayload'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -139,6 +139,7 @@ export default function WorkbenchPage() {
   const [agentSession, setAgentSession] = React.useState<AgentSession | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
   const [confirmationChoices, setConfirmationChoices] = React.useState<Record<string, Record<string, string>>>({})
+  const confirmationChoicesRef = React.useRef<Record<string, Record<string, string>>>({})
   const pendingConfirmationRef = React.useRef<AgentConfirmation | null>(null)
   const [agentError, setAgentError] = React.useState('')
   const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
@@ -587,6 +588,12 @@ export default function WorkbenchPage() {
             next[slot.slot] = slot.selectedFileId
             changed = true
           }
+          if (changed && confirmation?.id) {
+            confirmationChoicesRef.current = {
+              ...confirmationChoicesRef.current,
+              [confirmation.id]: next,
+            }
+          }
           return changed && confirmation?.id
             ? { ...prev, [confirmation.id]: next }
             : prev
@@ -625,25 +632,16 @@ export default function WorkbenchPage() {
       ? proposal.selections
       : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
     const activeConfirmation = confirmation
-    const autoSelectedRows = hasSlotProposal
-      ? proposal.slots.flatMap(slot =>
-          slot.status === 'auto_selected' && slot.selectedFileId
-            ? slot.candidates.filter(candidate => candidate.fileId === slot.selectedFileId)
-            : [],
-        )
-      : []
-    const userSelectedRows = hasSlotProposal
-      ? proposal.slots.flatMap(slot =>
-          slot.status === 'needs_user_choice' && slotChoices[slot.slot]
-            ? slot.candidates.filter(candidate => candidate.fileId === slotChoices[slot.slot])
-            : [],
-        )
-      : []
     const legacySelectedRows = rows.filter(row => selected[row.fileId])
     const selectedRows = hasSlotProposal
-      ? [...autoSelectedRows, ...userSelectedRows]
+      ? selectedDataHubImportRows(proposal, slotChoices)
       : legacySelectedRows
     const selectedIds = [...new Set(selectedRows.map(row => row.fileId))]
+    const requiredChoicesComplete = !hasSlotProposal || proposal.slots.every(slot =>
+      slot.status !== 'needs_user_choice' ||
+      slot.required !== true ||
+      Boolean(slotChoices[slot.slot]),
+    )
     const slotCounts = rows.reduce<Record<string, number>>((acc, row) => {
       acc[row.slot] = (acc[row.slot] ?? 0) + 1
       return acc
@@ -662,6 +660,13 @@ export default function WorkbenchPage() {
       })
     }
     function setSlotChoice(slot: DataHubImportSlotGroup, fileId: string) {
+      confirmationChoicesRef.current = {
+        ...confirmationChoicesRef.current,
+        [activeConfirmation.id]: {
+          ...(confirmationChoicesRef.current[activeConfirmation.id] ?? {}),
+          [slot.slot]: fileId,
+        },
+      }
       setConfirmationChoices(prev => ({
         ...prev,
         [activeConfirmation.id]: {
@@ -671,31 +676,21 @@ export default function WorkbenchPage() {
       }))
     }
     function importSelected() {
+      if (!proposal) return
       const original = activeConfirmation.payload && typeof activeConfirmation.payload === 'object'
         ? activeConfirmation.payload
         : {}
-      const originalInput = original.input && typeof original.input === 'object'
-        ? original.input as Record<string, unknown>
-        : {}
-      const nextInput = {
-        ...originalInput,
-        fileIds: selectedIds,
-        selections: selectedRows,
-      }
-      const nextPayload = {
-        ...original,
-        input: nextInput,
-        summary: {
-          ...(original.summary && typeof original.summary === 'object' ? original.summary as Record<string, unknown> : {}),
-          fileIds: selectedIds,
-          selections: selectedRows,
-        },
-        ui: {
-          ...(original.ui && typeof original.ui === 'object' ? original.ui as Record<string, unknown> : {}),
-          fileIds: selectedIds,
-        },
-      }
-      delete (nextPayload as Record<string, unknown>).authorizationKey
+      const nextPayload = hasSlotProposal
+        ? buildDataHubImportConfirmationOverride(
+            original,
+            proposal,
+            confirmationChoicesRef.current[activeConfirmation.id] ?? {},
+          )
+        : buildDataHubImportConfirmationOverride(
+            original,
+            { ...proposal, fileIds: selectedIds, selections: selectedRows, slots: [] },
+            {},
+          )
       resolveAgentConfirmation(true, activeConfirmation.id, nextPayload)
     }
     return (
@@ -781,7 +776,7 @@ export default function WorkbenchPage() {
           {isPending
             ? <>
                 <button className="btn btn-sm" onClick={() => resolveAgentConfirmation(false, confirmation.id)}>{proposal.rejectLabel ?? '取消'}</button>
-                <button className="btn btn-sm btn-primary" disabled={!selectedIds.length} onClick={importSelected}>{proposal.approveLabel ?? '导入所选'}</button>
+                <button className="btn btn-sm btn-primary" disabled={!selectedIds.length || !requiredChoicesComplete} onClick={importSelected}>{proposal.approveLabel ?? '导入所选'}</button>
               </>
             : <span className="confirm-status">{statusText}</span>}
         </div>

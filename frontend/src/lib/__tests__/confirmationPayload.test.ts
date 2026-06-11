@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { dataImportProposalFromPayload } from '../confirmationPayload.ts'
+import { buildDataHubImportConfirmationOverride, dataImportProposalFromPayload } from '../confirmationPayload.ts'
 
 test('data import proposal renders from generic confirmation ui contract without tool-name coupling', () => {
   const proposal = dataImportProposalFromPayload('publish_external_dataset', {
@@ -114,4 +114,62 @@ test('data import proposal keeps legacy Data Hub payload fallback', () => {
   assert.deepEqual(proposal?.slots, [])
   assert.equal(proposal?.selections[0]?.slot, 'carbon_pools_path')
   assert.equal(proposal?.selections[0]?.name, 'carbon_pools.csv')
+})
+
+test('data hub confirmation override includes auto imports plus the chosen ambiguous slot only', () => {
+  const proposal = dataImportProposalFromPayload('import_data_hub_files_to_scene', {
+    input: {
+      sceneId: 'scene-1',
+      fileIds: ['pools-1'],
+    },
+    authorizationKey: 'stale-original-key',
+    ui: {
+      type: 'data-import-proposal',
+      fileIds: ['pools-1'],
+      slots: [
+        {
+          slot: 'lulc_bas_path',
+          label: 'Baseline LULC raster',
+          required: true,
+          status: 'needs_user_choice',
+          candidates: [
+            { fileId: 'lulc-current', slot: 'lulc_bas_path', name: 'lulc_current.tif', ambiguous: true, required: true },
+            { fileId: 'lulc-future', slot: 'lulc_bas_path', name: 'lulc_future.tif', ambiguous: true, required: true },
+          ],
+        },
+        {
+          slot: 'carbon_pools_path',
+          label: 'Carbon pools table',
+          required: true,
+          status: 'auto_selected',
+          selectedFileId: 'pools-1',
+          candidates: [
+            { fileId: 'pools-1', slot: 'carbon_pools_path', name: 'carbon_pools.csv', recommended: true, required: true },
+          ],
+        },
+      ],
+      rows: [
+        { fileId: 'lulc-current', slot: 'lulc_bas_path', label: 'lulc_current.tif', ambiguous: true, required: true },
+        { fileId: 'lulc-future', slot: 'lulc_bas_path', label: 'lulc_future.tif', ambiguous: true, required: true },
+        { fileId: 'pools-1', slot: 'carbon_pools_path', label: 'carbon_pools.csv', recommended: true, required: true },
+      ],
+    },
+  })
+
+  assert.ok(proposal)
+  const override = buildDataHubImportConfirmationOverride(
+    {
+      input: { sceneId: 'scene-1', fileIds: ['pools-1'] },
+      authorizationKey: 'stale-original-key',
+    },
+    proposal,
+    { lulc_bas_path: 'lulc-current' },
+  )
+
+  assert.deepEqual((override.input as { fileIds: string[] }).fileIds, ['pools-1', 'lulc-current'])
+  assert.deepEqual(
+    ((override.input as { selections: Array<{ fileId: string }> }).selections).map(row => row.fileId),
+    ['pools-1', 'lulc-current'],
+  )
+  assert.equal(Object.prototype.hasOwnProperty.call(override, 'authorizationKey'), false)
 })

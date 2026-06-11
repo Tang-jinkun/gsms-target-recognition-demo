@@ -11,6 +11,65 @@ export type DataImportProposal = {
   allowPartial?: boolean
 }
 
+export function buildDataHubImportConfirmationOverride(
+  originalPayload: Record<string, unknown>,
+  proposal: DataImportProposal,
+  slotChoices: Record<string, string>,
+): Record<string, unknown> {
+  const originalInput = originalPayload.input && typeof originalPayload.input === 'object'
+    ? originalPayload.input as Record<string, unknown>
+    : {}
+  const selectedRows = selectedDataHubImportRows(proposal, slotChoices)
+  const selectedIds = [...new Set(selectedRows.map(row => row.fileId))]
+  const nextPayload: Record<string, unknown> = {
+    ...originalPayload,
+    input: {
+      ...originalInput,
+      fileIds: selectedIds,
+      selections: selectedRows,
+    },
+    summary: {
+      ...(originalPayload.summary && typeof originalPayload.summary === 'object'
+        ? originalPayload.summary as Record<string, unknown>
+        : {}),
+      fileIds: selectedIds,
+      selections: selectedRows,
+    },
+    ui: {
+      ...(originalPayload.ui && typeof originalPayload.ui === 'object'
+        ? originalPayload.ui as Record<string, unknown>
+        : {}),
+      fileIds: selectedIds,
+    },
+  }
+  delete nextPayload.authorizationKey
+  return nextPayload
+}
+
+export function selectedDataHubImportRows(
+  proposal: DataImportProposal,
+  slotChoices: Record<string, string>,
+): DataHubImportSelection[] {
+  if (proposal.slots.length) {
+    return [
+      ...proposal.slots.flatMap(slot =>
+        slot.status === 'auto_selected' && slot.selectedFileId
+          ? slot.candidates.filter(candidate => candidate.fileId === slot.selectedFileId)
+          : [],
+      ),
+      ...proposal.slots.flatMap(slot =>
+        slot.status === 'needs_user_choice' && slotChoices[slot.slot]
+          ? slot.candidates.filter(candidate => candidate.fileId === slotChoices[slot.slot])
+          : [],
+      ),
+    ]
+  }
+  const selected = new Set(proposal.fileIds)
+  return proposal.selections.length
+    ? proposal.selections.filter(row => selected.has(row.fileId))
+    : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
+}
+
 export function dataImportProposalFromPayload(
   kind: string,
   payload: Record<string, unknown> | undefined,
