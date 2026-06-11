@@ -627,7 +627,7 @@ export default function WorkbenchPage() {
       )
     }
     const hasSlotProposal = proposal.slots.length > 0
-    const slotChoices = confirmationChoices[confirmation.id] ?? {}
+    const slotChoices = confirmationChoicesRef.current[confirmation.id] ?? confirmationChoices[confirmation.id] ?? {}
     const rows: DataHubImportSelection[] = proposal.selections.length
       ? proposal.selections
       : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
