@@ -416,19 +416,36 @@ export default function WorkbenchPage() {
   useAgentEventSource({
     sessionId: sseFailed ? null : activeSession?.id ?? null,
     onEvent: handleSseEvent,
+    onOpen: () => {
+      const session = pollSessionRef.current
+      if (session) refreshMeta(session).catch(() => {})
+    },
     onError: () => setSseFailed(true),
     enabled: !sseFailed,
     initialCursor: agentEventCursorRef.current.afterId,
   })
 
-  // Lightweight safety-net refresh while SSE is active: catches any meta drift
-  // (e.g. a status event missed during a reconnect gap). Cheap — no events fetch.
+  // Mature chat UIs keep the live stream authoritative and only reconcile
+  // persisted metadata on lifecycle edges. Avoid a fixed timer here: repeated
+  // meta refreshes can remount interactive confirmation controls while the user
+  // is choosing an option.
   React.useEffect(() => {
     if (sseFailed || !activeSession) return
-    const id = window.setInterval(() => {
-      if (pollSessionRef.current) refreshMeta(pollSessionRef.current).catch(() => {})
-    }, 5000)
-    return () => window.clearInterval(id)
+    const reconcile = () => {
+      const session = pollSessionRef.current
+      if (session) refreshMeta(session).catch(() => {})
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') reconcile()
+    }
+    window.addEventListener('focus', reconcile)
+    window.addEventListener('online', reconcile)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', reconcile)
+      window.removeEventListener('online', reconcile)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [sseFailed, activeSession, refreshMeta])
 
   // Fallback polling loop: only runs if SSE failed. Mirrors the original

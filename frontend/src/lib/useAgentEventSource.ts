@@ -15,6 +15,8 @@ const SSE_EVENT_TYPES = [
 type UseAgentEventSourceOptions = {
   sessionId: string | null
   onEvent: (event: AgentEvent) => void
+  /** Called when the SSE connection opens or reconnects successfully. */
+  onOpen?: () => void
   /** Called when SSE is unsupported or repeatedly fails — caller falls back to polling. */
   onError?: () => void
   enabled?: boolean
@@ -35,15 +37,18 @@ type UseAgentEventSourceOptions = {
 export function useAgentEventSource({
   sessionId,
   onEvent,
+  onOpen,
   onError,
   enabled = true,
   initialCursor = 0,
 }: UseAgentEventSourceOptions): void {
   // Keep callbacks in refs so the effect doesn't re-subscribe on every render.
   const onEventRef = React.useRef(onEvent)
+  const onOpenRef = React.useRef(onOpen)
   const onErrorRef = React.useRef(onError)
   const initialCursorRef = React.useRef(initialCursor)
   React.useEffect(() => { onEventRef.current = onEvent }, [onEvent])
+  React.useEffect(() => { onOpenRef.current = onOpen }, [onOpen])
   React.useEffect(() => { onErrorRef.current = onError }, [onError])
   React.useEffect(() => { initialCursorRef.current = initialCursor }, [initialCursor])
 
@@ -80,6 +85,10 @@ export function useAgentEventSource({
 
     for (const type of SSE_EVENT_TYPES) es.addEventListener(type, handle as EventListener)
     es.onmessage = handle
+    es.onopen = () => {
+      consecutiveErrors = 0
+      onOpenRef.current?.()
+    }
 
     es.onerror = () => {
       // EventSource reconnects automatically; only bail after sustained failure.
