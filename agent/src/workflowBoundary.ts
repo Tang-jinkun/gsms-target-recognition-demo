@@ -1,4 +1,5 @@
 import type { AgentContext, AgentTool, Artifact, DomainState } from '@gsms/agent-core'
+import { evaluateDataAvailabilityPolicy } from './policies/dataAvailabilityPolicy.ts'
 
 // ── Phase Group ────────────────────────────────────────────────────────────────
 // Phases are divided into two groups:
@@ -103,6 +104,8 @@ const matchingTools = new Set([
   'list_invest_models',
   'get_invest_model_schema',
   'list_scene_data_cards',
+  'discover_data_hub_candidates',
+  'import_data_hub_files_to_scene',
   'retrieve_input_candidates',
   'retrieve_required_input_candidates',
   'check_data_relation',
@@ -134,7 +137,7 @@ const allDomainTools = new Set([
 
 // ── Phase Filter ───────────────────────────────────────────────────────────────
 
-export function workflowPhaseFilter() {
+export function workflowPhaseFilter(tools: readonly AgentTool[] = []) {
   return (tool: AgentTool, context: AgentContext): boolean => {
     if (['skill', 'update_goal'].includes(tool.name)) return true
 
@@ -151,9 +154,9 @@ export function workflowPhaseFilter() {
 
     // ── Soft boundary: matching group ───────────────────────────────────────
     // finish has its own evidence gate — only enforced in matching group
-    if (tool.name === 'finish') return finishPassesEvidenceGate(context)
+    if (tool.name === 'finish') return finishPassesEvidenceGate(context, tools)
 
-    return matchingPhaseAllows(tool.name, state)
+    return matchingPhaseAllows(tool.name, state, context)
   }
 }
 
@@ -177,10 +180,14 @@ function executionPhaseAllows(toolName: string, phase: string): boolean {
 //   - Skills: teach the model how to investigate
 //   - finish: gated by finishPassesEvidenceGate (needs at least one domain artifact)
 
-function matchingPhaseAllows(toolName: string, state: DomainState): boolean {
+function matchingPhaseAllows(toolName: string, state: DomainState, context: AgentContext): boolean {
   const ambiguityUnresolved =
     state.bindingStatus === 'needs_review' || state.phase === 'resolving-ambiguity'
   if (ambiguityUnresolved && BLOCKED_WHILE_AMBIGUOUS.has(toolName)) return false
+  const dataAvailability = evaluateDataAvailabilityPolicy(state, context.artifacts.list())
+  if (dataAvailability.requiresExternalDiscovery) {
+    return dataAvailability.allowedTools.has(toolName)
+  }
   return true
 }
 
@@ -192,7 +199,10 @@ function matchingPhaseAllows(toolName: string, state: DomainState): boolean {
 // Evidence is filtered by current matchingContextId where applicable — stale
 // evidence from a previous scene/model combination cannot satisfy the gate.
 
-function finishPassesEvidenceGate(context: AgentContext): boolean {
+function finishPassesEvidenceGate(
+  context: AgentContext,
+  tools: readonly AgentTool[] = [],
+): boolean {
   const artifacts = context.artifacts.list()
   const state = context.domainState.snapshot()
   const matchingContextId =
@@ -210,6 +220,26 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
     : domainArtifacts
 
   const has = (type: string) => currentArtifacts.some(a => a.type === type)
+  const hasSceneImportRecord = has('scene-import-record')
+  const hasRefreshedSceneData = hasRefreshedArtifact(currentArtifacts, 'gsms-scene-data-cards')
+  const unsatisfiedMutationRefresh = findUnsatisfiedMutationRefresh(currentArtifacts, tools)
+  const dataAvailability = evaluateDataAvailabilityPolicy(state, currentArtifacts)
+
+  // Single-model sufficiency on an empty scene must probe Data Hub before the
+  // agent can finish. A gsms-scene-data-cards artifact with data_cards: [] is
+  // evidence that the current scene is empty, not evidence that there is no
+  // usable data anywhere in the project.
+  if (dataAvailability.requiresExternalDiscovery) return false
+
+  // Importing Data Hub files changes the scene data universe. The agent must
+  // refresh scene facts and continue from those facts before it can finish.
+  if (unsatisfiedMutationRefresh) return false
+
+  // Backward-compatible guard for older persisted Data Hub import records that
+  // predate the generic mutation policy metadata.
+  if (hasSceneImportRecord && !hasRefreshedSceneData && !has('candidate-set') && !has('sufficiency-report') && !has('binding-report')) {
+    return false
+  }
 
   // Terminal evidence: always allows finish
   if (has('sufficiency-report') || has('binding-report') || has('invest-report') || has('scene-model-readiness')) return true
@@ -234,6 +264,44 @@ function finishPassesEvidenceGate(context: AgentContext): boolean {
   if (currentArtifacts.length > 0) return true
 
   return false
+}
+
+function findUnsatisfiedMutationRefresh(
+  artifacts: readonly Artifact[],
+  tools: readonly AgentTool[],
+): { tool: string; missingArtifactTypes: string[] } | undefined {
+  const toolsByName = new Map(tools.map(tool => [tool.name, tool]))
+  const mutationRecords = artifacts.filter(artifact =>
+    artifact.type === 'scene-import-record' ||
+    artifact.metadata?.mutationTool ||
+    artifact.metadata?.tool,
+  )
+  for (const record of mutationRecords) {
+    const toolName =
+      typeof record.metadata?.mutationTool === 'string'
+        ? record.metadata.mutationTool
+        : typeof record.metadata?.tool === 'string'
+          ? record.metadata.tool
+          : record.type === 'scene-import-record'
+            ? 'import_data_hub_files_to_scene'
+            : undefined
+    if (!toolName) continue
+    const refreshesArtifacts = toolsByName.get(toolName)?.policy?.mutation?.refreshesArtifacts ?? []
+    if (!refreshesArtifacts.length) continue
+    const missingArtifactTypes = refreshesArtifacts.filter(type => !hasRefreshedArtifact(artifacts, type))
+    if (missingArtifactTypes.length) return { tool: toolName, missingArtifactTypes }
+  }
+  return undefined
+}
+
+function hasRefreshedArtifact(
+  artifacts: readonly Artifact[],
+  type: string,
+): boolean {
+  return artifacts.some(artifact =>
+    artifact.type === type &&
+    (artifact.metadata?.refreshedAfterMutation === true || artifact.metadata?.refreshedAfterImport === true),
+  )
 }
 
 // ── Intent Inference ───────────────────────────────────────────────────────────

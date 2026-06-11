@@ -99,21 +99,22 @@ export const retrieveInputCandidatesTool: AgentTool = {
     properties: { slot: { type: 'string' } },
   },
   async execute(input, context) {
-    const { slot } = retrieveSchema.parse(input)
+    const requested = retrieveSchema.parse(input).slot
     const schema = latestModelSchema(context)
     const matchingContextId = currentMatchingContext(context)
+    const slot = canonicalSlotName(requested, schema)
     const inputSlot = schema.slots.find(candidate => candidate.name === slot)
     if (!inputSlot) {
       const required = schema.slots.filter(s => s.required).map(s => s.name)
       const optional = schema.slots.filter(s => !s.required).map(s => s.name)
       throw toolFailure(
         'UNKNOWN_SLOT',
-        `Unknown input slot '${slot}' for ${schema.modelId}. Required slots: ${required.join(', ')}${optional.length ? `. Optional: ${optional.join(', ')}` : ''}`,
+        `Unknown input slot '${requested}' for ${schema.modelId}. Required slots: ${required.join(', ')}${optional.length ? `. Optional: ${optional.join(', ')}` : ''}`,
         {
-          invalidSlot: slot,
+          invalidSlot: requested,
           requiredSlots: required,
           optionalSlots: optional,
-          nextAction: { tool: 'retrieve_input_candidates', input: { slot: required[0] } },
+          nextAction: { tool: 'retrieve_required_input_candidates', input: { modelId: schema.modelId } },
         },
       )
     }
@@ -543,6 +544,19 @@ function toolFailure(
   details: Record<string, unknown> = {},
 ): Error {
   return new Error(JSON.stringify({ code, message, ...details }))
+}
+
+function canonicalSlotName(requested: string, schema: ModelInputSchema): string {
+  if (schema.slots.some(slot => slot.name === requested)) return requested
+  if (requested.endsWith('_asset_id')) {
+    const pathName = `${requested.slice(0, -'_asset_id'.length)}_path`
+    if (schema.slots.some(slot => slot.name === pathName)) return pathName
+  }
+  if (requested.endsWith('_id')) {
+    const pathName = `${requested.slice(0, -'_id'.length)}_path`
+    if (schema.slots.some(slot => slot.name === pathName)) return pathName
+  }
+  return requested
 }
 
 export function computeMatchingContextId(

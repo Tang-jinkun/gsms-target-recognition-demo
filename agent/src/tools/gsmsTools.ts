@@ -15,6 +15,27 @@ import { checkDataMatchingGate } from '../gates/dataMatchingGate.ts'
 
 const modelSchema = z.object({ modelId: z.string().min(1) })
 const sceneSchema = z.object({ sceneId: z.string().min(1) })
+const discoverDataHubSchema = z.object({
+  sceneId: z.string().min(1),
+  modelId: z.string().min(1),
+  query: z.string().default(''),
+  folderId: z.string().min(1).optional(),
+  studyAreaBounds: z.array(z.number()).length(4).optional(),
+  limitPerSlot: z.number().int().min(1).max(10).default(3),
+})
+const importDataHubSchema = z.object({
+  sceneId: z.string().min(1),
+  fileIds: z.array(z.string().min(1)).min(1),
+  selections: z.array(z.object({
+    slot: z.string().min(1),
+    fileId: z.string().min(1),
+    name: z.string().optional(),
+    confidence: z.string().optional(),
+    score: z.number().optional(),
+    reasons: z.array(z.string()).optional(),
+    risks: z.array(z.string()).optional(),
+  })).default([]),
+})
 const relationSchema = z.object({
   kind: z.string().min(1),
   leftAssetId: z.string().min(1),
@@ -264,6 +285,387 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
         }
       },
     }),
+    buildTool({
+      name: 'discover_data_hub_candidates',
+      description: 'Search global Data Hub metadata for model input candidates when the current scene has missing data; returns an import proposal and does not modify the scene',
+      persistResultAboveBytes: 8_000,
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sceneId', 'modelId'],
+        properties: {
+          sceneId: { type: 'string' },
+          modelId: { type: 'string' },
+          query: { type: 'string' },
+          folderId: { type: 'string' },
+          studyAreaBounds: { type: 'array', minItems: 4, maxItems: 4, items: { type: 'number' } },
+          limitPerSlot: { type: 'number', minimum: 1, maximum: 10 },
+        },
+      },
+      async execute(input, context) {
+        const parsed = discoverDataHubSchema.parse(input)
+        const state = context.domainState.snapshot()
+        if (state.modelId && state.modelId !== parsed.modelId) {
+          throw new Error(`Discovery model ${parsed.modelId} does not match selected model ${String(state.modelId)}`)
+        }
+        const result = await client.discoverDataHubCandidates(parsed)
+        const source = result as {
+          recommended_file_ids?: unknown
+          slots?: unknown
+          missing_slots?: unknown
+          ambiguous_slots?: unknown
+        }
+        const recommendedFileIds = Array.isArray(source.recommended_file_ids)
+          ? source.recommended_file_ids.map(String)
+          : []
+        const proposedFileIds = Array.isArray(source.slots)
+          ? source.slots.flatMap(slot => {
+              if (!slot || typeof slot !== 'object') return []
+              const candidates = (slot as { candidates?: unknown }).candidates
+              if (!Array.isArray(candidates)) return []
+              return candidates.flatMap(candidate => {
+                if (!candidate || typeof candidate !== 'object') return []
+                const fileId = (candidate as Record<string, unknown>).file_id
+                return typeof fileId === 'string' ? [fileId] : []
+              })
+            })
+          : []
+        const selections = Array.isArray(source.slots)
+          ? source.slots.flatMap(slot => {
+              if (!slot || typeof slot !== 'object') return []
+              const slotRecord = slot as { slot?: unknown; ambiguous?: unknown; candidates?: unknown }
+              if (!Array.isArray(slotRecord.candidates)) return []
+              const first = slotRecord.candidates[0]
+              if (!first || typeof first !== 'object') return []
+              const candidate = first as Record<string, unknown>
+              const fileId = candidate.file_id
+              if (typeof fileId !== 'string') return []
+              return [{
+                slot: String(slotRecord.slot ?? ''),
+                fileId,
+                name: typeof candidate.name === 'string' ? candidate.name : undefined,
+                score: typeof candidate.score === 'number' ? candidate.score : undefined,
+                confidence: typeof candidate.confidence === 'string' ? candidate.confidence : undefined,
+                reasons: Array.isArray(candidate.reasons) ? candidate.reasons.map(String) : [],
+                risks: Array.isArray(candidate.risks) ? candidate.risks.map(String) : [],
+              }]
+            })
+          : []
+        const proposalKey = `data-hub-import-proposal:${parsed.sceneId}:${parsed.modelId}`
+        const confirmationProposalKey = `confirmation-proposal:import_data_hub_files_to_scene:${parsed.sceneId}:${parsed.modelId}`
+        const discoveryReportKey = `data-source-discovery-report:data-hub:${parsed.sceneId}:${parsed.modelId}`
+        const commonMetadata = {
+          sceneId: parsed.sceneId,
+          modelId: parsed.modelId,
+          providerId: 'data-hub',
+          discoveryTool: 'discover_data_hub_candidates',
+          actionTool: 'import_data_hub_files_to_scene',
+          recommendedFileIds,
+          proposedFileIds: [...new Set(proposedFileIds)],
+          missingSlots: Array.isArray(source.missing_slots) ? source.missing_slots.map(String) : [],
+          ambiguousSlots: Array.isArray(source.ambiguous_slots) ? source.ambiguous_slots.map(String) : [],
+        }
+        return {
+          content: JSON.stringify(result),
+          artifacts: [
+            {
+              type: 'data-source-discovery-report',
+              logicalKey: discoveryReportKey,
+              createdBy: 'tool',
+              data: {
+                providerId: 'data-hub',
+                providerName: 'Data Hub',
+                sceneId: parsed.sceneId,
+                modelId: parsed.modelId,
+                query: parsed.query,
+                folderId: parsed.folderId ?? null,
+                studyAreaBounds: parsed.studyAreaBounds ?? null,
+                slots: source.slots,
+                recommendedFileIds,
+                proposedFileIds: [...new Set(proposedFileIds)],
+                missingSlots: commonMetadata.missingSlots,
+                ambiguousSlots: commonMetadata.ambiguousSlots,
+              },
+              metadata: { ...commonMetadata },
+            },
+            {
+              type: 'confirmation-proposal',
+              logicalKey: confirmationProposalKey,
+              createdBy: 'tool',
+              data: {
+                kind: 'data-import-proposal',
+                actionTool: 'import_data_hub_files_to_scene',
+                providerId: 'data-hub',
+                sceneId: parsed.sceneId,
+                modelId: parsed.modelId,
+                fileIds: [...new Set(proposedFileIds)],
+                selections,
+                slots: source.slots,
+                ui: {
+                  type: 'data-import-proposal',
+                  title: '推荐导入 Data Hub 文件',
+                  description: 'Agent 找到这些文件可能适合当前模型输入。确认后只会把 Data Hub 文件引用写入当前场景，不复制文件。',
+                  fileIds: [...new Set(proposedFileIds)],
+                  rows: selections.map(selection => ({
+                    id: selection.fileId,
+                    slot: selection.slot,
+                    fileId: selection.fileId,
+                    label: selection.name ?? selection.fileId,
+                    confidence: selection.confidence,
+                    score: selection.score,
+                    reasons: selection.reasons,
+                    risks: selection.risks,
+                  })),
+                  actions: {
+                    approveLabel: '全部导入',
+                    rejectLabel: '取消',
+                    allowPartial: true,
+                  },
+                },
+              },
+              metadata: { ...commonMetadata },
+            },
+            {
+              type: 'data-hub-import-proposal',
+              logicalKey: proposalKey,
+              createdBy: 'tool',
+              data: {
+                ...(result as Record<string, unknown>),
+                selections,
+              },
+              metadata: { ...commonMetadata },
+            },
+          ],
+          statePatch: {
+            sceneId: parsed.sceneId,
+            modelId: parsed.modelId,
+            phase: proposedFileIds.length ? 'awaiting-data-import-confirmation' : 'discovering-data',
+            dataHubRecommendedFileIds: recommendedFileIds,
+          },
+          hiddenMessages: [{
+            role: 'user',
+            hidden: true,
+            content: proposedFileIds.length
+              ? `Data Hub discovery found import candidates for ${parsed.modelId}. Ask the user to confirm importing these Data Hub file references before calling import_data_hub_files_to_scene. Do not claim the scene has no data.`
+              : `Data Hub discovery found no complete import recommendation. Explain missing slots or ambiguities and ask the user to narrow the search or choose candidates.`,
+          }],
+        }
+      },
+    }),
+    {
+      name: 'import_data_hub_files_to_scene',
+      description: 'Import selected Data Hub file references into the current scene after explicit user confirmation; does not copy files',
+      risk: 'write',
+      policy: {
+        confirmation: {
+          approvedAction: 'execute-approved-input',
+          summary(input) {
+            if (!input || typeof input !== 'object') return undefined
+            const source = input as {
+              sceneId?: unknown
+              fileIds?: unknown
+              selections?: unknown
+            }
+            return {
+              kind: 'data-hub-import-proposal',
+              sceneId: typeof source.sceneId === 'string' ? source.sceneId : undefined,
+              fileIds: Array.isArray(source.fileIds) ? source.fileIds.map(String) : [],
+              selections: Array.isArray(source.selections) ? source.selections : [],
+            }
+          },
+          ui(input) {
+            if (!input || typeof input !== 'object') return undefined
+            const source = input as {
+              fileIds?: unknown
+              selections?: unknown
+            }
+            const fileIds = Array.isArray(source.fileIds) ? source.fileIds.map(String) : []
+            const selections = Array.isArray(source.selections)
+              ? source.selections.flatMap(item => {
+                  if (!item || typeof item !== 'object') return []
+                  const row = item as Record<string, unknown>
+                  if (typeof row.slot !== 'string' || typeof row.fileId !== 'string') return []
+                  return [{
+                    id: row.fileId,
+                    slot: row.slot,
+                    fileId: row.fileId,
+                    label: typeof row.name === 'string' ? row.name : row.fileId,
+                    confidence: typeof row.confidence === 'string' ? row.confidence : undefined,
+                    score: typeof row.score === 'number' ? row.score : undefined,
+                    reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
+                    risks: Array.isArray(row.risks) ? row.risks.map(String) : [],
+                  }]
+                })
+              : []
+            return {
+              type: 'data-import-proposal',
+              title: '推荐导入 Data Hub 文件',
+              description: 'Agent 找到这些文件可能适合当前模型输入。确认后只会把 Data Hub 文件引用写入当前场景，不复制文件。',
+              fileIds,
+              rows: selections.length
+                ? selections
+                : fileIds.map(fileId => ({ id: fileId, slot: 'input', fileId, label: fileId })),
+              actions: {
+                approveLabel: '全部导入',
+                rejectLabel: '取消',
+                allowPartial: true,
+              },
+            }
+          },
+          successMessage() {
+            return [
+              '已按用户确认将 Data Hub 文件引用导入当前场景，并刷新了场景数据卡片。',
+              '现在可以继续重新评估 Carbon 的输入匹配；后续判断必须基于导入后的场景数据。',
+            ].join('\n')
+          },
+        },
+        mutation: {
+          refreshesArtifacts: ['gsms-scene-data-cards', 'data-card'],
+        },
+      },
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sceneId', 'fileIds'],
+        properties: {
+          sceneId: { type: 'string' },
+          fileIds: { type: 'array', minItems: 1, items: { type: 'string' } },
+          selections: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['slot', 'fileId'],
+              properties: {
+                slot: { type: 'string' },
+                fileId: { type: 'string' },
+                name: { type: 'string' },
+                confidence: { type: 'string' },
+                score: { type: 'number' },
+                reasons: { type: 'array', items: { type: 'string' } },
+                risks: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+      async execute(input, context) {
+        const parsed = importDataHubSchema.parse(input)
+        const state = context.domainState.snapshot()
+        const modelId = typeof state.modelId === 'string' ? state.modelId : undefined
+        const proposal = [...context.artifacts.list('confirmation-proposal')]
+          .reverse()
+          .find(artifact =>
+            artifact.metadata?.sceneId === parsed.sceneId &&
+            artifact.metadata?.actionTool === 'import_data_hub_files_to_scene' &&
+            (!modelId || artifact.metadata?.modelId === modelId)) ??
+          [...context.artifacts.list('data-hub-import-proposal')]
+            .reverse()
+            .find(artifact =>
+              artifact.metadata?.sceneId === parsed.sceneId &&
+              (!modelId || artifact.metadata?.modelId === modelId))
+        if (!proposal) {
+          throw new Error('Discover import candidates before importing files into the scene.')
+        }
+        const recommended = new Set(
+          Array.isArray(proposal.metadata?.proposedFileIds)
+            ? proposal.metadata.proposedFileIds.map(String)
+            : Array.isArray(proposal.metadata?.recommendedFileIds)
+              ? proposal.metadata.recommendedFileIds.map(String)
+              : [],
+        )
+        const proposalData = proposal.data as { slots?: unknown }
+        if (Array.isArray(proposalData.slots)) {
+          for (const slot of proposalData.slots) {
+            if (!slot || typeof slot !== 'object') continue
+            const candidates = (slot as { candidates?: unknown }).candidates
+            if (!Array.isArray(candidates)) continue
+            for (const candidate of candidates) {
+              if (!candidate || typeof candidate !== 'object') continue
+              const fileId = (candidate as Record<string, unknown>).file_id
+              if (typeof fileId === 'string') recommended.add(fileId)
+            }
+          }
+        }
+        const unproposed = parsed.fileIds.filter(fileId => !recommended.has(fileId))
+        if (unproposed.length) {
+          throw new Error(`Import includes files not present in the latest Data Hub proposal: ${unproposed.join(', ')}`)
+        }
+        const result = await client.importDataHubFilesToScene(parsed)
+        const refreshed = await client.listSceneDataCards(parsed.sceneId)
+        const cards = normalizeDataCards(refreshed)
+        if (cards.length === 0) {
+          throw new Error(
+            `Data Hub import did not produce scene data cards. Import result: ${JSON.stringify(result)}. Stop and report this as an import/scene_imports persistence problem; do not answer that Data Hub had no candidates.`,
+          )
+        }
+        const schemaArtifact = tryContextModelSchema(context)
+        const sceneDataContextId = computeSceneDataContextId(parsed.sceneId, cards)
+        const matchingContextId = computeMatchingContextId(parsed.sceneId, schemaArtifact, cards)
+        return {
+          content: JSON.stringify({
+            import: result,
+            refreshed_scene_data: refreshed,
+            instruction: 'Import completed and scene data was refreshed. Continue with retrieve_required_input_candidates once using the refreshed scene data; do not use pre-import missing-data conclusions.',
+          }),
+          artifacts: [
+            {
+              type: 'scene-import-record',
+              logicalKey: `scene-import-record:${parsed.sceneId}:${parsed.fileIds.sort().join(',')}`,
+              createdBy: 'user',
+              data: result,
+              metadata: {
+                sceneId: parsed.sceneId,
+                modelId,
+                fileIds: parsed.fileIds,
+                proposalId: proposal.id,
+                confirmationId: context.lastConsumedConfirmationId,
+                mutationTool: 'import_data_hub_files_to_scene',
+              },
+            },
+            {
+              type: 'gsms-scene-data-cards',
+              logicalKey: `gsms-scene-data-cards:${sceneDataContextId}`,
+              createdBy: 'tool',
+              data: refreshed,
+              metadata: {
+                sceneId: parsed.sceneId,
+                modelId,
+                sceneDataContextId,
+                refreshedAfterMutation: true,
+                refreshedAfterImport: true,
+              },
+            },
+            ...cards.map(card => ({
+              type: 'data-card',
+              logicalKey: `data-card:${sceneDataContextId}:${card.assetId}`,
+              createdBy: 'tool' as const,
+              data: card,
+              metadata: {
+                sceneId: parsed.sceneId,
+                modelId,
+                sceneDataContextId,
+                assetId: card.assetId,
+                refreshedAfterMutation: true,
+                refreshedAfterImport: true,
+              },
+            })),
+          ],
+          statePatch: {
+            phase: 'discovering-data',
+            assetIds: cards.map(card => card.assetId),
+            sceneDataContextId,
+            matchingContextId,
+            slots: null,
+          },
+          hiddenMessages: [{
+            role: 'user',
+            hidden: true,
+            content: `Data Hub files were imported by reference and scene data cards were refreshed. You must ignore any pre-import missing-data conclusion. Continue by calling retrieve_required_input_candidates once for model "${modelId ?? 'the current model'}" using matchingContextId "${matchingContextId}". Do not invent *_asset_id slot names and do not call retrieve_input_candidates in parallel.`,
+          }],
+        }
+      },
+    },
     {
       name: 'check_data_relation',
       description: 'Ask GSMS to deterministically check a relation between two data assets',

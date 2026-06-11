@@ -97,7 +97,7 @@ export class InvestAgentSession {
       artifacts: this.artifacts,
       domainState: this.domainState,
       maxTurns: this.options.maxTurns,
-      toolFilter: workflowPhaseFilter(),
+      toolFilter: workflowPhaseFilter(this.options.tools.list()),
     })
     const result = await runtime.run(objective)
     this.#history.push({

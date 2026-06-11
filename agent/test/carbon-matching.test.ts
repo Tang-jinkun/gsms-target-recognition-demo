@@ -36,6 +36,55 @@ test('preserves multiple plausible LULC candidates for agent resolution', () => 
   assert.equal(candidates.candidates[0]!.score, candidates.candidates[1]!.score)
 })
 
+test('candidate retrieval accepts legacy asset-id aliases for schema path slots', async () => {
+  const currentLulc = raster('lulc-current', 'lulc_current.tif', ['current land cover'], [1, 2])
+  const matchingContextId = computeMatchingContextId('scene-1', testCarbonModelSchema, [currentLulc])
+  const artifacts = new ArtifactStore()
+  artifacts.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: testCarbonModelSchema,
+      metadata: { modelId: 'carbon' },
+    },
+    {
+      type: 'data-card',
+      createdBy: 'tool',
+      data: currentLulc,
+      metadata: { sceneId: 'scene-1', modelId: 'carbon', sceneDataContextId: 'scene-data-1', assetId: 'lulc-current' },
+    },
+  ])
+  const context: AgentContext = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'match carbon',
+      status: 'active',
+      turnCount: 1,
+      maxTurns: 5,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    } satisfies GoalState,
+    artifacts,
+    domainState: new DomainStateStore({
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      sceneDataContextId: 'scene-data-1',
+      matchingContextId,
+    }),
+  }
+  const tool = createMatchingTools().find(candidate => candidate.name === 'retrieve_input_candidates')!
+
+  const result = await tool.execute({ slot: 'lulc_bas_asset_id' }, context)
+
+  assert.equal(result.artifacts?.[0]?.type, 'candidate-set')
+  assert.equal(result.artifacts?.[0]?.metadata?.slot, 'lulc_bas_path')
+  assert.deepEqual((result.statePatch?.slots as Record<string, unknown>)?.lulc_bas_path, {
+    candidateAssetIds: ['lulc-current'],
+    status: 'candidates-found',
+  })
+})
+
 test('matching context changes when current scene data provenance changes', () => {
   const first = raster('lulc-current', 'lulc_current.tif', ['current land cover'], [1, 2])
   const changed = { ...first, provenance: { ...first.provenance, fingerprint: 'changed-fingerprint' } }

@@ -6,6 +6,7 @@ export interface ToolConfig {
   risk?: AgentTool['risk']
   inputSchema: Record<string, unknown>
   persistResultAboveBytes?: number
+  policy?: AgentTool['policy']
   execute(input: unknown, context: AgentContext, onProgress?: (event: ToolProgressEvent) => void): Promise<AgentToolResult>
 }
 
@@ -20,6 +21,7 @@ export function buildTool(config: ToolConfig): AgentTool {
     risk: config.risk ?? 'read',
     inputSchema: config.inputSchema,
     persistResultAboveBytes: config.persistResultAboveBytes,
+    policy: config.policy,
     execute: config.execute,
   }
 }

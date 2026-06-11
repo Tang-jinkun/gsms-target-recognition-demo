@@ -204,11 +204,37 @@ export interface AgentToolResult {
   >
 }
 
+export interface AgentToolPolicy {
+  confirmation?: {
+    /**
+     * Controls what the host should do after the user approves a deferred
+     * protected tool call.
+     *
+     * - execute-approved-input: execute the exact deferred input before asking
+     *   the model to continue.
+     * - resume-model: keep the approval for the next model-planned tool call.
+     */
+    approvedAction?: 'execute-approved-input' | 'resume-model'
+    summary?: (input: unknown, state: DomainState) => Record<string, unknown> | undefined
+    ui?: (input: unknown, state: DomainState) => Record<string, unknown> | undefined
+    successMessage?: (result: AgentToolResult) => string
+  }
+  mutation?: {
+    /**
+     * Artifact types whose facts are refreshed by this tool after it mutates
+     * backend state. Hosts and workflow gates can use this as a declarative
+     * contract instead of relying on tool-name-specific assumptions.
+     */
+    refreshesArtifacts?: string[]
+  }
+}
+
 export interface AgentTool {
   name: string
   description: string
   inputSchema: Record<string, unknown>
   risk: ToolRisk
+  policy?: AgentToolPolicy
   /**
    * When true, this tool may execute concurrently with other safe tools.
    * Must ONLY be true when the tool has zero side-effects: no state patches,

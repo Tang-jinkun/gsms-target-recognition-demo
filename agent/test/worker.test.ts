@@ -8,7 +8,9 @@ import { SkillRegistry } from '@gsms/skills-core'
 import {
   AgentSessionApiClient,
   InvestAgentWorker,
+  approvedConfirmationForDirectExecution,
   buildWorkflowResumeContext,
+  evaluateDataAvailabilityPolicy,
   workflowPhaseFilter,
   isExecutionPhase,
 } from '../src/index.ts'
@@ -233,6 +235,123 @@ test('approved report permission survives regenerated report wording for the sam
   }
 })
 
+test('approved data hub import confirmation executes exact deferred tool input before model planning', async () => {
+  const actions: string[] = []
+  const importBodies: Array<Record<string, unknown>> = []
+  let completeCheckpoint: Record<string, unknown> | undefined
+  const current = session()
+  current.domain_state = {
+    sceneId: 'scene-1',
+    modelId: 'carbon',
+    phase: 'awaiting-data-import-confirmation',
+  }
+  current.artifacts = [{
+    id: 'proposal',
+    type: 'data-hub-import-proposal',
+    createdBy: 'tool',
+    createdAt: new Date().toISOString(),
+    data: { slots: [] },
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      proposedFileIds: ['lulc-1', 'pools-1'],
+    },
+  }]
+  const confirmations = [{
+    id: 'approved-import',
+    status: 'approved',
+    payload: {
+      tool: 'import_data_hub_files_to_scene',
+      risk: 'write',
+      input: { sceneId: 'scene-1', fileIds: ['lulc-1', 'pools-1'] },
+      authorizationKey: '{"input":{"fileIds":["lulc-1","pools-1"],"sceneId":"scene-1"},"tool":"import_data_hub_files_to_scene"}',
+    },
+  }]
+  const model = new FakeModelAdapter([
+    {
+      content: '',
+      toolCalls: [{ id: '1', name: 'finish', input: { summary: 'Imported data is available', evidence: ['scene-import-record'] } }],
+    },
+    {
+      content: '',
+      toolCalls: [{ id: '2', name: 'finish', input: { summary: 'Imported data is available', evidence: ['scene-import-record'] } }],
+    },
+  ])
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('status=queued')) return response([current])
+    if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: '继续导入' }])
+    if (url.endsWith('/events') && init?.method === 'POST') {
+      return response({ id: 1, type: 'event', data: {} }, 201)
+    }
+    if (url.endsWith('/confirmations/approved-import/consume')) {
+      confirmations[0]!.status = 'consumed'
+      return response(confirmations[0])
+    }
+    if (url.endsWith('/confirmations')) return response(confirmations)
+    if (url.endsWith('/api/matching/data-hub/import')) {
+      importBodies.push(JSON.parse(String(init?.body)))
+      return response({ imported: 2, skipped_existing: 0, scene_id: 'scene-1', file_ids: ['lulc-1', 'pools-1'] })
+    }
+    if (url.endsWith('/api/scenes/scene-1/data-cards')) {
+      return response({
+        data_cards: [
+          {
+            asset_id: 'lulc-1',
+            asset_type: 'raster',
+            path: '/data/lulc.tif',
+            filename: 'lulc_current.tif',
+            semantic_hints: ['lulc'],
+            metadata: { crs: 'EPSG:26910', bounds: [0, 0, 1, 1] },
+          },
+          {
+            asset_id: 'pools-1',
+            asset_type: 'table',
+            path: '/data/carbon.csv',
+            filename: 'carbon_pools.csv',
+            semantic_hints: ['carbon'],
+            metadata: { columns: ['lucode', 'c_above', 'c_below', 'c_soil', 'c_dead'] },
+          },
+        ],
+      })
+    }
+    if (url.endsWith('/checkpoint')) {
+      const body = JSON.parse(String(init?.body))
+      actions.push(body.action)
+      if (body.action === 'complete') {
+        completeCheckpoint = body
+      }
+      current.status = body.action === 'start' ? 'running' : 'idle'
+      return response(current)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const workspace = await mkdtemp(join(tmpdir(), 'gsms-worker-'))
+  try {
+    const worker = new InvestAgentWorker({
+      gsmsUrl: 'http://gsms',
+      proxyToken: 'token',
+      workspace,
+      skills: new SkillRegistry(),
+      sessionApi: new AgentSessionApiClient('http://gsms', fetch),
+      modelFactory: () => model,
+    })
+
+    assert.equal(await worker.runOnce(), true)
+    assert.deepEqual(actions, ['start', 'complete'])
+    const artifacts = completeCheckpoint?.artifacts as Array<{ type: string; metadata?: Record<string, unknown> }> | undefined
+    assert.ok(artifacts?.some(artifact => artifact.type === 'scene-import-record'), 'import record persisted')
+    assert.ok(artifacts?.some(artifact => artifact.type === 'gsms-scene-data-cards'), 'refreshed data cards persisted')
+    assert.equal((completeCheckpoint?.domain_state as Record<string, unknown>)?.phase, 'discovering-data')
+    assert.deepEqual((completeCheckpoint?.domain_state as Record<string, unknown>)?.assetIds, ['lulc-1', 'pools-1'])
+    assert.equal(confirmations[0]?.status, 'consumed')
+    assert.deepEqual(importBodies, [{ scene_id: 'scene-1', file_ids: ['lulc-1', 'pools-1'] }])
+    assert.ok(model.requests.length >= 1, 'model may continue only after the approved import has executed')
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
 test('worker does not fail a session when another worker wins the claim', async () => {
   const actions: string[] = []
   const current = session()
@@ -262,6 +381,39 @@ test('worker does not fail a session when another worker wins the claim', async 
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
+})
+
+test('approved direct execution is driven by tool policy instead of tool name', () => {
+  const policyTool: AgentTool = {
+    name: 'publish_scene_note',
+    description: 'test write tool',
+    risk: 'write',
+    inputSchema: { type: 'object' },
+    policy: { confirmation: { approvedAction: 'execute-approved-input' } },
+    async execute() { return { content: 'ok' } },
+  }
+  const sameNameWithoutPolicy: AgentTool = {
+    name: 'import_data_hub_files_to_scene',
+    description: 'same historical name but no policy',
+    risk: 'write',
+    inputSchema: { type: 'object' },
+    async execute() { return { content: 'ok' } },
+  }
+
+  assert.equal(
+    approvedConfirmationForDirectExecution(
+      [{ id: 'approved-note', status: 'approved', payload: { tool: 'publish_scene_note', input: { id: 'n1' } } }],
+      [policyTool],
+    )?.id,
+    'approved-note',
+  )
+  assert.equal(
+    approvedConfirmationForDirectExecution(
+      [{ id: 'approved-import', status: 'approved', payload: { tool: 'import_data_hub_files_to_scene', input: { sceneId: 's1' } } }],
+      [sameNameWithoutPolicy],
+    ),
+    undefined,
+  )
 })
 
 test('workflow resume context directs validation to reuse the persisted binding report', () => {
@@ -304,6 +456,90 @@ test('workflow resume context continues interpretation without repeating complet
     ),
     /Call write_invest_report directly/,
   )
+})
+
+test('workflow resume context prefers one-shot required candidate retrieval after import refresh', () => {
+  const context = buildWorkflowResumeContext(
+    { phase: 'discovering-data', modelId: 'carbon' },
+    [
+      { id: 'schema', type: 'model-input-schema', data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] }, metadata: { modelId: 'carbon' } },
+      { id: 'cards', type: 'gsms-scene-data-cards', data: {}, metadata: { modelId: 'carbon', refreshedAfterImport: true } },
+      { id: 'lulc', type: 'data-card', metadata: { modelId: 'carbon' } },
+    ],
+  )
+
+  assert.match(context, /retrieve_required_input_candidates once/)
+  assert.match(context, /Do not invent \*_asset_id slot names/)
+  assert.match(context, /do not call retrieve_input_candidates in parallel/)
+})
+
+test('workflow resume context sends empty single-model scene to Data Hub discovery', () => {
+  const context = buildWorkflowResumeContext(
+    { phase: 'discovering-data', modelId: 'carbon' },
+    [
+      { id: 'schema', type: 'model-input-schema', data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] }, metadata: { modelId: 'carbon' } },
+      { id: 'cards', type: 'gsms-scene-data-cards', data: { data_cards: [] }, metadata: { modelId: 'carbon' } },
+      { id: 'stale-report', type: 'sufficiency-report', metadata: { modelId: 'carbon' } },
+    ],
+  )
+
+  assert.match(context, /Call discover_data_hub_candidates/)
+  assert.match(context, /before retrieving candidates, assessing readiness, finalizing sufficiency/)
+})
+
+test('data availability policy is provider-aware rather than Data Hub-only', () => {
+  const baseArtifacts = [
+    { id: 'schema', type: 'model-input-schema', data: { modelId: 'carbon' }, metadata: { modelId: 'carbon' } },
+    { id: 'cards', type: 'gsms-scene-data-cards', data: { data_cards: [] }, metadata: { modelId: 'carbon' } },
+  ]
+  const blocked = evaluateDataAvailabilityPolicy({ modelId: 'carbon' }, baseArtifacts)
+  assert.equal(blocked.requiresExternalDiscovery, true)
+  assert.equal(blocked.allowedTools.has('discover_data_hub_candidates'), true)
+
+  const satisfied = evaluateDataAvailabilityPolicy(
+    { modelId: 'carbon' },
+    [...baseArtifacts, { id: 'external', type: 'data-source-discovery-report', metadata: { modelId: 'carbon', providerId: 'data-hub' } }],
+  )
+  assert.equal(satisfied.requiresExternalDiscovery, false)
+
+  const unscopedGenericReport = evaluateDataAvailabilityPolicy(
+    { modelId: 'carbon' },
+    [...baseArtifacts, { id: 'external', type: 'data-source-discovery-report', metadata: { modelId: 'carbon' } }],
+  )
+  assert.equal(unscopedGenericReport.requiresExternalDiscovery, true)
+
+  const otherProviderReport = evaluateDataAvailabilityPolicy(
+    { modelId: 'carbon' },
+    [...baseArtifacts, { id: 'external', type: 'data-source-discovery-report', metadata: { modelId: 'carbon', providerId: 'generic-data-source' } }],
+  )
+  assert.equal(otherProviderReport.requiresExternalDiscovery, false)
+})
+
+test('data availability policy can select an injected source provider', () => {
+  const provider = {
+    id: 'stac',
+    displayName: 'STAC catalog',
+    discoveryTool: 'discover_stac_candidates',
+    discoveryArtifactTypes: ['stac-discovery-report'],
+  }
+  const baseArtifacts = [
+    { id: 'schema', type: 'model-input-schema', data: { modelId: 'carbon' }, metadata: { modelId: 'carbon' } },
+    { id: 'cards', type: 'gsms-scene-data-cards', data: { data_cards: [] }, metadata: { modelId: 'carbon' } },
+  ]
+  const blocked = evaluateDataAvailabilityPolicy({ modelId: 'carbon' }, baseArtifacts, [provider])
+
+  assert.equal(blocked.requiresExternalDiscovery, true)
+  assert.equal(blocked.discoveryTool, 'discover_stac_candidates')
+  assert.equal(blocked.allowedTools.has('discover_stac_candidates'), true)
+  assert.equal(blocked.allowedTools.has('discover_data_hub_candidates'), false)
+  assert.match(blocked.instruction ?? '', /STAC catalog/)
+
+  const satisfied = evaluateDataAvailabilityPolicy(
+    { modelId: 'carbon' },
+    [...baseArtifacts, { id: 'stac-report', type: 'stac-discovery-report', metadata: { modelId: 'carbon' } }],
+    [provider],
+  )
+  assert.equal(satisfied.requiresExternalDiscovery, false)
 })
 
 test('worker resets mid-execution phase (results-analyzed) on new run', async () => {
@@ -487,6 +723,8 @@ test('phase filter: matching group tools gated by evidence', () => {
     stubTool('finish'),
     stubTool('get_invest_model_schema'),
     stubTool('list_scene_data_cards'),
+    stubTool('discover_data_hub_candidates'),
+    stubTool('import_data_hub_files_to_scene'),
     stubTool('retrieve_input_candidates'),
     stubTool('finalize_data_matching'),
     stubTool('validate_binding_report'),
@@ -544,12 +782,145 @@ test('phase filter: matching group tools gated by evidence', () => {
   // In matching group, all domain tools are visible (gates enforce quality inside tools)
   assert.ok(visibleTools.includes('get_invest_model_schema'), 'schema tool visible')
   assert.ok(visibleTools.includes('list_scene_data_cards'), 'data cards tool visible')
+  assert.ok(visibleTools.includes('discover_data_hub_candidates'), 'data hub discovery visible')
+  assert.ok(visibleTools.includes('import_data_hub_files_to_scene'), 'data hub import visible')
   assert.ok(visibleTools.includes('retrieve_input_candidates'), 'candidates tool visible')
   assert.ok(visibleTools.includes('finalize_data_matching'), 'finalize visible')
   assert.ok(visibleTools.includes('validate_binding_report'), 'validation visible')
   assert.ok(visibleTools.includes('confirm_validation_snapshot'), 'confirmation visible (gate inside tool)')
   assert.ok(visibleTools.includes('execute_validated_snapshot'), 'execution visible (gate inside tool)')
   assert.ok(visibleTools.includes('finish'), 'finish visible when evidence exists')
+})
+
+test('phase filter blocks finish for empty single-model scene before data hub discovery', () => {
+  const tools = new ToolRegistry([
+    stubTool('finish'),
+    stubTool('discover_data_hub_candidates'),
+    stubTool('retrieve_required_input_candidates'),
+    stubTool('retrieve_input_candidates'),
+    stubTool('assess_scene_model_readiness'),
+    stubTool('finalize_sufficiency_assessment'),
+    stubTool('list_scene_data_cards'),
+    stubTool('get_invest_model_schema'),
+  ])
+  const finish = tools.list().find(tool => tool.name === 'finish')!
+  const discover = tools.list().find(tool => tool.name === 'discover_data_hub_candidates')!
+  const retrieveRequired = tools.list().find(tool => tool.name === 'retrieve_required_input_candidates')!
+  const retrieveOne = tools.list().find(tool => tool.name === 'retrieve_input_candidates')!
+  const readiness = tools.list().find(tool => tool.name === 'assess_scene_model_readiness')!
+  const sufficiency = tools.list().find(tool => tool.name === 'finalize_sufficiency_assessment')!
+  const dataCards = tools.list().find(tool => tool.name === 'list_scene_data_cards')!
+  const schema = tools.list().find(tool => tool.name === 'get_invest_model_schema')!
+  const makeContext = (artifacts: ArtifactStore) =>
+    ({
+      workspace: process.cwd(),
+      goal: {
+        objective: 'can carbon run',
+        status: 'active' as const,
+        turnCount: 1,
+        maxTurns: 10,
+        evidence: [],
+        remainingIssues: [],
+        startedAt: new Date().toISOString(),
+      },
+      artifacts,
+      domainState: new DomainStateStore({
+        modelId: 'carbon',
+        phase: 'discovering-data',
+      }),
+    }) satisfies AgentContext
+  const emptyScene = new ArtifactStore()
+  emptyScene.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] },
+      metadata: { modelId: 'carbon' },
+    },
+    {
+      type: 'gsms-scene-data-cards',
+      createdBy: 'tool',
+      data: { data_cards: [] },
+      metadata: { sceneId: 'scene-1', modelId: 'carbon' },
+    },
+  ])
+  const filter = workflowPhaseFilter()
+
+  assert.equal(filter(finish, makeContext(emptyScene)), false)
+  assert.equal(filter(discover, makeContext(emptyScene)), true)
+  assert.equal(filter(retrieveRequired, makeContext(emptyScene)), false)
+  assert.equal(filter(retrieveOne, makeContext(emptyScene)), false)
+  assert.equal(filter(readiness, makeContext(emptyScene)), false)
+  assert.equal(filter(sufficiency, makeContext(emptyScene)), false)
+  assert.equal(filter(dataCards, makeContext(emptyScene)), true)
+  assert.equal(filter(schema, makeContext(emptyScene)), true)
+
+  emptyScene.create({
+    type: 'data-hub-import-proposal',
+    createdBy: 'tool',
+    data: { slots: [], missing_slots: ['lulc_bas_path'] },
+    metadata: { sceneId: 'scene-1', modelId: 'carbon' },
+  })
+  assert.equal(filter(finish, makeContext(emptyScene)), true)
+  assert.equal(filter(retrieveRequired, makeContext(emptyScene)), true)
+  assert.equal(filter(readiness, makeContext(emptyScene)), true)
+})
+
+test('phase filter uses mutation policy to require refreshed facts before finish', () => {
+  const mutateTool: AgentTool = {
+    name: 'publish_scene_dataset',
+    description: 'test mutation',
+    risk: 'write',
+    inputSchema: { type: 'object' },
+    policy: { mutation: { refreshesArtifacts: ['scene-dataset-list'] } },
+    async execute() {
+      return { content: 'ok' }
+    },
+  }
+  const finish = stubTool('finish')
+  const artifacts = new ArtifactStore()
+  artifacts.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] },
+      metadata: { modelId: 'carbon' },
+    },
+    {
+      type: 'mutation-record',
+      createdBy: 'user',
+      data: {},
+      metadata: { mutationTool: 'publish_scene_dataset', modelId: 'carbon' },
+    },
+  ])
+  const context = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'refresh facts',
+      status: 'active' as const,
+      turnCount: 1,
+      maxTurns: 10,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts,
+    domainState: new DomainStateStore({
+      modelId: 'carbon',
+      phase: 'discovering-data',
+    }),
+  } satisfies AgentContext
+  const filter = workflowPhaseFilter([finish, mutateTool])
+
+  assert.equal(filter(finish, context), false)
+
+  artifacts.create({
+    type: 'scene-dataset-list',
+    createdBy: 'tool',
+    data: { datasets: ['dataset-1'] },
+    metadata: { refreshedAfterMutation: true, modelId: 'carbon' },
+  })
+  assert.equal(filter(finish, context), true)
 })
 
 test('phase filter enforces hard gate in execution phase', () => {

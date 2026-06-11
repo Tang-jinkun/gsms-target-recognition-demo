@@ -114,6 +114,264 @@ test('GSMS relation tool sends a structured relation request', async () => {
   })
 })
 
+test('Data Hub discovery tool creates an import proposal artifact', async () => {
+  let requestBody = ''
+  const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = String(init?.body)
+    return new Response(JSON.stringify({
+      scene_id: 'scene-1',
+      model_id: 'carbon',
+      strategy: 'recommend-after-confirmation',
+      slots: [
+        {
+          slot: 'lulc_bas_path',
+          ambiguous: false,
+          candidates: [
+            {
+              file_id: 'lulc-1',
+              name: 'lulc_2020.tif',
+              score: 0.82,
+              confidence: 'high',
+              reasons: ['File type raster matches the slot asset type.'],
+              risks: [],
+            },
+          ],
+        },
+      ],
+      recommended_file_ids: ['lulc-1'],
+      missing_slots: [],
+      ambiguous_slots: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'discover_data_hub_candidates',
+  )!
+  const ctx = context()
+  ctx.domainState.applyPatch({ modelId: 'carbon' })
+
+  const result = await tool.execute({ sceneId: 'scene-1', modelId: 'carbon' }, ctx)
+
+  assert.deepEqual(JSON.parse(requestBody), {
+    scene_id: 'scene-1',
+    model_id: 'carbon',
+    query: '',
+    folder_id: null,
+    study_area_bounds: null,
+    limit_per_slot: 3,
+  })
+  assert.equal(result.artifacts?.[0]?.type, 'data-source-discovery-report')
+  assert.equal(result.artifacts?.[0]?.metadata?.providerId, 'data-hub')
+  assert.equal(result.artifacts?.[1]?.type, 'confirmation-proposal')
+  assert.equal(result.artifacts?.[1]?.metadata?.actionTool, 'import_data_hub_files_to_scene')
+  assert.equal(result.artifacts?.[2]?.type, 'data-hub-import-proposal')
+  assert.deepEqual(result.statePatch?.dataHubRecommendedFileIds, ['lulc-1'])
+  assert.equal(
+    (result.artifacts?.[1]?.data as { selections: Array<{ fileId: string }> }).selections[0]?.fileId,
+    'lulc-1',
+  )
+  assert.equal(result.artifacts?.[2]?.id, undefined)
+})
+
+test('Data Hub discovery proposal includes ambiguous candidates as importable options', async () => {
+  const fetch = async () =>
+    new Response(JSON.stringify({
+      scene_id: 'scene-1',
+      model_id: 'carbon',
+      slots: [
+        {
+          slot: 'lulc_bas_path',
+          ambiguous: true,
+          candidates: [
+            { file_id: 'lulc-current', name: 'lulc_current.tif', score: 0.54, confidence: 'low', reasons: [], risks: [] },
+            { file_id: 'lulc-future', name: 'lulc_future.tif', score: 0.50, confidence: 'low', reasons: [], risks: [] },
+          ],
+        },
+      ],
+      recommended_file_ids: [],
+      missing_slots: [],
+      ambiguous_slots: ['lulc_bas_path'],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'discover_data_hub_candidates',
+  )!
+  const result = await tool.execute({ sceneId: 'scene-1', modelId: 'carbon' }, context())
+
+  assert.deepEqual(result.statePatch?.dataHubRecommendedFileIds, [])
+  assert.equal(result.statePatch?.phase, 'awaiting-data-import-confirmation')
+  assert.deepEqual(result.artifacts?.[0]?.metadata?.proposedFileIds, ['lulc-current', 'lulc-future'])
+  assert.equal(result.artifacts?.[0]?.type, 'data-source-discovery-report')
+  assert.deepEqual(result.artifacts?.[1]?.metadata?.proposedFileIds, ['lulc-current', 'lulc-future'])
+  assert.equal(result.artifacts?.[1]?.type, 'confirmation-proposal')
+  assert.deepEqual(result.artifacts?.[2]?.metadata?.proposedFileIds, ['lulc-current', 'lulc-future'])
+  assert.equal(
+    (result.artifacts?.[1]?.data as { selections: Array<{ fileId: string }> }).selections[0]?.fileId,
+    'lulc-current',
+  )
+})
+
+test('Data Hub import tool requires proposal evidence and posts selected file IDs', async () => {
+  const requests: Array<{ url: string; body: string }> = []
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    requests.push({ url, body: String(init?.body ?? '') })
+    const payload = url.endsWith('/data-cards')
+      ? {
+          scene_id: 'scene-1',
+          data_cards: [
+            {
+              asset_id: 'lulc-1',
+              path: 'lulc_2020.tif',
+              filename: 'lulc_2020.tif',
+              asset_type: 'raster',
+              semantic_hints: ['current land cover'],
+              metadata: { band_count: 1, width: 10, height: 10 },
+              provenance: { size: 100 },
+            },
+            {
+              asset_id: 'pools-1',
+              path: 'carbon_pools.csv',
+              filename: 'carbon_pools.csv',
+              asset_type: 'table',
+              semantic_hints: ['carbon pools'],
+              metadata: { columns: ['lucode', 'c_above', 'c_below', 'c_soil', 'c_dead'], sample_rows: [] },
+              provenance: { size: 100 },
+            },
+          ],
+          diagnostics: [],
+        }
+      : {
+          scene_id: 'scene-1',
+          imported: 2,
+          skipped_existing: [],
+          missing_file_ids: [],
+          file_ids: ['lulc-1', 'pools-1'],
+        }
+    return new Response(JSON.stringify(payload), {
+      status: url.endsWith('/data-cards') ? 200 : 201,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'import_data_hub_files_to_scene',
+  )!
+  assert.deepEqual(tool.policy?.mutation?.refreshesArtifacts, ['gsms-scene-data-cards', 'data-card'])
+  const ui = tool.policy?.confirmation?.ui?.({
+    sceneId: 'scene-1',
+    fileIds: ['lulc-1', 'pools-1'],
+    selections: [
+      { slot: 'lulc_bas_path', fileId: 'lulc-1', name: 'lulc_2020.tif', score: 0.82, confidence: 'high', reasons: ['raster match'], risks: [] },
+    ],
+  }, {})
+  assert.equal(ui?.type, 'data-import-proposal')
+  assert.equal(Array.isArray(ui?.rows) && (ui.rows[0] as { fileId?: string } | undefined)?.fileId, 'lulc-1')
+  const ctx = context()
+  ctx.domainState.applyPatch({ sceneId: 'scene-1', modelId: 'carbon' })
+  ctx.lastConsumedConfirmationId = 'confirmation-1'
+  ctx.artifacts.create({
+    type: 'confirmation-proposal',
+    createdBy: 'tool',
+    data: {
+      kind: 'data-import-proposal',
+      actionTool: 'import_data_hub_files_to_scene',
+      slots: [
+        {
+          slot: 'lulc_bas_path',
+          candidates: [{ file_id: 'lulc-1' }],
+        },
+        {
+          slot: 'carbon_pools_path',
+          candidates: [{ file_id: 'pools-1' }],
+        },
+      ],
+    },
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      actionTool: 'import_data_hub_files_to_scene',
+      recommendedFileIds: ['pools-1'],
+      proposedFileIds: ['lulc-1', 'pools-1'],
+    },
+  })
+
+  const result = await tool.execute({ sceneId: 'scene-1', fileIds: ['lulc-1', 'pools-1'] }, ctx)
+
+  assert.deepEqual(JSON.parse(requests[0]!.body), {
+    scene_id: 'scene-1',
+    file_ids: ['lulc-1', 'pools-1'],
+  })
+  assert.equal(result.artifacts?.[0]?.type, 'scene-import-record')
+  assert.equal(result.artifacts?.[0]?.createdBy, 'user')
+  assert.equal(result.artifacts?.[1]?.type, 'gsms-scene-data-cards')
+  assert.equal(result.artifacts?.filter(artifact => artifact.type === 'data-card').length, 2)
+  assert.equal(result.statePatch?.phase, 'discovering-data')
+  assert.deepEqual(result.statePatch?.assetIds, ['lulc-1', 'pools-1'])
+  assert.match(result.hiddenMessages?.[0]?.content ?? '', /ignore any pre-import missing-data conclusion/)
+})
+
+test('Data Hub import tool rejects file IDs outside latest proposal', async () => {
+  let called = false
+  const fetch = async () => {
+    called = true
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'import_data_hub_files_to_scene',
+  )!
+  const ctx = context()
+  ctx.domainState.applyPatch({ sceneId: 'scene-1', modelId: 'carbon' })
+  ctx.artifacts.create({
+    type: 'data-hub-import-proposal',
+    createdBy: 'tool',
+    data: {},
+    metadata: {
+      sceneId: 'scene-1',
+      modelId: 'carbon',
+      recommendedFileIds: ['lulc-1'],
+    },
+  })
+
+  await assert.rejects(
+    tool.execute({ sceneId: 'scene-1', fileIds: ['other-1'] }, ctx),
+    /not present in the latest Data Hub proposal/,
+  )
+  assert.equal(called, false)
+})
+
+test('Data Hub import tool fails if refreshed scene data remains empty', async () => {
+  const fetch = async (input: string | URL | Request) => {
+    const url = String(input)
+    const payload = url.endsWith('/data-cards')
+      ? { scene_id: 'scene-1', data_cards: [], diagnostics: [] }
+      : { scene_id: 'scene-1', imported: 1, skipped_existing: [], missing_file_ids: [], file_ids: ['lulc-1'] }
+    return new Response(JSON.stringify(payload), {
+      status: url.endsWith('/data-cards') ? 200 : 201,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const tool = createGsmsTools(new GsmsClient({ baseUrl: 'http://gsms', fetch })).find(
+    candidate => candidate.name === 'import_data_hub_files_to_scene',
+  )!
+  const ctx = context()
+  ctx.domainState.applyPatch({ sceneId: 'scene-1', modelId: 'carbon' })
+  ctx.artifacts.create({
+    type: 'data-hub-import-proposal',
+    createdBy: 'tool',
+    data: { slots: [{ slot: 'lulc_bas_path', candidates: [{ file_id: 'lulc-1' }] }] },
+    metadata: { sceneId: 'scene-1', modelId: 'carbon', proposedFileIds: ['lulc-1'] },
+  })
+
+  await assert.rejects(
+    tool.execute({ sceneId: 'scene-1', fileIds: ['lulc-1'] }, ctx),
+    /did not produce scene data cards/,
+  )
+})
+
 test('GSMS relation tool reuses identical persisted evidence without creating duplicates', async () => {
   let calls = 0
   const fetch = async () => {

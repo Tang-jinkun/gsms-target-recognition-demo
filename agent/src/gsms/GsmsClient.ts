@@ -24,6 +24,40 @@ export class GsmsClient {
     return this.#request(`/api/scenes/${encodeURIComponent(sceneId)}/data-cards`)
   }
 
+  discoverDataHubCandidates(input: {
+    sceneId: string
+    modelId: string
+    query?: string
+    folderId?: string
+    studyAreaBounds?: number[]
+    limitPerSlot?: number
+  }): Promise<unknown> {
+    return this.#request('/api/matching/data-hub/discover', {
+      method: 'POST',
+      body: JSON.stringify({
+        scene_id: input.sceneId,
+        model_id: input.modelId,
+        query: input.query ?? '',
+        folder_id: input.folderId ?? null,
+        study_area_bounds: input.studyAreaBounds ?? null,
+        limit_per_slot: input.limitPerSlot ?? 3,
+      }),
+    })
+  }
+
+  importDataHubFilesToScene(input: {
+    sceneId: string
+    fileIds: string[]
+  }): Promise<unknown> {
+    return this.#request('/api/matching/data-hub/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        scene_id: input.sceneId,
+        file_ids: input.fileIds,
+      }),
+    })
+  }
+
   checkRelation(input: {
     kind: string
     leftAssetId: string

@@ -19,20 +19,23 @@ Recommended agent-controlled workflow:
 2. Load Model Input Schema
 3. Load project asset profiles (Data Cards)
 4. Identify required input slots
-5. Retrieve candidate assets for each slot
-6. Match candidates to slots
-7. Check cross-slot relations
-8. Score candidate bindings
-9. Detect missing, ambiguous, or conflicting inputs
-10. Decide next action (auto-bind, needs review, request upload, stop)
-11. Build Binding Report
-12. Hand off to validation or configuration
+5. If scene data is empty or insufficient, discover Data Hub candidates and ask the user to confirm importing file references
+6. Retrieve candidate assets for each slot
+7. Match candidates to slots
+8. Check cross-slot relations
+9. Score candidate bindings
+10. Detect missing, ambiguous, or conflicting inputs
+11. Decide next action (auto-bind, needs review, request upload, stop)
+12. Build Binding Report
+13. Hand off to validation or configuration
 
 ## Agent Guidance
 
 - The agent decides which primitive to call and the order based on Task Spec and intermediate results.
 - Skill provides primitives, each with input/output contract, but does not control execution sequence.
 - The agent must handle retries, warnings, human confirmation, or upload requests.
+- When current-scene Data Cards are empty or required slots have no candidates, the agent must check global Data Hub discovery before declaring data missing.
+- Data Hub imports are by reference only and require explicit user confirmation.
 
 ## Required Inputs
 

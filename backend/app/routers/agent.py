@@ -425,7 +425,12 @@ def request_agent_confirmation(
         db,
         session.id,
         "confirmation.requested",
-        {"confirmation_id": confirmation.id, "kind": confirmation.kind},
+        {
+            "confirmation_id": confirmation.id,
+            "kind": confirmation.kind,
+            "prompt": confirmation.prompt,
+            "payload": confirmation.payload,
+        },
     )
     _emit_status_event(db, session.id, old_status, session.status)
     db.commit()
@@ -474,6 +479,7 @@ def resolve_agent_confirmation(
         {
             "confirmation_id": confirmation.id,
             "status": confirmation.status,
+            "kind": confirmation.kind,
         },
     )
     _emit_status_event(db, session.id, old_status, session.status)
@@ -519,7 +525,11 @@ def consume_agent_confirmation(
         db,
         session_id,
         "confirmation.consumed",
-        {"confirmation_id": confirmation.id},
+        {
+            "confirmation_id": confirmation.id,
+            "status": confirmation.status,
+            "kind": confirmation.kind,
+        },
     )
     db.commit()
     db.refresh(confirmation)

@@ -13,6 +13,7 @@ from app.matching import (
     next_snapshot_status,
     validation_snapshot_id,
 )
+from app.routers.matching import _score_data_hub_candidate
 from invest_models.carbon import MODEL_SCHEMA as CARBON_MODEL_SCHEMA
 from invest_models.habitat_quality import MODEL_SCHEMA as HABITAT_MODEL_SCHEMA
 from app.llm_proxy import chat_completions_url
@@ -54,6 +55,59 @@ class MatchingFactsTest(unittest.TestCase):
         self.assertIn("threat", threats["required_fields"])
         self.assertTrue(CARBON_MODEL_SCHEMA["matching_relations"])
         self.assertTrue(HABITAT_MODEL_SCHEMA["matching_relations"])
+
+    def test_data_hub_discovery_scores_required_table_fields(self):
+        data_file = SimpleNamespace(
+            id="pools-1",
+            name="carbon_pools.csv",
+            file_type="table",
+            file_format="csv",
+            size=128,
+            crs=None,
+            bounds=None,
+            bounds_wgs84=None,
+            folder_id="folder-1",
+            folder=SimpleNamespace(name="Carbon"),
+            extra_meta={
+                "columns": ["lucode", "c_above", "c_below", "c_soil", "c_dead"],
+                "row_count": 3,
+            },
+        )
+        slot = next(
+            item for item in CARBON_MODEL_SCHEMA["inputs"]
+            if item.get("invest_arg") == "carbon_pools_path"
+        )
+
+        result = _score_data_hub_candidate(data_file, slot, None, False)
+
+        self.assertFalse(result["rejected"])
+        self.assertGreaterEqual(result["score"], 0.8)
+        self.assertIn("Contains required fields", " ".join(result["reasons"]))
+
+    def test_data_hub_discovery_rejects_wrong_type_before_recommendation(self):
+        data_file = SimpleNamespace(
+            id="table-1",
+            name="lulc_codes.csv",
+            file_type="table",
+            file_format="csv",
+            size=128,
+            crs=None,
+            bounds=None,
+            bounds_wgs84=None,
+            folder_id=None,
+            folder=None,
+            extra_meta={"columns": ["lucode"]},
+        )
+        slot = next(
+            item for item in CARBON_MODEL_SCHEMA["inputs"]
+            if item.get("invest_arg") == "lulc_bas_path"
+        )
+
+        result = _score_data_hub_candidate(data_file, slot, None, False)
+
+        self.assertTrue(result["rejected"])
+        self.assertEqual(result["score"], 0)
+        self.assertIn("Expected raster", result["rejection_reasons"][0])
 
     def test_binding_report_converts_invest_slots_to_gsms_asset_inputs(self):
         inputs = build_model_inputs_from_bindings(
