@@ -279,7 +279,11 @@ async def upload_file(file: UploadFile = File(...), folder_id: str | None = None
     with dest.open("wb") as fh:
         shutil.copyfileobj(file.file, fh)
 
-    meta = files_util.read_file_metadata(dest)
+    try:
+        meta = files_util.read_file_metadata(dest)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
     core = {"name", "file_type", "file_format", "size", "crs", "bounds", "bounds_wgs84"}
     extra = {k: v for k, v in meta.items() if k not in core}
 

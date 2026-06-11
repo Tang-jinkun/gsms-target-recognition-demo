@@ -16,8 +16,10 @@ def infer_file_type(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix in {".tif", ".tiff"}:
         return "raster"
-    if suffix in {".geojson", ".json", ".zip"}:
+    if suffix in {".geojson", ".zip"}:
         return "geojson"
+    if suffix == ".json":
+        return "document"
     if suffix == ".csv":
         return "table"
     if suffix in {".html", ".htm", ".txt"}:
@@ -29,7 +31,7 @@ def infer_file_format(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     return {
         ".tif": "geotiff", ".tiff": "geotiff",
-        ".geojson": "geojson", ".json": "geojson",
+        ".geojson": "geojson", ".json": "json",
         ".zip": "shapefile_zip", ".csv": "csv",
         ".html": "html", ".htm": "html", ".txt": "text",
     }.get(suffix, "unknown")
@@ -132,6 +134,20 @@ def infer_property_type(value) -> str:
     return "mixed"
 
 
+def json_top_level_type(value) -> str:
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "string"
+
+
 def read_file_metadata(path: Path) -> dict:
     metadata: dict = {
         "name": path.name,
@@ -154,11 +170,37 @@ def read_file_metadata(path: Path) -> dict:
         return metadata
 
     if suffix in {".geojson", ".json"}:
-        with path.open("r", encoding="utf-8-sig", errors="replace") as fh:
-            data = json.load(fh)
-        features = data.get("features", []) if data.get("type") == "FeatureCollection" else []
+        try:
+            with path.open("r", encoding="utf-8-sig", errors="replace") as fh:
+                data = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON file: {exc.msg}") from exc
+
+        is_feature_collection = (
+            isinstance(data, dict) and
+            data.get("type") == "FeatureCollection" and
+            isinstance(data.get("features"), list)
+        )
+        if not is_feature_collection:
+            if suffix == ".geojson":
+                raise HTTPException(
+                    status_code=400,
+                    detail="GeoJSON must be a FeatureCollection with a features array",
+                )
+            metadata.update({
+                "file_type": "document",
+                "file_format": "json",
+                "json_top_level": json_top_level_type(data),
+                "item_count": len(data) if isinstance(data, (list, dict)) else None,
+                "sha256": file_sha256(path),
+            })
+            return metadata
+
+        features = [feature for feature in data["features"] if isinstance(feature, dict)]
         bounds = [b for b in (calculate_geojson_bounds((f.get("geometry") or {})) for f in features) if b]
         metadata.update({
+            "file_type": "geojson",
+            "file_format": "geojson",
             "feature_count": len(features),
             "bounds": merge_bounds(bounds),
             "bounds_wgs84": merge_bounds(bounds),

@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
-from app.files_util import build_vector_property_profile
+from app.files_util import build_vector_property_profile, read_file_metadata
 from app.target_recognition import execute_target_query, validate_conditions
 
 
@@ -88,3 +89,34 @@ def test_invalid_field_and_operator_are_rejected():
         validate_conditions(fields, [{"field": "measured_value", "operator": "equals", "value": "30"}])
     with pytest.raises(ValueError, match="string field"):
         validate_conditions(fields, [{"field": "measured_value", "operator": "contains", "value": "3"}])
+
+
+def test_plain_json_array_is_a_document_not_geojson(tmp_path: Path):
+    path = tmp_path / "expected-statistics.json"
+    path.write_text('[{"total": 22}]', encoding="utf-8")
+
+    metadata = read_file_metadata(path)
+    assert metadata["file_type"] == "document"
+    assert metadata["file_format"] == "json"
+    assert metadata["json_top_level"] == "array"
+    assert metadata["item_count"] == 1
+
+
+def test_json_feature_collection_is_detected_as_geojson(tmp_path: Path):
+    path = tmp_path / "targets.json"
+    path.write_text(json.dumps({
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": {"type": "Point", "coordinates": [1, 2]}, "properties": {}}],
+    }), encoding="utf-8")
+
+    metadata = read_file_metadata(path)
+    assert metadata["file_type"] == "geojson"
+    assert metadata["feature_count"] == 1
+
+
+def test_invalid_geojson_returns_actionable_client_error(tmp_path: Path):
+    path = tmp_path / "invalid.geojson"
+    path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(HTTPException, match="FeatureCollection"):
+        read_file_metadata(path)
