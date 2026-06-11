@@ -15,6 +15,7 @@ import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
 import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
 import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentMessage, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
 import { useAgentEventSource } from '../../src/lib/useAgentEventSource'
+import { applyEventToBlocks, finalizeBlocks, type Turn, type TurnBlock } from '../../src/lib/activityBlocks'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -22,66 +23,9 @@ type LeftTab = 'layers' | 'files' | 'invest'
 type TaskState = 'idle' | 'run' | 'done' | 'fail'
 type ChatMsg = { role: 'user' | 'agent'; html: string; text: string; att: string[] }
 
-type TurnBlock =
-  | { type: 'text'; text: string; status: 'streaming' | 'done' }
-  | { type: 'tool'; id: string; name: string; status: 'running' | 'completed' | 'failed'; message?: string; percentage?: number; archived?: boolean }
-  | { type: 'notice'; level: 'warn' | 'stop'; text: string }
-
-type Turn = { role: 'user' | 'assistant'; blocks: TurnBlock[]; streaming?: boolean }
-
-/** Apply one streaming/tool event to a run's accumulating activity blocks (mutates in place). */
-function applyEventToBlocks(blocks: TurnBlock[], ev: AgentEvent) {
-  if (ev.type === 'model.streaming') {
-    if (ev.data.text) {
-      const last = blocks[blocks.length - 1]
-      if (last && last.type === 'text' && last.status === 'streaming') {
-        last.text += ev.data.text
-      } else {
-        blocks.push({ type: 'text', text: ev.data.text, status: 'streaming' })
-      }
-    } else if (ev.data.tool) {
-      const id = ev.data.tool_call_id ?? ev.data.tool
-      if (!blocks.some(b => b.type === 'tool' && b.id === id)) {
-        blocks.push({ type: 'tool', id, name: ev.data.tool, status: 'running' })
-      }
-    }
-  } else if (ev.type === 'tool.started') {
-    const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-    if (!blocks.some(b => b.type === 'tool' && b.id === id)) {
-      blocks.push({ type: 'tool', id, name: ev.data.tool ?? 'tool', status: 'running' })
-    }
-  } else if (ev.type === 'tool.progress') {
-    const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-    const tb = blocks.find(b => b.type === 'tool' && b.id === id)
-    if (tb && tb.type === 'tool') { tb.message = ev.data.message; tb.percentage = ev.data.percentage }
-  } else if (ev.type === 'tool.completed' || ev.type === 'tool.failed') {
-    const id = ev.data.tool_call_id ?? ev.data.tool ?? 'unknown'
-    const tb = blocks.find(b => b.type === 'tool' && b.id === id)
-    if (tb && tb.type === 'tool') tb.status = ev.type === 'tool.completed' ? 'completed' : 'failed'
-  } else if (ev.type === 'artifact.created' && ev.data.artifactType === 'tool-result') {
-    // Large tool output was persisted as an artifact. The artifactId encodes the
-    // tool name as `tool-result:<toolName>:<input>`; flag the matching block.
-    const artifactId = typeof ev.data.artifactId === 'string' ? ev.data.artifactId : ''
-    const toolName = artifactId.split(':')[1]
-    if (toolName) {
-      const tb = [...blocks].reverse().find(b => b.type === 'tool' && b.name === toolName)
-      if (tb && tb.type === 'tool') tb.archived = true
-    }
-  } else if (ev.type === 'diagnostic.created') {
-    const code = typeof ev.data.code === 'string' ? ev.data.code : ''
-    if (code === 'AGENT_NO_PROGRESS') {
-      blocks.push({ type: 'notice', level: 'stop', text: '智能体连续多轮未产生新证据，已自动停止以避免空转。' })
-    }
-  }
-}
-
-/** Mark all of a run's blocks as settled (text done, running tools completed). */
-function finalizeBlocks(blocks: TurnBlock[]) {
-  for (const b of blocks) {
-    if (b.type === 'text' && b.status === 'streaming') b.status = 'done'
-    if (b.type === 'tool' && b.status === 'running') b.status = 'completed'
-  }
-}
+// TurnBlock/Turn types and the event-folding logic (applyEventToBlocks,
+// finalizeBlocks) live in src/lib/activityBlocks.ts — a pure, framework-free
+// module so the SSE-vs-polling folding invariant can be unit-tested.
 
 const TYPE_LABEL: Record<string, string> = { raster: '栅格', vector: '矢量', table: '表格', text: '文本', folder: '文件夹', other: '其他' }
 const TYPE_ICON: Record<string, string> = { raster: 'image', vector: 'map', table: 'table', text: 'file-text', other: 'file' }
