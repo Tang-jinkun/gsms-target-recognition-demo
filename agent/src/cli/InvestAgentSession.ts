@@ -15,7 +15,7 @@ import {
 import { SkillRegistry, SkillTool } from '@gsms/skills-core'
 import { TurnIntentRouter, summarizeTurnPlan, type TurnPlan } from '../intent/TurnIntentRouter.ts'
 import { workflowRunStartTransition } from '../policies/workflowPolicy.ts'
-import { workflowPhaseFilter } from '../workflowBoundary.ts'
+import { buildTurnBoundary, workflowPhaseFilter, workflowTurnBoundaryTransition } from '../workflowBoundary.ts'
 import { workflowToolRegistry } from '../workflowToolGuards.ts'
 
 export interface InvestAgentSessionOptions {
@@ -69,6 +69,7 @@ export class InvestAgentSession {
     }
 
     const state = this.domainState.snapshot()
+    const turnBoundary = buildTurnBoundary(plan.workflow?.action)
     const transition = workflowRunStartTransition({
       phase: state.phase,
       previousSceneId: typeof state.sceneId === 'string' ? state.sceneId : undefined,
@@ -76,6 +77,11 @@ export class InvestAgentSession {
     })
     if (transition.statePatch) this.domainState.applyPatch(transition.statePatch)
     for (const type of transition.staleArtifactTypes) {
+      for (const artifact of this.artifacts.list(type)) this.artifacts.delete(artifact.id)
+    }
+    const boundaryTransition = workflowTurnBoundaryTransition(turnBoundary, this.domainState.snapshot())
+    if (boundaryTransition.statePatch) this.domainState.applyPatch(boundaryTransition.statePatch)
+    for (const type of boundaryTransition.staleArtifactTypes) {
       for (const artifact of this.artifacts.list(type)) this.artifacts.delete(artifact.id)
     }
     const objective = [
@@ -90,6 +96,9 @@ export class InvestAgentSession {
       `Current phase: ${String(this.domainState.snapshot().phase ?? 'conversation-ready')}. ` +
       `Execution phases enforce strict sequential order; matching phases allow rollback and revision.`,
       `Top-level turn plan: ${JSON.stringify(summarizeTurnPlan(plan))}.`,
+      turnBoundary
+        ? `Hard turn boundary: ${JSON.stringify(turnBoundary)}. Tools outside this boundary are not visible and cannot satisfy this turn.`
+        : '',
       'The current user request overrides earlier planning state. If it names or implies a different InVEST model, select that model again before matching or validation.',
       'Act on the current request using the persisted artifacts and domain state from this session.',
     ]
@@ -104,7 +113,7 @@ export class InvestAgentSession {
       artifacts: this.artifacts,
       domainState: this.domainState,
       maxTurns: this.options.maxTurns,
-      toolFilter: workflowPhaseFilter(this.options.tools.list()),
+      toolFilter: workflowPhaseFilter(this.options.tools.list(), turnBoundary),
     })
     const result = await runtime.run(objective)
     this.#history.push({

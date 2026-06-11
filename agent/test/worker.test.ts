@@ -10,12 +10,15 @@ import {
   InvestAgentWorker,
   approvedConfirmationForDirectExecution,
   buildWorkflowResumeContext,
+  buildTurnBoundary,
   checkWorkflowPhaseTransition,
+  enforceWorkflowPhaseTransitions,
   evaluateDataAvailabilityPolicy,
   executionPhaseAllows,
   enrichDataHubImportConfirmationUi,
   phaseResumeInstruction,
   workflowPhaseFilter,
+  workflowTurnBoundaryTransition,
   workflowEvidenceInstruction,
   workflowRunStartTransition,
   isExecutionPhase,
@@ -245,6 +248,7 @@ test('approved report permission survives regenerated report wording for the sam
 test('approved data hub import confirmation executes exact deferred tool input before model planning', async () => {
   const actions: string[] = []
   const importBodies: Array<Record<string, unknown>> = []
+  const events: Array<{ event_type: string; data: Record<string, unknown> }> = []
   let completeCheckpoint: Record<string, unknown> | undefined
   const current = session()
   current.domain_state = {
@@ -289,6 +293,7 @@ test('approved data hub import confirmation executes exact deferred tool input b
     if (url.includes('status=queued')) return response([current])
     if (url.endsWith('/messages')) return response([{ id: 'm1', role: 'user', content: '继续导入' }])
     if (url.endsWith('/events') && init?.method === 'POST') {
+      events.push(JSON.parse(String(init.body)))
       return response({ id: 1, type: 'event', data: {} }, 201)
     }
     if (url.endsWith('/confirmations/approved-import/consume')) {
@@ -354,6 +359,16 @@ test('approved data hub import confirmation executes exact deferred tool input b
     assert.equal(confirmations[0]?.status, 'consumed')
     assert.deepEqual(importBodies, [{ scene_id: 'scene-1', file_ids: ['lulc-1', 'pools-1'] }])
     assert.ok(model.requests.length >= 1, 'model may continue only after the approved import has executed')
+    assert.match(
+      String(model.requests[0]?.messages.find(message => message.role === 'user')?.content),
+      /retrieve_required_input_candidates once/,
+    )
+    const approvedRunCompleted = events.find(event =>
+      event.event_type === 'run.completed' &&
+      String(event.data.summary).includes('Data Hub 文件引用导入当前场景'),
+    )
+    assert.ok(approvedRunCompleted, 'approved direct execution emits its own completion event')
+    assert.ok(Array.isArray(approvedRunCompleted.data.transcript), 'direct execution transcript is preserved')
   } finally {
     await rm(workspace, { recursive: true, force: true })
   }
@@ -467,6 +482,14 @@ test('approved direct execution is driven by tool policy instead of tool name', 
     inputSchema: { type: 'object' },
     async execute() { return { content: 'ok' } },
   }
+  const executeTool: AgentTool = {
+    name: 'execute_validated_snapshot',
+    description: 'execute',
+    risk: 'execute',
+    inputSchema: { type: 'object' },
+    policy: { confirmation: { approvedAction: 'execute-approved-input' } },
+    async execute() { return { content: 'ok' } },
+  }
 
   assert.equal(
     approvedConfirmationForDirectExecution(
@@ -479,6 +502,14 @@ test('approved direct execution is driven by tool policy instead of tool name', 
     approvedConfirmationForDirectExecution(
       [{ id: 'approved-import', status: 'approved', payload: { tool: 'import_data_hub_files_to_scene', input: { sceneId: 's1' } } }],
       [sameNameWithoutPolicy],
+    ),
+    undefined,
+  )
+  assert.equal(
+    approvedConfirmationForDirectExecution(
+      [{ id: 'approved-execute', status: 'approved', payload: { tool: 'execute_validated_snapshot', input: { snapshotId: 'snap-1' } } }],
+      [executeTool],
+      buildTurnBoundary('match-inputs'),
     ),
     undefined,
   )
@@ -865,20 +896,83 @@ test('phase filter: matching group tools gated by evidence', () => {
       phase: 'ready-for-validation',
     }),
   } satisfies AgentContext
-  const filter = workflowPhaseFilter()
+  const filter = workflowPhaseFilter(tools.list(), buildTurnBoundary('match-inputs'))
 
   const visibleTools = tools.list().filter(tool => filter(tool, context)).map(tool => tool.name)
-  // In matching group, all domain tools are visible (gates enforce quality inside tools)
+  // The current turn boundary caps tool visibility even when persisted evidence
+  // has reached a later matching phase.
   assert.ok(visibleTools.includes('get_invest_model_schema'), 'schema tool visible')
   assert.ok(visibleTools.includes('list_scene_data_cards'), 'data cards tool visible')
   assert.ok(visibleTools.includes('discover_data_hub_candidates'), 'data hub discovery visible')
   assert.ok(visibleTools.includes('import_data_hub_files_to_scene'), 'data hub import visible')
   assert.ok(visibleTools.includes('retrieve_input_candidates'), 'candidates tool visible')
   assert.ok(visibleTools.includes('finalize_data_matching'), 'finalize visible')
-  assert.ok(visibleTools.includes('validate_binding_report'), 'validation visible')
-  assert.ok(visibleTools.includes('confirm_validation_snapshot'), 'confirmation visible (gate inside tool)')
-  assert.ok(visibleTools.includes('execute_validated_snapshot'), 'execution visible (gate inside tool)')
+  assert.equal(visibleTools.includes('validate_binding_report'), false, 'validation hidden by match-only turn')
+  assert.equal(visibleTools.includes('confirm_validation_snapshot'), false, 'confirmation hidden by match-only turn')
+  assert.equal(visibleTools.includes('execute_validated_snapshot'), false, 'execution hidden by match-only turn')
   assert.ok(visibleTools.includes('finish'), 'finish visible when evidence exists')
+})
+
+test('turn boundary lets current match request override persisted execution phase', () => {
+  const tools = new ToolRegistry([
+    stubTool('finish'),
+    stubTool('get_invest_model_schema'),
+    stubTool('list_scene_data_cards'),
+    stubTool('retrieve_input_candidates'),
+    stubTool('finalize_data_matching'),
+    stubTool('validate_binding_report'),
+    stubTool('confirm_validation_snapshot'),
+    stubTool('execute_validated_snapshot'),
+  ])
+  const artifacts = new ArtifactStore()
+  artifacts.create({
+    type: 'binding-report',
+    createdBy: 'agent',
+    data: {},
+    metadata: { modelId: 'carbon', matchingContextId: 'ctx-carbon' },
+  })
+  const context = {
+    workspace: process.cwd(),
+    goal: {
+      objective: '重新匹配 Carbon 数据，但不要执行。',
+      status: 'active' as const,
+      turnCount: 1,
+      maxTurns: 10,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts,
+    domainState: new DomainStateStore({
+      modelId: 'carbon',
+      matchingContextId: 'ctx-carbon',
+      phase: 'confirmed-for-execution',
+    }),
+  } satisfies AgentContext
+  const filter = workflowPhaseFilter(tools.list(), buildTurnBoundary('match-inputs'))
+  const visibleTools = tools.list().filter(tool => filter(tool, context)).map(tool => tool.name)
+
+  assert.ok(visibleTools.includes('finalize_data_matching'), 'matching stays available for the current request')
+  assert.equal(visibleTools.includes('validate_binding_report'), false)
+  assert.equal(visibleTools.includes('confirm_validation_snapshot'), false)
+  assert.equal(visibleTools.includes('execute_validated_snapshot'), false)
+})
+
+test('turn boundary rewinds persisted execution phase for earlier current action', () => {
+  const transition = workflowTurnBoundaryTransition(
+    buildTurnBoundary('match-inputs'),
+    {
+      phase: 'confirmed-for-execution',
+      validationSnapshotId: 'snap-1',
+      confirmationStatus: 'confirmed',
+      jobId: 'job-1',
+    },
+  )
+
+  assert.equal(transition.statePatch?.phase, 'matching-slots')
+  assert.equal(transition.statePatch?.validationSnapshotId, null)
+  assert.ok(transition.staleArtifactTypes.includes('confirmation-record'))
+  assert.ok(transition.staleArtifactTypes.includes('model-job'))
 })
 
 test('workflow phase policy drives execution gate and resume instructions', () => {
@@ -945,6 +1039,40 @@ test('workflow phase policy validates tool-owned phase transitions', () => {
     }).allowed,
     true,
   )
+})
+
+test('workflow tool guard blocks disallowed execution-phase tools before execute', async () => {
+  let executed = false
+  const guarded = enforceWorkflowPhaseTransitions({
+    name: 'validate_binding_report',
+    description: 'should not run in execution phase',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      executed = true
+      return { content: 'unexpected' }
+    },
+  })
+  const context = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'pre guard',
+      status: 'active' as const,
+      turnCount: 1,
+      maxTurns: 1,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts: new ArtifactStore(),
+    domainState: new DomainStateStore({ phase: 'confirmed-for-execution' }),
+  } satisfies AgentContext
+
+  await assert.rejects(
+    guarded.execute({}, context),
+    /WORKFLOW_PRE_EXECUTION_BLOCKED/,
+  )
+  assert.equal(executed, false)
 })
 
 test('workflow state machine decides run-start phase reset and stale artifact cleanup', () => {

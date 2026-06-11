@@ -60,9 +60,9 @@ const CONTINUE_KEYWORDS = [
 
 const INVEST_KEYWORDS = [
   'invest', 'carbon', 'habitat quality', 'sdr', 'ndr', 'annual water yield',
-  'scenario', 'scene', 'model schema', 'input schema', 'data card', 'binding',
-  'match', 'validate', 'validation', 'run model', 'execute', 'report', 'job',
-  '碳储量', '碳存储', '模型', '场景', '数据', '匹配', '验证', '运行', '执行', '报告', '作业',
+  'model schema', 'input schema', 'data card', 'binding',
+  'match', 'validate', 'validation', 'run model', 'execute validated snapshot', 'job',
+  '碳储量', '碳存储', '生境质量', '匹配', '验证',
 ]
 
 const CURRENT_PROJECT_HINTS = [
@@ -70,7 +70,8 @@ const CURRENT_PROJECT_HINTS = [
 ]
 
 const CONCEPT_PATTERNS = [
-  /^(explain|what is|what are|介绍|解释|说明).+/i,
+  /^(explain|what is|what are|介绍|解释|说明|什么是).+/i,
+  /^请?(?:介绍|解释|说明).+/i,
   /概念/,
 ]
 
@@ -89,12 +90,13 @@ export class TurnIntentRouter {
 
     const canContinue = hasContinuableWorkflow(input.domainState, input.artifacts)
     if (isContinueRequest(text)) {
+      const workflowAction = inferWorkflowAction(text) ?? inferContinuationAction(input.domainState, input.artifacts)
       const route = canContinue
         ? {
             intent: 'workflow-continue' as const,
             reason: 'continuation request with workflow state',
             confidence: 0.9,
-            workflowAction: inferContinuationAction(input.domainState, input.artifacts),
+            workflowAction,
           }
         : {
             intent: 'ambiguous' as const,
@@ -104,7 +106,7 @@ export class TurnIntentRouter {
       return buildTurnPlan(route, input.skillSummaries)
     }
 
-    const deterministic = routeByRules(message, text, input.skillSummaries)
+    const deterministic = routeByRules(message, text, input.skillSummaries, input.domainState, input.artifacts)
     if (deterministic) return buildTurnPlan(deterministic, input.skillSummaries)
 
     const llmRoute = await this.#routeWithClassifier(input)
@@ -162,10 +164,14 @@ export function routeTurnIntent(input: RouteTurnInput): TurnIntentRoute {
   const canContinue = hasContinuableWorkflow(input.domainState, input.artifacts)
   if (isContinueRequest(text)) {
     return canContinue
-      ? { intent: 'workflow-continue', reason: 'continuation request with workflow state' }
+      ? {
+          intent: 'workflow-continue',
+          reason: 'continuation request with workflow state',
+          workflowAction: inferWorkflowAction(text) ?? inferContinuationAction(input.domainState, input.artifacts),
+        }
       : { intent: 'ambiguous', reason: 'continuation request without workflow state' }
   }
-  return routeByRules(message, text, input.skillSummaries) ??
+  return routeByRules(message, text, input.skillSummaries, input.domainState, input.artifacts) ??
     { intent: 'ambiguous', reason: 'no deterministic route and classifier unavailable' }
 }
 
@@ -197,6 +203,8 @@ function routeByRules(
   message: string,
   text: string,
   skillSummaries: readonly SkillSummary[] = [],
+  domainState?: Record<string, unknown>,
+  artifacts?: readonly unknown[],
 ): TurnIntentRoute | undefined {
   if (ARITHMETIC_PATTERN.test(message)) {
     return { intent: 'general-answer', reason: 'simple arithmetic or expression', confidence: 0.95 }
@@ -212,6 +220,27 @@ function routeByRules(
   }
   const skillRoute = routeBySkillMetadata(text, skillSummaries)
   if (skillRoute) return skillRoute
+  const workflowAction = inferWorkflowAction(text)
+  if (workflowAction && hasContinuableWorkflow(domainState, artifacts)) {
+    return {
+      intent: 'invest-workflow',
+      reason: 'workflow action request with existing workflow state',
+      confidence: 0.84,
+      workflowAction,
+      modelId: inferModelId(text),
+      exposeSkills: skillsForWorkflowAction(workflowAction, skillSummaries),
+    }
+  }
+  if (hasAny(text, CURRENT_PROJECT_HINTS) && inferWorkflowAction(text)) {
+    return {
+      intent: 'invest-workflow',
+      reason: 'current GSMS scene workflow request',
+      confidence: 0.82,
+      workflowAction,
+      modelId: inferModelId(text),
+      exposeSkills: skillsForWorkflowAction(workflowAction, skillSummaries),
+    }
+  }
   if (hasAny(text, INVEST_KEYWORDS)) {
     const workflowAction = inferWorkflowAction(text)
     return {
@@ -361,14 +390,27 @@ function clampConfidence(value: number): number {
 }
 
 function inferWorkflowAction(text: string): WorkflowAction | undefined {
-  if (text.includes('能跑') || text.includes('which models') || text.includes('can run') || text.includes('runnable')) return 'assess-runnable-models'
+  if (
+    text.includes('能跑') ||
+    text.includes('可运行') ||
+    text.includes('可以运行') ||
+    text.includes('哪些模型') ||
+    text.includes('which models') ||
+    text.includes('can run') ||
+    text.includes('runnable')
+  ) return 'assess-runnable-models'
   if (text.includes('匹配') || text.includes('match') || text.includes('binding') || text.includes('输入')) return 'match-inputs'
-  if (text.includes('验证') || text.includes('validate') || text.includes('validation')) return 'validate'
-  if (text.includes('确认') || text.includes('confirm')) return 'confirm'
-  if (text.includes('运行') || text.includes('执行') || text.includes('execute') || text.includes('run model')) return 'execute'
-  if (text.includes('结果') || text.includes('outputs') || text.includes('inspect')) return 'inspect-results'
   if (text.includes('报告') || text.includes('report')) return 'write-report'
+  if (text.includes('结果') || text.includes('outputs') || text.includes('inspect')) return 'inspect-results'
+  if (!isExecutionNegated(text) && (text.includes('运行') || text.includes('执行') || text.includes('execute') || text.includes('run model'))) return 'execute'
+  if (text.includes('确认') || text.includes('confirm')) return 'confirm'
+  if (text.includes('验证') || text.includes('validate') || text.includes('validation')) return 'validate'
   return undefined
+}
+
+function isExecutionNegated(text: string): boolean {
+  return /(?:不要|别|不可|禁止|先不|暂不)\s*(?:运行|执行)/.test(text) ||
+    /(?:do not|don't|dont|without)\s+(?:run|execute)/i.test(text)
 }
 
 function inferContinuationAction(

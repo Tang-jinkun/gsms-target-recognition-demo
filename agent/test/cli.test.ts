@@ -159,7 +159,7 @@ test('multi-turn session preserves domain state and artifacts between user messa
     async execute() {
       return {
         content: 'remembered',
-        artifacts: [{ type: 'scene-fact', createdBy: 'tool', data: { value: 42 } }],
+        artifacts: [{ type: 'scene-model-readiness', createdBy: 'tool', data: { value: 42 } }],
         statePatch: { rememberedValue: 42 },
       }
     },
@@ -196,7 +196,7 @@ test('multi-turn session preserves domain state and artifacts between user messa
 
   assert.equal(session.status().turns, 2)
   assert.equal(session.domainState.snapshot().rememberedValue, 42)
-  assert.equal(session.artifacts.list('scene-fact').length, 1)
+  assert.equal(session.artifacts.list('scene-model-readiness').length, 1)
 })
 
 test('workflow tool guard rejects invalid phase transitions before state is patched', async () => {

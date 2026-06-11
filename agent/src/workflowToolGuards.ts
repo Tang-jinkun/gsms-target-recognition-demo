@@ -5,7 +5,7 @@ import {
   type AgentToolResult,
   type ToolProgressEvent,
 } from '@gsms/agent-core'
-import { checkWorkflowPhaseTransition } from './policies/workflowPolicy.ts'
+import { checkWorkflowPhaseTransition, checkWorkflowPreExecution } from './policies/workflowPolicy.ts'
 
 export function workflowToolRegistry(registry: ToolRegistry): ToolRegistry {
   return new ToolRegistry(registry.list().map(enforceWorkflowPhaseTransitions))
@@ -20,6 +20,18 @@ export function enforceWorkflowPhaseTransitions(tool: AgentTool): AgentTool {
       onProgress?: (event: ToolProgressEvent) => void,
     ): Promise<AgentToolResult> {
       const fromPhase = context.domainState.snapshot().phase
+      const preCheck = checkWorkflowPreExecution({
+        toolName: tool.name,
+        fromPhase,
+      })
+      if (!preCheck.allowed) {
+        throw new Error(JSON.stringify({
+          code: 'WORKFLOW_PRE_EXECUTION_BLOCKED',
+          message: preCheck.reason,
+          tool: tool.name,
+          fromPhase,
+        }))
+      }
       const result = await tool.execute(input, context, onProgress)
       const artifactTypes = [
         ...context.artifacts.list().map(artifact => artifact.type),

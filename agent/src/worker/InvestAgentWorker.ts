@@ -12,10 +12,7 @@ import {
   type AgentTool,
   type ArtifactInput,
   type ArtifactRepository,
-  type AgentContext,
-  type AgentToolResult,
   type ModelAdapter,
-  type ToolProgressEvent,
 } from '@gsms/agent-core'
 import { SkillRegistry } from '@gsms/skills-core'
 import { GsmsClient } from '../gsms/GsmsClient.ts'
@@ -23,20 +20,30 @@ import { createGsmsTools } from '../tools/gsmsTools.ts'
 import { createMatchingTools } from '../tools/matchingTools.ts'
 import { createReportTools } from '../tools/reportTools.ts'
 import { createReconTool } from '../tools/reconTools.ts'
-import { modelInputSchemaSchema } from '../domain/schemas.ts'
 import { TurnIntentRouter, summarizeTurnPlan } from '../intent/TurnIntentRouter.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
-import { evaluateDataAvailabilityPolicy } from '../policies/dataAvailabilityPolicy.ts'
-import {
-  workflowEvidenceInstruction,
-  workflowRunStartTransition,
-} from '../policies/workflowPolicy.ts'
+import { workflowRunStartTransition } from '../policies/workflowPolicy.ts'
 import {
   AgentSessionApiClient,
   type PersistedAgentSession,
   type PersistedConfirmation,
 } from './AgentSessionApiClient.ts'
-import { workflowPhaseFilter } from '../workflowBoundary.ts'
+import {
+  approvedConfirmationForDirectExecution,
+  canonical,
+  executeApprovedConfirmation,
+  permissionAuthorizationKey,
+} from './ApprovedConfirmationExecutor.ts'
+import {
+  permissionPayloadSummary,
+  permissionPayloadUi,
+} from './ConfirmationPayload.ts'
+import { buildWorkflowResumeContext } from './WorkflowResumeContext.ts'
+import {
+  buildTurnBoundary,
+  workflowPhaseFilter,
+  workflowTurnBoundaryTransition,
+} from '../workflowBoundary.ts'
 import { enforceWorkflowPhaseTransitions } from '../workflowToolGuards.ts'
 
 export interface InvestAgentWorkerOptions {
@@ -109,8 +116,9 @@ export class InvestAgentWorker {
       skillSummaries: this.options.skills.listForModel(),
     })
     await this.#sessionApi.appendEvent(session.id, 'turn.planned', summarizeTurnPlan(plan))
+    const turnBoundary = buildTurnBoundary(plan.workflow?.action)
     if (plan.intent === 'invest-workflow' || plan.intent === 'workflow-continue') {
-      prepareWorkflowState(session, domainState, artifacts)
+      prepareWorkflowState(session, domainState, artifacts, turnBoundary)
     }
     const coreTools: AgentTool[] = [
       ...createGsmsTools(gsmsClient),
@@ -121,21 +129,30 @@ export class InvestAgentWorker {
     if (this.options.experimentalRecon) {
       domainTools.push(enforceWorkflowPhaseTransitions(createReconTool(coreTools, () => model)))
     }
-    const directConfirmation = approvedConfirmationForDirectExecution(confirmations, domainTools)
+    const directConfirmation = approvedConfirmationForDirectExecution(confirmations, domainTools, turnBoundary)
     let approvedContinuationContext = ''
     if (directConfirmation) {
-      const directResult = await this.#executeApprovedConfirmation(session, directConfirmation, domainTools, artifacts, domainState, sessionWorkspace)
+      const directResult = await executeApprovedConfirmation({
+        session,
+        confirmation: directConfirmation,
+        tools: domainTools,
+        artifacts,
+        domainState,
+        workspace: sessionWorkspace,
+        sessionApi: this.#sessionApi,
+      })
       if (!directResult) return
       approvedContinuationContext = directResult
       confirmations = await this.#sessionApi.getConfirmations(session.id)
     }
+    const forceWorkflowRuntime = approvedContinuationContext.length > 0
     const registry = new ToolRegistry()
     let runtimeArtifacts = artifacts
     let runtimeDomainState = domainState
     let runtimeSkills = this.options.skills
-    let toolFilter: InvestAgentWorkerRuntimeFilter | undefined = workflowPhaseFilter(domainTools)
+    let toolFilter: InvestAgentWorkerRuntimeFilter | undefined = workflowPhaseFilter(domainTools, turnBoundary)
     let objective: string
-    if (!plan.toolPolicy.exposeGsmsTools) {
+    if (!plan.toolPolicy.exposeGsmsTools && !forceWorkflowRuntime) {
       registry.register(updateGoalTool)
       registry.register(finishTool)
       runtimeArtifacts = new ArtifactStore()
@@ -159,6 +176,9 @@ export class InvestAgentWorker {
         `Top-level turn plan: ${JSON.stringify(summarizeTurnPlan(plan))}.`,
         `Current phase: ${String(domainState.snapshot().phase ?? 'conversation-ready')}. ` +
         `Execution phases enforce strict sequential order; matching phases allow rollback and revision.`,
+        turnBoundary
+          ? `Hard turn boundary: ${JSON.stringify(turnBoundary)}. Tools outside this boundary are not visible and cannot satisfy this turn.`
+          : '',
         'The current user request overrides persisted planning state. If it names or implies a different InVEST model, call get_invest_model_schema for that model before matching or validation.',
         `Persisted domain state from earlier turns, adjusted for the current request boundary: ${JSON.stringify(resumedState)}`,
         approvedContinuationContext,
@@ -194,11 +214,11 @@ export class InvestAgentWorker {
     })
     const result = await runtime.run(objective)
     const persistedDomainState =
-      !plan.toolPolicy.exposeGsmsTools
+      !plan.toolPolicy.exposeGsmsTools && !forceWorkflowRuntime
         ? domainState.snapshot()
         : result.domainState
     const persistedArtifacts =
-      !plan.toolPolicy.exposeGsmsTools
+      !plan.toolPolicy.exposeGsmsTools && !forceWorkflowRuntime
         ? artifacts.list(undefined, { includeSuperseded: true })
         : result.artifactLedger
     if (result.goal.status === 'blocked') {
@@ -287,180 +307,6 @@ export class InvestAgentWorker {
     return 'defer'
   }
 
-  async #executeApprovedConfirmation(
-    session: PersistedAgentSession,
-    confirmation: PersistedConfirmation,
-    tools: readonly AgentTool[],
-    artifacts: ArtifactStore,
-    domainState: DomainStateStore,
-    workspace: string,
-  ): Promise<string | undefined> {
-    const toolName = typeof confirmation.payload.tool === 'string' ? confirmation.payload.tool : ''
-    const tool = tools.find(candidate => candidate.name === toolName)
-    if (!tool) {
-      throw new Error(`Approved confirmation references an unknown tool: ${toolName || '(missing)'}`)
-    }
-    if (tool.risk !== 'write' && tool.risk !== 'execute') {
-      throw new Error(`Approved confirmation references a non-mutating tool: ${tool.name}`)
-    }
-    const input = confirmation.payload.input
-    const expectedAuthorizationKey = permissionAuthorizationKey(tool, input, domainState.snapshot())
-    const payloadAuthorizationKey = confirmation.payload.authorizationKey
-    if (typeof payloadAuthorizationKey === 'string' && payloadAuthorizationKey !== expectedAuthorizationKey) {
-      throw new Error(`Approved confirmation no longer matches current workflow state for ${tool.name}`)
-    }
-
-    const runId = createRunId()
-    const toolCallId = `approved:${confirmation.id}:${tool.name}`
-    const startedAt = Date.now()
-    const context: AgentContext = {
-      workspace,
-      goal: {
-        objective: `Execute approved confirmation ${confirmation.id} for ${tool.name}`,
-        status: 'active',
-        turnCount: 1,
-        maxTurns: 1,
-        evidence: [],
-        remainingIssues: [],
-        startedAt: new Date().toISOString(),
-      },
-      artifacts,
-      domainState,
-      lastConsumedConfirmationId: confirmation.id,
-    }
-
-    await this.#sessionApi.appendEvent(session.id, 'run.started', {
-      run_id: runId,
-      turn: 0,
-      summary: `Resuming approved confirmation for ${tool.name}`,
-      status: 'started',
-    })
-    await this.#sessionApi.consumeConfirmation(session.id, confirmation.id)
-    await this.#sessionApi.appendEvent(session.id, 'tool.started', {
-      run_id: runId,
-      turn: 1,
-      summary: `Started ${tool.name}`,
-      status: 'started',
-      tool_call_id: toolCallId,
-      tool: tool.name,
-      input: sanitizeForEvent(input),
-    })
-
-    try {
-      const result = await tool.execute(input, context, (event: ToolProgressEvent) => {
-        void this.#sessionApi.appendEvent(session.id, 'tool.progress', {
-          run_id: runId,
-          turn: 1,
-          summary: event.message,
-          status: 'completed',
-          tool_call_id: toolCallId,
-          message: event.message,
-          percentage: event.percentage,
-        })
-      })
-      await this.#applyDirectToolResult(session.id, runId, toolCallId, tool, result, context)
-      await this.#sessionApi.appendEvent(session.id, 'tool.completed', {
-        run_id: runId,
-        turn: 1,
-        summary: `Completed ${tool.name}`,
-        status: 'completed',
-        tool_call_id: toolCallId,
-        tool: tool.name,
-        duration_ms: Date.now() - startedAt,
-      })
-      await this.#sessionApi.appendEvent(session.id, 'run.completed', {
-        run_id: runId,
-        turn: 1,
-        summary: `${tool.name} completed after user approval`,
-        status: 'completed',
-        goalStatus: 'completed',
-      })
-      return approvedToolFinalSummary(tool, result)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      await this.#sessionApi.appendEvent(session.id, 'tool.failed', {
-        run_id: runId,
-        turn: 1,
-        summary: `Failed ${tool.name}: ${message}`,
-        status: 'failed',
-        tool_call_id: toolCallId,
-        tool: tool.name,
-        duration_ms: Date.now() - startedAt,
-      })
-      await this.#sessionApi.appendEvent(session.id, 'run.failed', {
-        run_id: runId,
-        turn: 1,
-        summary: message,
-        status: 'failed',
-        goalStatus: 'failed',
-      })
-      await this.#sessionApi.checkpoint(session.id, {
-        action: 'fail',
-        domain_state: domainState.snapshot(),
-        artifacts: artifacts.list(undefined, { includeSuperseded: true }),
-        assistant_message: `已确认执行 ${tool.name}，但工具执行失败：${message}`,
-        error: message,
-      })
-      return undefined
-    }
-  }
-
-  async #applyDirectToolResult(
-    sessionId: string,
-    runId: string,
-    toolCallId: string,
-    tool: AgentTool,
-    result: AgentToolResult,
-    context: AgentContext,
-  ): Promise<void> {
-    if (result.artifacts?.length) {
-      for (const artifact of result.artifacts) {
-        if (artifact.createdBy === 'user') {
-          const hasConfirmationBinding =
-            typeof artifact.metadata?.confirmationId === 'string' &&
-            artifact.metadata.confirmationId.length > 0
-          if (!hasConfirmationBinding) artifact.createdBy = 'tool'
-        }
-      }
-      const created = context.artifacts.createMany(result.artifacts)
-      for (const artifact of created) {
-        await this.#sessionApi.appendEvent(sessionId, 'artifact.created', {
-          run_id: runId,
-          turn: 1,
-          summary: `Created ${artifact.type} artifact`,
-          status: 'completed',
-          artifactId: artifact.id,
-          artifactType: artifact.type,
-        })
-      }
-    }
-
-    if (result.statePatch) {
-      const state = context.domainState.applyPatch(result.statePatch)
-      await this.#sessionApi.appendEvent(sessionId, 'state.changed', {
-        run_id: runId,
-        turn: 1,
-        summary: `Updated workflow state${typeof state.phase === 'string' ? ` to ${state.phase}` : ''}`,
-        status: 'completed',
-        patch: result.statePatch,
-      })
-    }
-
-    if (result.diagnostics?.length) {
-      for (const diagnostic of result.diagnostics) {
-        await this.#sessionApi.appendEvent(sessionId, 'diagnostic.created', {
-          run_id: runId,
-          turn: 1,
-          summary: diagnostic.message,
-          status: diagnostic.severity === 'error' ? 'failed' : 'completed',
-          code: diagnostic.code,
-          severity: diagnostic.severity,
-          tool: tool.name,
-          tool_call_id: toolCallId,
-        })
-      }
-    }
-  }
 }
 
 type InvestAgentWorkerRuntimeFilter = NonNullable<ConstructorParameters<typeof AgentRuntime>[0]['toolFilter']>
@@ -469,143 +315,30 @@ function prepareWorkflowState(
   session: PersistedAgentSession,
   domainState: DomainStateStore,
   artifacts: ArtifactStore,
+  turnBoundary?: ReturnType<typeof buildTurnBoundary>,
 ): void {
   const transition = workflowRunStartTransition({
     phase: session.domain_state.phase,
     previousSceneId: typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined,
     currentSceneId: session.scene_id,
   })
-  if (!transition.shouldReset) return
-  if (transition.statePatch) domainState.applyPatch(transition.statePatch)
+  if (transition.shouldReset) {
+    if (transition.statePatch) domainState.applyPatch(transition.statePatch)
 
-  for (const type of transition.staleArtifactTypes) {
+    for (const type of transition.staleArtifactTypes) {
+      for (const a of artifacts.list(type)) {
+        artifacts.delete(a.id)
+      }
+    }
+  }
+
+  const boundaryTransition = workflowTurnBoundaryTransition(turnBoundary, domainState.snapshot())
+  if (boundaryTransition.statePatch) domainState.applyPatch(boundaryTransition.statePatch)
+  for (const type of boundaryTransition.staleArtifactTypes) {
     for (const a of artifacts.list(type)) {
       artifacts.delete(a.id)
     }
   }
-}
-
-function permissionAuthorizationKey(
-  tool: AgentTool,
-  input: unknown,
-  state: Record<string, unknown>,
-): string {
-  if (tool.name === 'write_invest_report') {
-    return canonical({
-      tool: tool.name,
-      sceneId: state.sceneId,
-      jobId: state.jobId,
-    })
-  }
-  return canonical({ tool: tool.name, input })
-}
-
-function permissionPayloadSummary(
-  tool: AgentTool,
-  input: unknown,
-  state: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-  return tool.policy?.confirmation?.summary?.(input, state)
-}
-
-function permissionPayloadUi(
-  tool: AgentTool,
-  input: unknown,
-  state: Record<string, unknown>,
-  artifacts?: ArtifactRepository,
-): Record<string, unknown> | undefined {
-  const base = tool.policy?.confirmation?.ui?.(input, state)
-  if (tool.name !== 'import_data_hub_files_to_scene' || !artifacts) return base
-  return enrichDataHubImportConfirmationUi(base, input, state, artifacts)
-}
-
-export function enrichDataHubImportConfirmationUi(
-  base: Record<string, unknown> | undefined,
-  input: unknown,
-  state: Record<string, unknown>,
-  artifacts: ArtifactRepository,
-): Record<string, unknown> | undefined {
-  const proposal = latestDataHubConfirmationProposal(input, state, artifacts)
-  const proposalUi = proposalUiPayload(proposal?.data)
-  if (!proposalUi) return base
-  const hasSlotProposal = Array.isArray(proposalUi.slots) && proposalUi.slots.length > 0
-  const inputFileIds = input && typeof input === 'object' && Array.isArray((input as { fileIds?: unknown }).fileIds)
-    ? (input as { fileIds: unknown[] }).fileIds.map(String)
-    : []
-  const baseRows = Array.isArray(base?.rows) ? base.rows : []
-  const proposalRows = Array.isArray(proposalUi.rows) ? proposalUi.rows : []
-  return {
-    ...proposalUi,
-    ...base,
-    type: 'data-import-proposal',
-    title: typeof proposalUi.title === 'string' ? proposalUi.title : base?.title,
-    description: typeof proposalUi.description === 'string' ? proposalUi.description : base?.description,
-    fileIds: hasSlotProposal
-      ? Array.isArray(proposalUi.fileIds)
-        ? proposalUi.fileIds.map(String)
-        : []
-      : inputFileIds.length
-      ? inputFileIds
-      : Array.isArray(proposalUi.fileIds)
-        ? proposalUi.fileIds.map(String)
-        : [],
-    rows: mergeDataImportRows(proposalRows, baseRows),
-    actions: {
-      ...(proposalUi.actions && typeof proposalUi.actions === 'object' ? proposalUi.actions as Record<string, unknown> : {}),
-      ...(base?.actions && typeof base.actions === 'object' ? base.actions as Record<string, unknown> : {}),
-      approveLabel: '导入所选',
-      rejectLabel: '取消',
-      allowPartial: true,
-    },
-  }
-}
-
-function latestDataHubConfirmationProposal(
-  input: unknown,
-  state: Record<string, unknown>,
-  artifacts: ArtifactRepository,
-) {
-  const sceneId = input && typeof input === 'object' && typeof (input as { sceneId?: unknown }).sceneId === 'string'
-    ? (input as { sceneId: string }).sceneId
-    : typeof state.sceneId === 'string'
-      ? state.sceneId
-      : undefined
-  const modelId = typeof state.modelId === 'string' ? state.modelId : undefined
-  return [...artifacts.list('confirmation-proposal')]
-    .reverse()
-    .find(artifact =>
-      artifact.metadata?.actionTool === 'import_data_hub_files_to_scene' &&
-      (!sceneId || artifact.metadata?.sceneId === sceneId) &&
-      (!modelId || artifact.metadata?.modelId === modelId))
-}
-
-function proposalUiPayload(data: unknown): Record<string, unknown> | undefined {
-  if (!data || typeof data !== 'object') return undefined
-  const ui = (data as { ui?: unknown }).ui
-  if (!ui || typeof ui !== 'object') return undefined
-  return (ui as { type?: unknown }).type === 'data-import-proposal'
-    ? ui as Record<string, unknown>
-    : undefined
-}
-
-function mergeDataImportRows(
-  proposalRows: readonly unknown[],
-  baseRows: readonly unknown[],
-): unknown[] {
-  const byKey = new Map<string, unknown>()
-  for (const row of [...proposalRows, ...baseRows]) {
-    if (!row || typeof row !== 'object') continue
-    const record = row as Record<string, unknown>
-    const fileId = typeof record.fileId === 'string'
-      ? record.fileId
-      : typeof record.id === 'string'
-        ? record.id
-        : ''
-    const slot = typeof record.slot === 'string' ? record.slot : 'input'
-    if (!fileId) continue
-    byKey.set(`${slot}:${fileId}`, row)
-  }
-  return [...byKey.values()]
 }
 
 function buildFailureSummary(
@@ -617,164 +350,4 @@ function buildFailureSummary(
     .filter(diagnostic => diagnostic.severity === 'error')
     .map(diagnostic => diagnostic.code)
   return diagnosticCodes.length ? `${issues} [diagnostics: ${diagnosticCodes.join(', ')}]` : issues
-}
-
-export function buildWorkflowResumeContext(
-  state: Record<string, unknown>,
-  artifacts: readonly unknown[],
-): string {
-  const rows = artifacts.filter(isArtifact)
-  const counts = rows.reduce<Record<string, number>>((result, artifact) => {
-    result[artifact.type] = (result[artifact.type] ?? 0) + 1
-    return result
-  }, {})
-  const modelId = typeof state.modelId === 'string' ? state.modelId : 'none'
-  const phase = typeof state.phase === 'string' ? state.phase : 'unknown'
-  const matchingContextId =
-    typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
-  const currentRows = rows.filter(
-    artifact =>
-      (!artifact.metadata?.modelId || artifact.metadata.modelId === modelId) &&
-      (!artifact.metadata?.matchingContextId ||
-        artifact.metadata.matchingContextId === matchingContextId),
-  )
-  const currentCounts = currentRows.reduce<Record<string, number>>((result, artifact) => {
-    result[artifact.type] = (result[artifact.type] ?? 0) + 1
-    return result
-  }, {})
-  const currentArtifacts = currentRows
-    .slice(-12)
-    .map(artifact => ({
-      type: artifact.type,
-      modelId: artifact.metadata?.modelId,
-      slot: artifact.metadata?.slot,
-      id: artifact.id,
-    }))
-  const directive = workflowDirective(state, phase, modelId, currentCounts, currentRows)
-  return [
-    `Persisted workflow evidence: ${JSON.stringify({ phase, modelId, counts, currentCounts, currentArtifacts })}`,
-    `Required continuation: ${directive}`,
-    'Do not repeat completed workflow stages unless the user explicitly changes the model, bindings, or parameters.',
-    'Do not stop with a progress-only update. Use finish with a factual final summary, or invoke the next required tool.',
-  ].join('\n')
-}
-
-function workflowDirective(
-  state: Record<string, unknown>,
-  phase: string,
-  modelId: string,
-  counts: Record<string, number>,
-  artifacts: readonly ReturnType<typeof normalizeArtifact>[],
-): string {
-  const definedArtifacts = artifacts.filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact))
-  const schemaArtifact = [...definedArtifacts].reverse().find(artifact => artifact.type === 'model-input-schema')
-  const schema = schemaArtifact ? modelInputSchemaSchema.safeParse(schemaArtifact.data) : undefined
-  const candidateSlots = new Set(
-    definedArtifacts
-      .filter(artifact => artifact.type === 'candidate-set')
-      .map(artifact => artifact.metadata?.slot),
-  )
-  const missingRequiredSlots = schema?.success
-    ? schema.data.slots.filter(slot => slot.required && !candidateSlots.has(slot.name)).map(slot => slot.name)
-    : []
-  const dataAvailability = evaluateDataAvailabilityPolicy(state, definedArtifacts)
-  const pendingImportFileIds = latestPendingImportFileIds(definedArtifacts)
-
-  return workflowEvidenceInstruction({
-    phase,
-    modelId,
-    counts,
-    missingRequiredSlots,
-    pendingImportFileIds,
-    dataAvailabilityInstruction: dataAvailability.instruction,
-  })
-}
-
-function latestPendingImportFileIds(
-  artifacts: readonly NonNullable<ReturnType<typeof normalizeArtifact>>[],
-): string[] {
-  const proposal = [...artifacts]
-    .reverse()
-    .find(artifact =>
-      (artifact.type === 'confirmation-proposal' || artifact.type === 'data-hub-import-proposal') &&
-      (!artifact.metadata?.actionTool || artifact.metadata.actionTool === 'import_data_hub_files_to_scene') &&
-      Array.isArray(artifact.metadata?.proposedFileIds) &&
-      artifact.metadata.proposedFileIds.length > 0,
-    )
-  return Array.isArray(proposal?.metadata?.proposedFileIds)
-    ? proposal.metadata.proposedFileIds.map(String)
-    : []
-}
-
-function isArtifact(value: unknown): value is {
-  id?: string
-  type: string
-  data?: unknown
-  metadata?: Record<string, unknown>
-} {
-  return Boolean(value && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string')
-}
-
-function normalizeArtifact(value: unknown) {
-  return isArtifact(value) ? value : undefined
-}
-
-export function approvedConfirmationForDirectExecution(
-  confirmations: readonly PersistedConfirmation[],
-  tools: readonly AgentTool[],
-): PersistedConfirmation | undefined {
-  const writeToolNames = new Set(
-    tools
-      .filter(tool =>
-        tool.policy?.confirmation?.approvedAction === 'execute-approved-input' &&
-        (tool.risk === 'write' || tool.risk === 'execute'),
-      )
-      .map(tool => tool.name),
-  )
-  return confirmations.find(confirmation =>
-    confirmation.status === 'approved' &&
-    typeof confirmation.payload.tool === 'string' &&
-    writeToolNames.has(confirmation.payload.tool) &&
-    Object.prototype.hasOwnProperty.call(confirmation.payload, 'input'),
-  )
-}
-
-function approvedToolFinalSummary(tool: AgentTool, result: AgentToolResult): string {
-  const policyMessage = tool.policy?.confirmation?.successMessage?.(result)
-  if (policyMessage) return policyMessage
-  return result.content || `${tool.name} completed after user approval.`
-}
-
-function createRunId(): string {
-  return `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
-}
-
-function sanitizeForEvent(value: unknown, depth = 0): unknown {
-  if (depth > 3) return '[truncated]'
-  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeForEvent(item, depth + 1))
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .slice(0, 30)
-        .map(([key, item]) => [
-          key,
-          key.toLowerCase().includes('token') || key.toLowerCase().includes('secret')
-            ? '[redacted]'
-            : sanitizeForEvent(item, depth + 1),
-        ]),
-    )
-  }
-  if (typeof value === 'string' && value.length > 1000) return `${value.slice(0, 1000)}…`
-  return value
-}
-
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-      .join(',')}}`
-  }
-  return JSON.stringify(value)
 }

@@ -1,10 +1,12 @@
 import type { AgentContext, AgentTool, Artifact, DomainState } from '@gsms/agent-core'
+import type { WorkflowAction } from './intent/TurnIntentRouter.ts'
 import { evaluateDataAvailabilityPolicy } from './policies/dataAvailabilityPolicy.ts'
 import {
   BLOCKED_WHILE_AMBIGUOUS,
   executionPhaseAllows,
   getPhaseGroup,
   isExecutionPhase,
+  STALE_EXECUTION_ARTIFACT_TYPES,
   WAITING_PHASES,
   type PhaseGroup,
 } from './policies/workflowPolicy.ts'
@@ -35,9 +37,25 @@ export type WorkflowIntent =
 // Each intent has a minimum set of artifacts that must exist before the agent
 // can finish or advance. The model chooses the order, but must produce evidence.
 
-interface EvidenceRequirement {
+export interface EvidenceRequirement {
   artifactTypes: string[]
   description: string
+}
+
+export type WorkflowStage =
+  | 'explore'
+  | 'match'
+  | 'validate'
+  | 'confirm'
+  | 'execute'
+  | 'inspect-results'
+  | 'write-report'
+
+export interface TurnBoundary {
+  action: WorkflowAction
+  allowedStages: WorkflowStage[]
+  forbiddenCapabilities: string[]
+  evidenceRequirements: EvidenceRequirement[]
 }
 
 const EVIDENCE_GATES: Record<WorkflowIntent, EvidenceRequirement> = {
@@ -96,29 +114,186 @@ const allDomainTools = new Set([
   ...interpretationTools,
 ])
 
+const turnStageTools: Record<WorkflowStage, ReadonlySet<string>> = {
+  explore: new Set([
+    'list_invest_models',
+    'get_invest_model_schema',
+    'list_scene_data_cards',
+    'discover_data_hub_candidates',
+    'import_data_hub_files_to_scene',
+    'assess_scene_model_readiness',
+    'finalize_sufficiency_assessment',
+  ]),
+  match: matchingTools,
+  validate: new Set([...matchingTools, ...validationTools]),
+  confirm: new Set([...validationTools, ...confirmationTools]),
+  execute: new Set(['execute_validated_snapshot', 'get_invest_job_status']),
+  'inspect-results': new Set([
+    'get_invest_job_status',
+    'inspect_invest_job_outputs',
+    'analyze_invest_results',
+    'interpret_invest_results',
+  ]),
+  'write-report': interpretationTools,
+}
+
+const TURN_BOUNDARY_BY_ACTION: Record<WorkflowAction, TurnBoundary> = {
+  'assess-runnable-models': {
+    action: 'assess-runnable-models',
+    allowedStages: ['explore'],
+    forbiddenCapabilities: ['validate', 'confirm', 'execute', 'write-report'],
+    evidenceRequirements: [{
+      artifactTypes: ['scene-model-readiness'],
+      description: 'Scene/model readiness assessment for the current scene',
+    }],
+  },
+  'match-inputs': {
+    action: 'match-inputs',
+    allowedStages: ['explore', 'match'],
+    forbiddenCapabilities: ['validate', 'confirm', 'execute', 'write-report'],
+    evidenceRequirements: [{
+      artifactTypes: ['binding-report'],
+      description: 'Binding report for the current model inputs',
+    }],
+  },
+  validate: {
+    action: 'validate',
+    allowedStages: ['explore', 'match', 'validate'],
+    forbiddenCapabilities: ['confirm', 'execute', 'write-report'],
+    evidenceRequirements: [{
+      artifactTypes: ['validation-report'],
+      description: 'Authoritative validation report for the current binding report',
+    }],
+  },
+  confirm: {
+    action: 'confirm',
+    allowedStages: ['confirm'],
+    forbiddenCapabilities: ['execute', 'write-report'],
+    evidenceRequirements: [{
+      artifactTypes: ['confirmation-record'],
+      description: 'User confirmation record bound to the validated snapshot',
+    }],
+  },
+  execute: {
+    action: 'execute',
+    allowedStages: ['execute'],
+    forbiddenCapabilities: [],
+    evidenceRequirements: [{
+      artifactTypes: ['model-job'],
+      description: 'GSMS model job created from a confirmed validation snapshot',
+    }],
+  },
+  'inspect-results': {
+    action: 'inspect-results',
+    allowedStages: ['inspect-results'],
+    forbiddenCapabilities: ['match', 'validate', 'confirm', 'execute'],
+    evidenceRequirements: [{
+      artifactTypes: ['job-output-inventory'],
+      description: 'Output inventory for the completed model job',
+    }],
+  },
+  'write-report': {
+    action: 'write-report',
+    allowedStages: ['inspect-results', 'write-report'],
+    forbiddenCapabilities: ['match', 'validate', 'confirm', 'execute'],
+    evidenceRequirements: [{
+      artifactTypes: ['invest-report'],
+      description: 'Evidence-backed InVEST report',
+    }],
+  },
+}
+
+export function buildTurnBoundary(action: WorkflowAction | undefined): TurnBoundary | undefined {
+  return action ? TURN_BOUNDARY_BY_ACTION[action] : undefined
+}
+
+export interface TurnBoundaryStateTransition {
+  statePatch?: Record<string, unknown>
+  staleArtifactTypes: readonly string[]
+}
+
+export function workflowTurnBoundaryTransition(
+  boundary: TurnBoundary | undefined,
+  state: Record<string, unknown>,
+): TurnBoundaryStateTransition {
+  const phase = typeof state.phase === 'string' ? state.phase : ''
+  if (!boundary || !isExecutionPhase(phase) || !turnBoundaryAllowsMatchingRollback(boundary)) {
+    return { staleArtifactTypes: [] }
+  }
+
+  if (boundary.action === 'confirm') {
+    return {
+      statePatch: {
+        phase: 'awaiting-user-confirmation',
+        confirmationStatus: null,
+        jobId: null,
+      },
+      staleArtifactTypes: STALE_EXECUTION_ARTIFACT_TYPES.filter(type =>
+        type !== 'validation-report',
+      ),
+    }
+  }
+
+  const phaseByAction: Partial<Record<WorkflowAction, string>> = {
+    'assess-runnable-models': 'discovering-data',
+    'match-inputs': 'matching-slots',
+    validate: 'ready-for-validation',
+  }
+  const nextPhase = phaseByAction[boundary.action]
+  if (!nextPhase) return { staleArtifactTypes: [] }
+
+  return {
+    statePatch: {
+      phase: nextPhase,
+      validationStatus: null,
+      validationSnapshotId: null,
+      confirmationStatus: null,
+      jobId: null,
+    },
+    staleArtifactTypes: STALE_EXECUTION_ARTIFACT_TYPES,
+  }
+}
+
 // ── Phase Filter ───────────────────────────────────────────────────────────────
 
-export function workflowPhaseFilter(tools: readonly AgentTool[] = []) {
+export function workflowPhaseFilter(
+  tools: readonly AgentTool[] = [],
+  turnBoundary?: TurnBoundary,
+) {
   return (tool: AgentTool, context: AgentContext): boolean => {
     if (['skill', 'update_goal'].includes(tool.name)) return true
 
     if (!allDomainTools.has(tool.name) && tool.name !== 'finish') return true
+
+    if (turnBoundary && tool.name !== 'finish' && !turnBoundaryAllowsTool(turnBoundary, tool.name)) {
+      return false
+    }
 
     const state = context.domainState.snapshot()
     const phase = typeof state.phase === 'string' ? state.phase : ''
     const group = getPhaseGroup(phase)
 
     // ── Hard gate: execution group ──────────────────────────────────────────
-    if (group === 'execution') {
+    if (group === 'execution' && !turnBoundaryAllowsMatchingRollback(turnBoundary)) {
       return executionPhaseAllows(tool.name, phase)
     }
 
     // ── Soft boundary: matching group ───────────────────────────────────────
     // finish has its own evidence gate — only enforced in matching group
-    if (tool.name === 'finish') return finishPassesEvidenceGate(context, tools)
+    if (tool.name === 'finish') return finishPassesEvidenceGate(context, tools, turnBoundary)
 
     return matchingPhaseAllows(tool.name, state, context)
   }
+}
+
+export function turnBoundaryAllowsTool(boundary: TurnBoundary, toolName: string): boolean {
+  return boundary.allowedStages.some(stage => turnStageTools[stage].has(toolName))
+}
+
+function turnBoundaryAllowsMatchingRollback(boundary: TurnBoundary | undefined): boolean {
+  return Boolean(boundary?.allowedStages.some(stage =>
+    stage === 'explore' || stage === 'match' || stage === 'validate' || stage === 'confirm',
+  ))
 }
 
 // ── Matching Phase Gate (tool-visibility) ──────────────────────────────────────
@@ -162,6 +337,7 @@ function matchingPhaseAllows(toolName: string, state: DomainState, context: Agen
 function finishPassesEvidenceGate(
   context: AgentContext,
   tools: readonly AgentTool[] = [],
+  turnBoundary?: TurnBoundary,
 ): boolean {
   const artifacts = context.artifacts.list()
   const state = context.domainState.snapshot()
@@ -169,10 +345,6 @@ function finishPassesEvidenceGate(
     typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
 
   const domainArtifacts = artifacts.filter(a => !['goal-progress'].includes(a.type))
-  // No domain artifacts = the agent explored but didn't produce GSMS-specific
-  // evidence (e.g. generic file operations).  Allow finish freely — blocking
-  // would force the agent into an unproductive loop.
-  if (domainArtifacts.length === 0) return true
 
   // Current-context artifacts (matching scope)
   const currentArtifacts = matchingContextId
@@ -185,6 +357,11 @@ function finishPassesEvidenceGate(
   const hasPendingImportProposal = currentArtifacts.some(hasImportableProposal)
   const unsatisfiedMutationRefresh = findUnsatisfiedMutationRefresh(currentArtifacts, tools)
   const dataAvailability = evaluateDataAvailabilityPolicy(state, currentArtifacts)
+
+  // No domain artifacts = the agent explored but didn't produce GSMS-specific
+  // evidence (e.g. generic file operations).  Allow finish freely only when
+  // this turn did not declare a workflow-specific evidence contract.
+  if (domainArtifacts.length === 0 && !turnBoundary) return true
 
   // Single-model sufficiency on an empty scene must probe Data Hub before the
   // agent can finish. A gsms-scene-data-cards artifact with data_cards: [] is
@@ -207,6 +384,12 @@ function finishPassesEvidenceGate(
   // predate the generic mutation policy metadata.
   if (hasSceneImportRecord && !hasRefreshedSceneData && !has('candidate-set') && !has('sufficiency-report') && !has('binding-report')) {
     return false
+  }
+
+  if (turnBoundary?.evidenceRequirements.length) {
+    return turnBoundary.evidenceRequirements.every(requirement =>
+      requirement.artifactTypes.every(type => has(type)),
+    )
   }
 
   // Terminal evidence: always allows finish
