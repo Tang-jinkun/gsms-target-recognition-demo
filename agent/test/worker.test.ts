@@ -400,6 +400,22 @@ test('data hub import confirmation ui is enriched from latest proposal when tool
         type: 'data-import-proposal',
         title: '推荐导入 Data Hub 文件',
         fileIds: ['pools-1'],
+        slots: [
+          {
+            slot: 'carbon_pools_path',
+            status: 'auto_selected',
+            selectedFileId: 'pools-1',
+            candidates: [{ fileId: 'pools-1', slot: 'carbon_pools_path', name: 'carbon_pools.csv', recommended: true }],
+          },
+          {
+            slot: 'lulc_bas_path',
+            status: 'needs_user_choice',
+            candidates: [
+              { fileId: 'lulc-current', slot: 'lulc_bas_path', name: 'lulc_current.tif', ambiguous: true },
+              { fileId: 'lulc-future', slot: 'lulc_bas_path', name: 'lulc_future.tif', ambiguous: true },
+            ],
+          },
+        ],
         rows: [
           { fileId: 'pools-1', slot: 'carbon_pools_path', label: 'carbon_pools.csv', confidence: 'high', score: 0.935, recommended: true },
           { fileId: 'lulc-current', slot: 'lulc_bas_path', label: 'lulc_current.tif', confidence: 'medium', score: 0.54, ambiguous: true },
@@ -422,12 +438,12 @@ test('data hub import confirmation ui is enriched from latest proposal when tool
       fileIds: ['pools-1'],
       rows: [{ fileId: 'pools-1', slot: 'carbon_pools_path', label: 'carbon_pools.csv' }],
     },
-    { sceneId: 'scene-1', fileIds: ['pools-1'] },
+    { sceneId: 'scene-1', fileIds: ['pools-1', 'lulc-current', 'lulc-future'] },
     { sceneId: 'scene-1', modelId: 'carbon' },
     artifacts,
   )
 
-  assert.deepEqual(ui?.fileIds, ['pools-1'])
+  assert.deepEqual(ui?.fileIds, ['pools-1'], 'slot proposal default selection must not be overwritten by tool input')
   assert.deepEqual(
     (ui?.rows as Array<{ fileId: string }>).map(row => row.fileId),
     ['pools-1', 'lulc-current', 'lulc-future'],

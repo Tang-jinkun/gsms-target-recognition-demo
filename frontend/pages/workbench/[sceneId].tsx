@@ -576,8 +576,18 @@ export default function WorkbenchPage() {
     const [selected, setSelected] = React.useState<Record<string, boolean>>({})
     React.useEffect(() => {
       if (!proposal) return
+      if (proposal.slots.length) {
+        setSelected(Object.fromEntries(
+          proposal.slots.flatMap(slot =>
+            slot.status === 'needs_user_choice' && slot.selectedFileId
+              ? [[slot.selectedFileId, true] as const]
+              : [],
+          ),
+        ))
+        return
+      }
       setSelected(Object.fromEntries(proposal.fileIds.map(id => [id, true])))
-    }, [confirmation?.id, proposal?.fileIds.join('|')])
+    }, [confirmation?.id, proposal?.fileIds.join('|'), proposal?.slots.map(slot => `${slot.slot}:${slot.selectedFileId ?? ''}`).join('|')])
     if (!confirmation) return null
     const isPending = confirmation.status === 'pending'
     const statusText =

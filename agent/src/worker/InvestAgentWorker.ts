@@ -528,6 +528,7 @@ export function enrichDataHubImportConfirmationUi(
   const proposal = latestDataHubConfirmationProposal(input, state, artifacts)
   const proposalUi = proposalUiPayload(proposal?.data)
   if (!proposalUi) return base
+  const hasSlotProposal = Array.isArray(proposalUi.slots) && proposalUi.slots.length > 0
   const inputFileIds = input && typeof input === 'object' && Array.isArray((input as { fileIds?: unknown }).fileIds)
     ? (input as { fileIds: unknown[] }).fileIds.map(String)
     : []
@@ -539,7 +540,11 @@ export function enrichDataHubImportConfirmationUi(
     type: 'data-import-proposal',
     title: typeof proposalUi.title === 'string' ? proposalUi.title : base?.title,
     description: typeof proposalUi.description === 'string' ? proposalUi.description : base?.description,
-    fileIds: inputFileIds.length
+    fileIds: hasSlotProposal
+      ? Array.isArray(proposalUi.fileIds)
+        ? proposalUi.fileIds.map(String)
+        : []
+      : inputFileIds.length
       ? inputFileIds
       : Array.isArray(proposalUi.fileIds)
         ? proposalUi.fileIds.map(String)
