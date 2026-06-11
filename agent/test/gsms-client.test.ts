@@ -269,6 +269,13 @@ test('Data Hub discovery proposal includes ambiguous candidates as importable op
     (result.artifacts?.[1]?.data as { ui: { rows: Array<{ fileId: string }> } }).ui.rows.map(row => row.fileId),
     ['lulc-current', 'lulc-future'],
   )
+  const slots = (result.artifacts?.[1]?.data as {
+    ui: { slots: Array<{ slot: string; status: string; selectedFileId?: string; candidates: Array<{ fileId: string }> }> }
+  }).ui.slots
+  assert.equal(slots[0]?.slot, 'lulc_bas_path')
+  assert.equal(slots[0]?.status, 'needs_user_choice')
+  assert.equal(slots[0]?.selectedFileId, undefined)
+  assert.deepEqual(slots[0]?.candidates.map(candidate => candidate.fileId), ['lulc-current', 'lulc-future'])
   assert.match(result.hiddenMessages?.[0]?.content ?? '', /Call import_data_hub_files_to_scene now/)
   assert.match(result.hiddenMessages?.[0]?.content ?? '', /confirmation UI/)
 })

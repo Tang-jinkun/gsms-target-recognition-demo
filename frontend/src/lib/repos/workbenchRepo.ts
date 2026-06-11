@@ -60,6 +60,16 @@ export type DataHubImportSelection = {
   required?: boolean
 }
 
+export type DataHubImportSlotGroup = {
+  slot: string
+  label?: string
+  required?: boolean
+  status: 'auto_selected' | 'needs_user_choice' | 'missing'
+  selectedFileId?: string
+  candidates: DataHubImportSelection[]
+  diagnostics?: string[]
+}
+
 const BACKEND_TO_UI: Record<string, AssetType> = {
   raster: 'raster',
   vector: 'vector',

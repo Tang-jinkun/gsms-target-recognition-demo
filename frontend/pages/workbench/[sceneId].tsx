@@ -12,7 +12,7 @@ import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
 import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
 import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
-import { workbenchRepo, type DataHubImportSelection, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
+import { workbenchRepo, type DataHubImportSelection, type DataHubImportSlotGroup, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
 import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentMessage, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
 import { useAgentEventSource } from '../../src/lib/useAgentEventSource'
 import { applyEventToBlocks, buildTurnsFromMessagesAndRuns, type RunStatus, type Turn, type TurnBlock } from '../../src/lib/activityBlocks'
@@ -601,12 +601,30 @@ export default function WorkbenchPage() {
         </div>
       )
     }
+    const hasSlotProposal = proposal.slots.length > 0
     const rows: DataHubImportSelection[] = proposal.selections.length
       ? proposal.selections
       : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
     const activeConfirmation = confirmation
-    const selectedIds = proposal.fileIds.filter(id => selected[id])
-    const selectedRows = rows.filter(row => selectedIds.includes(row.fileId))
+    const autoSelectedRows = hasSlotProposal
+      ? proposal.slots.flatMap(slot =>
+          slot.status === 'auto_selected' && slot.selectedFileId
+            ? slot.candidates.filter(candidate => candidate.fileId === slot.selectedFileId)
+            : [],
+        )
+      : []
+    const userSelectedRows = hasSlotProposal
+      ? proposal.slots.flatMap(slot =>
+          slot.status === 'needs_user_choice'
+            ? slot.candidates.filter(candidate => selected[candidate.fileId])
+            : [],
+        )
+      : []
+    const legacySelectedRows = rows.filter(row => selected[row.fileId])
+    const selectedRows = hasSlotProposal
+      ? [...autoSelectedRows, ...userSelectedRows]
+      : legacySelectedRows
+    const selectedIds = [...new Set(selectedRows.map(row => row.fileId))]
     const slotCounts = rows.reduce<Record<string, number>>((acc, row) => {
       acc[row.slot] = (acc[row.slot] ?? 0) + 1
       return acc
@@ -620,6 +638,15 @@ export default function WorkbenchPage() {
               next[candidate.fileId] = false
             }
           }
+        }
+        return next
+      })
+    }
+    function setSlotChoice(slot: DataHubImportSlotGroup, fileId: string) {
+      setSelected(prev => {
+        const next = { ...prev }
+        for (const candidate of slot.candidates) {
+          next[candidate.fileId] = candidate.fileId === fileId
         }
         return next
       })
@@ -658,20 +685,77 @@ export default function WorkbenchPage() {
           <b>{proposal.title ?? '推荐导入 Data Hub 文件'}</b>
           <p>{proposal.description ?? 'Agent 找到这些文件可能适合当前模型输入。确认后只会把 Data Hub 文件引用写入当前场景，不复制文件。'}</p>
           <div className="proposal-list">
-            {rows.map(row => (
-              <label className="proposal-row" key={`${row.slot}:${row.fileId}`}>
-                <input type="checkbox" disabled={!isPending} checked={selected[row.fileId] === true} onChange={e => setRowSelected(row, e.target.checked)} />
-                <span className="slot-pill">{row.slot}</span>
-                <div className="proposal-copy">
-                  <div className="ftitle">{row.name || row.fileId}</div>
-                  <div className="fsub">
-                    {row.confidence || 'candidate'}{typeof row.score === 'number' ? ` · ${(row.score * 100).toFixed(0)}%` : ''}
-                  </div>
-                  {!!row.reasons?.length && <div className="reason">{row.reasons.slice(0, 2).join('；')}</div>}
-                  {!!row.risks?.length && <div className="risk">{row.risks.slice(0, 1).join('；')}</div>}
-                </div>
-              </label>
-            ))}
+            {hasSlotProposal
+              ? proposal.slots.map(slot => {
+                  const auto = slot.status === 'auto_selected' && slot.selectedFileId
+                    ? slot.candidates.find(candidate => candidate.fileId === slot.selectedFileId)
+                    : undefined
+                  if (slot.status === 'missing') {
+                    return (
+                      <div className="proposal-row" key={slot.slot}>
+                        <input type="checkbox" disabled checked={false} />
+                        <span className="slot-pill">{slot.slot}</span>
+                        <div className="proposal-copy">
+                          <div className="ftitle">{slot.label ?? slot.slot}</div>
+                          <div className="risk">Data Hub 未找到可导入候选。</div>
+                        </div>
+                      </div>
+                    )
+                  }
+                  if (auto) {
+                    return (
+                      <div className="proposal-row" key={`${slot.slot}:${auto.fileId}`}>
+                        <input type="checkbox" disabled checked />
+                        <span className="slot-pill">{slot.slot}</span>
+                        <div className="proposal-copy">
+                          <div className="ftitle">{auto.name || auto.fileId}</div>
+                          <div className="fsub">
+                            将自动导入 · {auto.confidence || 'candidate'}{typeof auto.score === 'number' ? ` · ${(auto.score * 100).toFixed(0)}%` : ''}
+                          </div>
+                          {!!auto.reasons?.length && <div className="reason">{auto.reasons.slice(0, 2).join('；')}</div>}
+                        </div>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div className="proposal-row" key={slot.slot}>
+                      <div className="proposal-copy">
+                        <div className="ftitle">{slot.label ?? slot.slot}</div>
+                        <div className="fsub">请选择一个候选文件</div>
+                        <div className="proposal-list">
+                          {slot.candidates.map(candidate => (
+                            <label className="proposal-row" key={`${slot.slot}:${candidate.fileId}`}>
+                              <input type="radio" name={`data-hub-slot-${slot.slot}`} disabled={!isPending} checked={selected[candidate.fileId] === true} onChange={() => setSlotChoice(slot, candidate.fileId)} />
+                              <span className="slot-pill">{slot.slot}</span>
+                              <div className="proposal-copy">
+                                <div className="ftitle">{candidate.name || candidate.fileId}</div>
+                                <div className="fsub">
+                                  {candidate.confidence || 'candidate'}{typeof candidate.score === 'number' ? ` · ${(candidate.score * 100).toFixed(0)}%` : ''}
+                                </div>
+                                {!!candidate.reasons?.length && <div className="reason">{candidate.reasons.slice(0, 2).join('；')}</div>}
+                                {!!candidate.risks?.length && <div className="risk">{candidate.risks.slice(0, 1).join('；')}</div>}
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
+              : rows.map(row => (
+                  <label className="proposal-row" key={`${row.slot}:${row.fileId}`}>
+                    <input type="checkbox" disabled={!isPending} checked={selected[row.fileId] === true} onChange={e => setRowSelected(row, e.target.checked)} />
+                    <span className="slot-pill">{row.slot}</span>
+                    <div className="proposal-copy">
+                      <div className="ftitle">{row.name || row.fileId}</div>
+                      <div className="fsub">
+                        {row.confidence || 'candidate'}{typeof row.score === 'number' ? ` · ${(row.score * 100).toFixed(0)}%` : ''}
+                      </div>
+                      {!!row.reasons?.length && <div className="reason">{row.reasons.slice(0, 2).join('；')}</div>}
+                      {!!row.risks?.length && <div className="risk">{row.risks.slice(0, 1).join('；')}</div>}
+                    </div>
+                  </label>
+                ))}
           </div>
         </div>
         <div className="confirm-actions">

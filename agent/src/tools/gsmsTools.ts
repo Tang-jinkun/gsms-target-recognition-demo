@@ -166,6 +166,16 @@ type DataHubImportSelection = {
   required?: boolean
 }
 
+type DataHubImportSlotGroup = {
+  slot: string
+  label?: string
+  required?: boolean
+  status: 'auto_selected' | 'needs_user_choice' | 'missing'
+  selectedFileId?: string
+  candidates: DataHubImportSelection[]
+  diagnostics: string[]
+}
+
 function dataHubImportUiRows(selections: readonly DataHubImportSelection[]) {
   return selections.map(selection => ({
     id: selection.fileId,
@@ -180,6 +190,64 @@ function dataHubImportUiRows(selections: readonly DataHubImportSelection[]) {
     ambiguous: selection.ambiguous,
     required: selection.required,
   }))
+}
+
+function dataHubImportSlotGroups(
+  slots: unknown,
+  recommendedFileIds: readonly string[],
+): DataHubImportSlotGroup[] {
+  const recommendedSet = new Set(recommendedFileIds)
+  if (!Array.isArray(slots)) return []
+  return slots.flatMap(slot => {
+    if (!slot || typeof slot !== 'object') return []
+    const source = slot as {
+      slot?: unknown
+      label?: unknown
+      required?: unknown
+      ambiguous?: unknown
+      missing?: unknown
+      candidates?: unknown
+      diagnostics?: unknown
+    }
+    const slotName = String(source.slot ?? '')
+    if (!slotName) return []
+    const candidates = Array.isArray(source.candidates)
+      ? source.candidates.flatMap(candidate => {
+          if (!candidate || typeof candidate !== 'object') return []
+          const row = candidate as Record<string, unknown>
+          const fileId = row.file_id
+          if (typeof fileId !== 'string') return []
+          return [{
+            slot: slotName,
+            fileId,
+            name: typeof row.name === 'string' ? row.name : undefined,
+            score: typeof row.score === 'number' ? row.score : undefined,
+            confidence: typeof row.confidence === 'string' ? row.confidence : undefined,
+            reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
+            risks: Array.isArray(row.risks) ? row.risks.map(String) : [],
+            recommended: recommendedSet.has(fileId),
+            ambiguous: source.ambiguous === true,
+            required: source.required === true,
+          }]
+        })
+      : []
+    const selectedFileId = candidates.find(candidate => candidate.recommended)?.fileId
+    const status: DataHubImportSlotGroup['status'] =
+      candidates.length === 0 || source.missing === true
+        ? 'missing'
+        : source.ambiguous === true || !selectedFileId
+          ? 'needs_user_choice'
+          : 'auto_selected'
+    return [{
+      slot: slotName,
+      label: typeof source.label === 'string' ? source.label : undefined,
+      required: source.required === true,
+      status,
+      selectedFileId: status === 'auto_selected' ? selectedFileId : undefined,
+      candidates,
+      diagnostics: Array.isArray(source.diagnostics) ? source.diagnostics.map(String) : [],
+    }]
+  })
 }
 
 export function createGsmsTools(client: GsmsClient): AgentTool[] {
@@ -398,7 +466,10 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               })
             })
           : []
-        const defaultFileIds = [...new Set(recommendedFileIds)]
+        const slotGroups = dataHubImportSlotGroups(source.slots, recommendedFileIds)
+        const defaultFileIds = [...new Set(
+          slotGroups.flatMap(slot => slot.status === 'auto_selected' && slot.selectedFileId ? [slot.selectedFileId] : []),
+        )]
         const proposalKey = `data-hub-import-proposal:${parsed.sceneId}:${parsed.modelId}`
         const confirmationProposalKey = `confirmation-proposal:import_data_hub_files_to_scene:${parsed.sceneId}:${parsed.modelId}`
         const discoveryReportKey = `data-source-discovery-report:data-hub:${parsed.sceneId}:${parsed.modelId}`
@@ -448,12 +519,14 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
                 modelId: parsed.modelId,
                 fileIds: defaultFileIds,
                 selections,
-                slots: source.slots,
+                slots: slotGroups,
+                sourceSlots: source.slots,
                 ui: {
                   type: 'data-import-proposal',
                   title: '推荐导入 Data Hub 文件',
                   description: 'Agent 找到这些文件可能适合当前模型输入。确认后只会把 Data Hub 文件引用写入当前场景，不复制文件。',
                   fileIds: defaultFileIds,
+                  slots: slotGroups,
                   rows: dataHubImportUiRows(selections),
                   actions: {
                     approveLabel: '导入所选',
@@ -471,6 +544,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
               data: {
                 ...(result as Record<string, unknown>),
                 selections,
+                importSlots: slotGroups,
               },
               metadata: { ...commonMetadata },
             },
