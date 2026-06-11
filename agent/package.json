@@ -15,7 +15,7 @@
   "scripts": {
     "start": "tsx src/cli.ts",
     "worker": "tsx src/worker.ts",
-    "test": "tsx --test test/carbon-matching.test.ts test/workspace.test.ts test/agent-workflow.test.ts test/gsms-client.test.ts test/report.test.ts test/cli.test.ts test/worker.test.ts test/turn-intent-router.test.ts",
+    "test": "tsx --test test/carbon-matching.test.ts test/workspace.test.ts test/agent-workflow.test.ts test/gsms-client.test.ts test/report.test.ts test/cli.test.ts test/worker.test.ts test/turn-intent-router.test.ts test/target-recognition.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

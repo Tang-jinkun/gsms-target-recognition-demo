@@ -63,6 +63,12 @@ const TOOL_LABEL: Record<string, string> = {
   analyze_invest_results: '分析栅格统计',
   interpret_invest_results: '解释计算结果',
   write_invest_report: '撰写分析报告',
+  inspect_scene_vector_data: '检查空间目标数据',
+  request_target_clarification: '请求澄清目标条件',
+  finalize_dataset_selection: '确认分析数据集',
+  finalize_target_query: '确认目标筛选方案',
+  execute_target_query: '执行目标筛选统计',
+  present_target_result: '在地图上展示目标',
   finish: '完成',
   update_goal: '更新目标',
   skill: '调用技能',
@@ -111,6 +117,7 @@ const isMetaEvent = (type: string) =>
 export default function WorkbenchPage() {
   const router = useRouter()
   const sceneId = typeof router.query.sceneId === 'string' ? router.query.sceneId : ''
+  const isTargetDemo = router.pathname.includes('/demo/target-recognition/')
   const [sceneName, setSceneName] = React.useState('场景')
   const [region, setRegion] = React.useState('')
 
@@ -144,6 +151,7 @@ export default function WorkbenchPage() {
   const [agentError, setAgentError] = React.useState('')
   const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
   const agentEventCursorRef = React.useRef({ sessionId: '', afterId: 0 })
+  const appliedMapPresentationRef = React.useRef('')
   const [attOpen, setAttOpen] = React.useState(false)
   const chatScrollRef = React.useRef<HTMLDivElement | null>(null)
   const [defaultModel, setDefaultModel] = React.useState<ModelCfg | undefined>(undefined)
@@ -313,8 +321,51 @@ export default function WorkbenchPage() {
     ensurePendingConfirmationBlock(pending)
     syncConfirmationBlockStatuses(confirmations)
     setAgentError(current.last_error ?? '')
+    const presentation = [...(current.artifacts ?? [])]
+      .reverse()
+      .find(artifact => artifact.type === 'map-presentation' && !artifact.superseded)
+    if (presentation && presentation.id !== appliedMapPresentationRef.current) {
+      appliedMapPresentationRef.current = presentation.id
+      const data = presentation.data as {
+        view?: View
+        fitBounds?: boolean
+        title?: string
+        layers?: Array<{
+          assetId?: string
+          role?: 'target-highlight'
+          visible?: boolean
+          style?: WbLayer['style']
+        }>
+      }
+      const nextFiles = await workbenchRepo.listFiles(sceneId || undefined)
+      setFiles(sceneId ? nextFiles : (nextFiles.length ? nextFiles : SEED_FILES))
+      const presentationLayers = (data.layers ?? []).flatMap(spec => {
+        const file = nextFiles.find(item => item.id === spec.assetId)
+        if (!file?.geojsonUrl) return []
+        return [{
+          id: `target_${file.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+          name: data.title || file.name,
+          type: 'vector' as const,
+          visible: spec.visible !== false,
+          opacity: 95,
+          geojsonUrl: file.geojsonUrl,
+          bounds: file.bounds,
+          role: spec.role,
+          style: spec.style,
+        }]
+      })
+      if (presentationLayers.length) {
+        setLayers(previous => [
+          ...presentationLayers,
+          ...previous.filter(layer => !presentationLayers.some(item => item.id === layer.id)),
+        ])
+        setView(data.view === 'split' ? 'split' : 'map')
+        setLeftTab('layers')
+        if (data.fitBounds) setFitNonce(value => value + 1)
+      }
+    }
     rebuildTurns()
-  }, [ensurePendingConfirmationBlock, rebuildTurns, syncConfirmationBlockStatuses])
+  }, [ensurePendingConfirmationBlock, rebuildTurns, sceneId, syncConfirmationBlockStatuses])
 
   // Full polling refresh (fallback path when SSE is unavailable): also fetches
   // events and folds them, replicating the original single-loop behavior.
@@ -350,10 +401,11 @@ export default function WorkbenchPage() {
     refreshInFlightRef.current = true
     try {
       await runRefresh(session)
+      if (sseFailedRef.current) await refreshMeta(session)
     } finally {
       refreshInFlightRef.current = false
     }
-  }, [runRefresh])
+  }, [refreshMeta, runRefresh])
 
   // After a user action (send / confirm): when SSE is live only refresh metadata
   // (the stream delivers events — fetching them here would double-fold); when SSE
@@ -1172,7 +1224,7 @@ export default function WorkbenchPage() {
 
   return (
     <>
-      <Head><title>{`${sceneName} · 工作台 · GSMS`}</title></Head>
+      <Head><title>{`${sceneName} · ${isTargetDemo ? '空间目标识别' : '工作台'} · GSMS`}</title></Head>
       <div className="app">
         <TopNav active="workbench" />
 
@@ -1192,7 +1244,9 @@ export default function WorkbenchPage() {
             <div className="tabs">
               <button className={leftTab === 'layers' ? 'on' : ''} onClick={() => setLeftTab('layers')}><Icon name="layers" cls="ic-sm" />图层</button>
               <button className={leftTab === 'files' ? 'on' : ''} onClick={() => setLeftTab('files')}><Icon name="file" cls="ic-sm" />文件</button>
-              <button className={leftTab === 'invest' ? 'on' : ''} onClick={() => setLeftTab('invest')}><Icon name="box" cls="ic-sm" />InVEST</button>
+              {!isTargetDemo && (
+                <button className={leftTab === 'invest' ? 'on' : ''} onClick={() => setLeftTab('invest')}><Icon name="box" cls="ic-sm" />InVEST</button>
+              )}
             </div>
 
             {leftTab === 'layers' && (
@@ -1249,7 +1303,7 @@ export default function WorkbenchPage() {
               </div>
             )}
 
-            {leftTab === 'invest' && (
+            {!isTargetDemo && leftTab === 'invest' && (
               <div className="col-body">
                 <div className="pad model-search">
                   <Icon name="search" cls="ic-sm" />
@@ -1366,7 +1420,15 @@ export default function WorkbenchPage() {
                 <span className={`ti ${tm.ic}`}>{task === 'run' ? <span className="spinner" /> : <Icon name={tm.icn} />}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-strong)' }}>{tm.title}</div>
-                  <div className="meta" style={{ marginTop: 1 }}>{task === 'idle' ? '配置并运行一个 InVEST 模型后，状态会显示在这里' : '模型：' + curModel}</div>
+                  <div className="meta" style={{ marginTop: 1 }}>
+                    {task === 'idle'
+                      ? isTargetDemo
+                        ? '目标筛选、统计和地图发布状态会显示在这里'
+                        : '配置并运行一个 InVEST 模型后，状态会显示在这里'
+                      : isTargetDemo
+                        ? '空间目标分析'
+                        : '模型：' + curModel}
+                  </div>
                 </div>
                 {tm.badge}
               </div>

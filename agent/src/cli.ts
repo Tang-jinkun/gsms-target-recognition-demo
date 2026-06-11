@@ -10,6 +10,7 @@ import { createGsmsTools } from './tools/gsmsTools.ts'
 import { createMatchingTools } from './tools/matchingTools.ts'
 import { createReportTools } from './tools/reportTools.ts'
 import { createReconTool } from './tools/reconTools.ts'
+import { createTargetRecognitionTools } from './tools/targetRecognitionTools.ts'
 import { GsmsBootstrapClient, type GsmsScene } from './cli/GsmsBootstrapClient.ts'
 import { InvestAgentSession, registerSessionControlTools } from './cli/InvestAgentSession.ts'
 import { parseCliArguments, resolveCliConfig } from './cli/config.ts'
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
       ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
+      ...createTargetRecognitionTools(gsmsClient),
     ]
     const domainTools: AgentTool[] = [...coreTools]
     if (config.experimentalRecon) {

@@ -4,7 +4,9 @@ Extracted verbatim from the original app/main.py so existing behaviour is
 preserved exactly while both routers can import from one place.
 """
 import csv
+import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -60,6 +62,76 @@ def merge_bounds(bounds: list[list[float]]) -> list[float] | None:
             max(b[2] for b in bounds), max(b[3] for b in bounds)]
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_vector_property_profile(features: list[dict], sample_limit: int = 12) -> dict:
+    geometry_types = Counter()
+    property_values: dict[str, list] = {}
+
+    for feature in features:
+        geometry = feature.get("geometry") or {}
+        geometry_types[str(geometry.get("type") or "Unknown")] += 1
+        properties = feature.get("properties") or {}
+        if not isinstance(properties, dict):
+            continue
+        for name, value in properties.items():
+            property_values.setdefault(str(name), []).append(value)
+
+    fields = []
+    for name, values in sorted(property_values.items()):
+        null_count = len(features) - len(values) + sum(value is None for value in values)
+        non_null = [value for value in values if value is not None]
+        value_types = {infer_property_type(value) for value in non_null}
+        inferred_type = next(iter(value_types)) if len(value_types) == 1 else "mixed"
+        if not non_null:
+            inferred_type = "null"
+        distinct = []
+        seen = set()
+        for value in non_null:
+            key = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(distinct) < sample_limit and isinstance(value, (str, int, float, bool)):
+                distinct.append(value)
+        field = {
+            "name": name,
+            "inferred_type": inferred_type,
+            "null_count": null_count,
+            "distinct_count": len(seen),
+            "sampled_values": distinct,
+            "sampled_values_complete": len(seen) <= sample_limit,
+        }
+        numeric = [float(value) for value in non_null if isinstance(value, (int, float)) and not isinstance(value, bool)]
+        if inferred_type == "number" and numeric:
+            field["numeric_stats"] = {"minimum": min(numeric), "maximum": max(numeric)}
+        fields.append(field)
+
+    return {
+        "feature_count": len(features),
+        "geometry_types": dict(sorted(geometry_types.items())),
+        "fields": fields,
+    }
+
+
+def infer_property_type(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return "mixed"
+
+
 def read_file_metadata(path: Path) -> dict:
     metadata: dict = {
         "name": path.name,
@@ -86,7 +158,14 @@ def read_file_metadata(path: Path) -> dict:
             data = json.load(fh)
         features = data.get("features", []) if data.get("type") == "FeatureCollection" else []
         bounds = [b for b in (calculate_geojson_bounds((f.get("geometry") or {})) for f in features) if b]
-        metadata.update({"feature_count": len(features), "bounds": merge_bounds(bounds), "crs": "EPSG:4326"})
+        metadata.update({
+            "feature_count": len(features),
+            "bounds": merge_bounds(bounds),
+            "bounds_wgs84": merge_bounds(bounds),
+            "crs": "EPSG:4326",
+            "vector_property_profile": build_vector_property_profile(features),
+            "sha256": file_sha256(path),
+        })
         return metadata
 
     if suffix in {".tif", ".tiff"}:

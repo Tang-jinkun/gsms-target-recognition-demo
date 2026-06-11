@@ -13,6 +13,12 @@ export type WbLayer = {
   rasterUrl?: string
   geojsonUrl?: string
   bounds?: number[] | null // [w,s,e,n] WGS84
+  role?: 'target-highlight'
+  style?: {
+    circleColor?: string
+    circleRadius?: number
+    circleStrokeColor?: string
+  }
 }
 
 /**
@@ -77,16 +83,44 @@ export default function MapView({ layers, fitNonce, active }: { layers: WbLayer[
           map.addSource(srcId, { type: 'geojson', data: layer.geojsonUrl })
           map.addLayer({ id: `${layer.id}-fill`, type: 'fill', source: srcId, paint: { 'fill-color': '#14b8a6', 'fill-opacity': (layer.opacity / 100) * 0.22 } })
           map.addLayer({ id: layer.id, type: 'line', source: srcId, paint: { 'line-color': '#0f766e', 'line-width': 2, 'line-opacity': layer.opacity / 100 } })
+          map.addLayer({
+            id: `${layer.id}-circle`,
+            type: 'circle',
+            source: srcId,
+            paint: {
+              'circle-color': layer.style?.circleColor ?? (layer.role === 'target-highlight' ? '#ef4444' : '#14b8a6'),
+              'circle-radius': layer.style?.circleRadius ?? (layer.role === 'target-highlight' ? 8 : 5),
+              'circle-stroke-color': layer.style?.circleStrokeColor ?? '#ffffff',
+              'circle-stroke-width': 2,
+              'circle-opacity': layer.opacity / 100,
+            },
+          })
+          map.on('click', `${layer.id}-circle`, event => {
+            const feature = event.features?.[0]
+            if (!feature) return
+            const rows = Object.entries(feature.properties ?? {})
+              .filter(([key]) => !key.startsWith('_'))
+              .map(([key, value]) => `<div><strong>${escapeHtml(key)}</strong>: ${escapeHtml(String(value ?? ''))}</div>`)
+              .join('')
+            new maplibregl.Popup({ maxWidth: '360px' })
+              .setLngLat(event.lngLat)
+              .setHTML(`<div style="max-height:260px;overflow:auto">${rows}</div>`)
+              .addTo(map)
+          })
+          map.on('mouseenter', `${layer.id}-circle`, () => { map.getCanvas().style.cursor = 'pointer' })
+          map.on('mouseleave', `${layer.id}-circle`, () => { map.getCanvas().style.cursor = '' })
           added.current[layer.id] = true
         }
       }
       const vis = layer.visible ? 'visible' : 'none'
       if (map.getLayer(layer.id)) map.setLayoutProperty(layer.id, 'visibility', vis)
       if (map.getLayer(`${layer.id}-fill`)) map.setLayoutProperty(`${layer.id}-fill`, 'visibility', vis)
+      if (map.getLayer(`${layer.id}-circle`)) map.setLayoutProperty(`${layer.id}-circle`, 'visibility', vis)
       if (layer.type === 'raster' && map.getLayer(layer.id)) map.setPaintProperty(layer.id, 'raster-opacity', layer.opacity / 100)
       if (layer.type === 'vector') {
         if (map.getLayer(layer.id)) map.setPaintProperty(layer.id, 'line-opacity', layer.opacity / 100)
         if (map.getLayer(`${layer.id}-fill`)) map.setPaintProperty(`${layer.id}-fill`, 'fill-opacity', (layer.opacity / 100) * 0.22)
+        if (map.getLayer(`${layer.id}-circle`)) map.setPaintProperty(`${layer.id}-circle`, 'circle-opacity', layer.opacity / 100)
       }
     })
     // remove layers no longer present
@@ -94,6 +128,7 @@ export default function MapView({ layers, fitNonce, active }: { layers: WbLayer[
       if (layers.some(l => l.id === id)) return
       if (map.getLayer(id)) map.removeLayer(id)
       if (map.getLayer(`${id}-fill`)) map.removeLayer(`${id}-fill`)
+      if (map.getLayer(`${id}-circle`)) map.removeLayer(`${id}-circle`)
       if (map.getSource(`src-${id}`)) { try { map.removeSource(`src-${id}`) } catch { /* locked */ } }
       delete added.current[id]
     })
@@ -112,4 +147,14 @@ export default function MapView({ layers, fitNonce, active }: { layers: WbLayer[
   }, [fitNonce, ready, layers])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;',
+  }[character] ?? character))
 }

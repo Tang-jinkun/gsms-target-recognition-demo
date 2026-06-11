@@ -1,3 +1,112 @@
+# GSMS Target Recognition Demo
+
+This branch turns the GSMS Agent architecture into a generic spatial target
+recognition demo. It is intentionally not limited to waterlogging points.
+
+```text
+natural-language target
+-> LLM semantic decision
+-> identify-spatial-targets Skill
+-> deterministic GeoJSON query tools
+-> auditable artifacts and generated GeoJSON
+-> automatic MapLibre highlight
+```
+
+The architecture remains:
+
+```text
+LLM decisions + Skill procedures + Workflow gates
++ deterministic Tools + Artifact audit
+```
+
+The LLM decides what the user means, interprets dataset dates, and maps the
+request to factual fields and values. Tools do not contain rules such as
+"waterlogging means point_type=积水点"; they validate the LLM's structured
+decision against the real property profile, execute the filter, count matches,
+publish outputs, and prevent invented fields or counts.
+
+## Demo Workflow
+
+The built-in `identify-spatial-targets` Skill guides the model through:
+
+1. `inspect_scene_vector_data`
+2. `request_target_clarification` when time scope or semantics are ambiguous
+3. `finalize_dataset_selection`
+4. `finalize_target_query`
+5. `execute_target_query`
+6. `present_target_result`
+
+If the user does not state a time scope, the Skill requires one clarification
+question instead of silently choosing latest/all data. The first release
+supports GeoJSON Point/MultiPoint inputs and multiple AND conditions.
+
+Generated evidence is visible through Agent artifacts and Data Hub:
+
+- `vector-property-profile`
+- `dataset-selection`
+- `target-query`
+- `target-analysis`
+- generated result GeoJSON
+- `map-presentation`
+
+The dedicated page is:
+
+```text
+/demo/target-recognition/<scene-id>
+```
+
+## Sample Data
+
+`sample_data/target-recognition/` contains three fixed GeoJSON datasets derived
+from the supplied CSV fixtures. Expected waterlogging counts are 6, 7, and 8
+for June 8, 9, and 10, 2026. These are acceptance fixtures only; no
+waterlogging-specific matching rule exists in the Agent, Skill, or Tool.
+
+Rebuild the fixtures from the original CSV directory:
+
+```powershell
+python scripts/build_target_recognition_samples.py `
+  C:\path\to\intent_demo_csv_three_days `
+  sample_data\target-recognition
+```
+
+## Run And Test
+
+Start the application:
+
+```bash
+docker compose up -d --build
+```
+
+Import the three sample GeoJSON files into a new scene, open the dedicated demo
+page, and ask:
+
+```text
+请统计最新一份数据中高风险且积水深度超过 30cm 的点，并在地图上高亮显示。
+```
+
+Expected activity:
+
+```text
+skill
+inspect_scene_vector_data
+finalize_dataset_selection
+finalize_target_query
+execute_target_query
+present_target_result
+finish
+```
+
+Targeted checks:
+
+```bash
+cd backend && python -m pytest tests/test_target_recognition.py -q
+cd agent && npm test && npm run typecheck
+cd frontend && npm run typecheck && npm run build
+```
+
+---
+
 # GSMS InVEST Agent Workbench
 
 GSMS is a local WebGIS workbench and domain Agent for running and explaining

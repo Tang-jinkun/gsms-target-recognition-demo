@@ -1,7 +1,7 @@
 import type { ArtifactInput, ModelAdapter } from '@gsms/agent-core'
 import type { SkillSummary } from '@gsms/skills-core'
 
-export type TurnIntent = 'general-answer' | 'invest-workflow' | 'workflow-continue' | 'ambiguous'
+export type TurnIntent = 'general-answer' | 'invest-workflow' | 'target-workflow' | 'workflow-continue' | 'ambiguous'
 export type WorkflowAction =
   | 'assess-runnable-models'
   | 'match-inputs'
@@ -10,6 +10,11 @@ export type WorkflowAction =
   | 'execute'
   | 'inspect-results'
   | 'write-report'
+  | 'inspect-target-data'
+  | 'select-dataset'
+  | 'plan-target-query'
+  | 'execute-target-query'
+  | 'present-target-result'
 
 export interface TurnIntentRoute {
   intent: TurnIntent
@@ -67,6 +72,11 @@ const INVEST_KEYWORDS = [
 
 const CURRENT_PROJECT_HINTS = [
   'current', 'this scene', 'current scene', '当前', '本场景', '这个场景', '当前场景',
+]
+
+const TARGET_DATA_HINTS = [
+  'dataset', 'data', 'geojson', 'feature', 'point', 'points', 'map', 'spatial',
+  '数据', '要素', '点位', '地图', '空间',
 ]
 
 const CONCEPT_PATTERNS = [
@@ -128,7 +138,7 @@ export class TurnIntentRouter {
           {
             role: 'system',
             content:
-              'Classify the user turn for a GSMS InVEST agent. Return only JSON: {"intent":"general-answer|invest-workflow|workflow-continue|ambiguous","confidence":0.0-1.0,"reason":"short reason","workflowAction":"assess-runnable-models|match-inputs|validate|confirm|execute|inspect-results|write-report","modelId":"optional model id"}. Do not call tools.',
+              'Classify the user turn for a GSMS spatial analysis agent. Return only JSON: {"intent":"general-answer|invest-workflow|target-workflow|workflow-continue|ambiguous","confidence":0.0-1.0,"reason":"short reason","workflowAction":"assess-runnable-models|match-inputs|validate|confirm|execute|inspect-results|write-report|inspect-target-data|select-dataset|plan-target-query|execute-target-query|present-target-result","modelId":"optional model id"}. Use target-workflow for finding, counting, filtering, or highlighting user-described spatial targets. Do not call tools.',
           },
           {
             role: 'user',
@@ -223,7 +233,7 @@ function routeByRules(
   const workflowAction = inferWorkflowAction(text)
   if (workflowAction && hasContinuableWorkflow(domainState, artifacts)) {
     return {
-      intent: 'invest-workflow',
+      intent: isTargetWorkflowAction(workflowAction) ? 'target-workflow' : 'invest-workflow',
       reason: 'workflow action request with existing workflow state',
       confidence: 0.84,
       workflowAction,
@@ -231,9 +241,18 @@ function routeByRules(
       exposeSkills: skillsForWorkflowAction(workflowAction, skillSummaries),
     }
   }
+  if (isTargetWorkflowAction(workflowAction) && hasAny(text, TARGET_DATA_HINTS)) {
+    return {
+      intent: 'target-workflow',
+      reason: 'explicit spatial target analysis request',
+      confidence: 0.82,
+      workflowAction,
+      exposeSkills: skillsForWorkflowAction(workflowAction, skillSummaries),
+    }
+  }
   if (hasAny(text, CURRENT_PROJECT_HINTS) && inferWorkflowAction(text)) {
     return {
-      intent: 'invest-workflow',
+      intent: isTargetWorkflowAction(workflowAction) ? 'target-workflow' : 'invest-workflow',
       reason: 'current GSMS scene workflow request',
       confidence: 0.82,
       workflowAction,
@@ -320,9 +339,9 @@ function routeBySkillMetadata(
       return normalized.length >= 4 && (text.includes(normalized) || normalized.includes(text))
     })
     if (!matchedExample) continue
-    const action = workflowActionFromSkillTags(skill.intentTags) ?? inferWorkflowAction(text)
+    const action = inferWorkflowAction(text) ?? workflowActionFromSkillTags(skill.intentTags)
     return {
-      intent: 'invest-workflow',
+      intent: isTargetWorkflowAction(action) ? 'target-workflow' : 'invest-workflow',
       reason: `matched skill metadata trigger for ${skill.name}`,
       confidence: 0.78,
       workflowAction: action,
@@ -344,6 +363,11 @@ function workflowActionFromSkillTags(tags: readonly string[] | undefined): Workf
   if (tags.includes('execute')) return 'execute'
   if (tags.includes('inspect-results')) return 'inspect-results'
   if (tags.includes('write-report')) return 'write-report'
+  if (tags.includes('inspect-target-data')) return 'inspect-target-data'
+  if (tags.includes('select-dataset')) return 'select-dataset'
+  if (tags.includes('plan-target-query')) return 'plan-target-query'
+  if (tags.includes('execute-target-query')) return 'execute-target-query'
+  if (tags.includes('present-target-result')) return 'present-target-result'
   return undefined
 }
 
@@ -352,7 +376,9 @@ function skillsForWorkflowAction(
   skillSummaries: readonly SkillSummary[],
 ): string[] {
   const fallback =
-    action === 'inspect-results' || action === 'write-report'
+    isTargetWorkflowAction(action)
+      ? ['identify-spatial-targets']
+      : action === 'inspect-results' || action === 'write-report'
       ? ['interpret-invest-results']
       : ['data-matching', 'interpret-invest-results']
   if (!skillSummaries.length) return fallback
@@ -366,6 +392,9 @@ function skillsForWorkflowAction(
 function skillMatchesWorkflowAction(skill: SkillSummary, action: WorkflowAction | undefined): boolean {
   const tags = new Set(skill.intentTags ?? [])
   if (!action) return skill.name === 'data-matching'
+  if (isTargetWorkflowAction(action)) {
+    return tags.has(action) || skill.name === 'identify-spatial-targets'
+  }
   if (action === 'assess-runnable-models') {
     return tags.has('assess-runnable-models') || tags.has('assess-data-sufficiency') || tags.has('explore-data')
   }
@@ -379,6 +408,7 @@ function defaultConfidence(intent: TurnIntent): number {
   switch (intent) {
     case 'general-answer': return 0.7
     case 'invest-workflow': return 0.7
+    case 'target-workflow': return 0.7
     case 'workflow-continue': return 0.75
     case 'ambiguous': return 0.5
   }
@@ -390,6 +420,9 @@ function clampConfidence(value: number): number {
 }
 
 function inferWorkflowAction(text: string): WorkflowAction | undefined {
+  if (/(地图上|地图中|高亮|highlight|show on map|display on map)/i.test(text)) return 'present-target-result'
+  if (/(统计|数量|个数|多少个|找出|筛选|过滤|count|find|filter)/i.test(text)) return 'execute-target-query'
+  if (/(最新一份|最新数据|全部数据|所有数据|latest dataset|latest data|all data|\d{4}-\d{2}-\d{2})/i.test(text)) return 'select-dataset'
   if (
     text.includes('能跑') ||
     text.includes('可运行') ||
@@ -425,6 +458,7 @@ function inferContinuationAction(
   if (phase === 'job-succeeded' || phase === 'outputs-inspected' || phase === 'results-analyzed') return 'inspect-results'
   if (phase === 'results-ready-for-interpretation' || phase === 'report-written') return 'write-report'
   if (phase === 'matching-slots' || phase === 'resolving-ambiguity') return 'match-inputs'
+  if (phase === 'awaiting-target-clarification') return 'select-dataset'
   if ((artifacts ?? []).some(artifact => isArtifactLike(artifact) && artifact.type === 'binding-report')) return 'validate'
   if ((artifacts ?? []).some(artifact => isArtifactLike(artifact) && artifact.type === 'validation-report')) return 'confirm'
   if ((artifacts ?? []).some(artifact => isArtifactLike(artifact) && artifact.type === 'confirmation-record')) return 'execute'
@@ -479,6 +513,7 @@ function hasContinuableWorkflow(
     'report-written',
     'matching-slots',
     'resolving-ambiguity',
+    'awaiting-target-clarification',
   ].includes(phase)) return true
 
   return (artifacts ?? []).some(artifact => {
@@ -493,6 +528,11 @@ function hasContinuableWorkflow(
       'result-analysis',
       'result-interpretation-context',
       'invest-report',
+      'target-clarification',
+      'dataset-selection',
+      'target-query',
+      'target-analysis',
+      'map-presentation',
     ].includes(artifact.type)
   })
 }
@@ -512,6 +552,7 @@ function isArtifactLike(value: unknown): value is { id?: string; type: string; m
 function isTurnIntent(value: unknown): value is TurnIntent {
   return value === 'general-answer' ||
     value === 'invest-workflow' ||
+    value === 'target-workflow' ||
     value === 'workflow-continue' ||
     value === 'ambiguous'
 }
@@ -523,5 +564,20 @@ function isWorkflowAction(value: unknown): value is WorkflowAction {
     value === 'confirm' ||
     value === 'execute' ||
     value === 'inspect-results' ||
-    value === 'write-report'
+    value === 'write-report' ||
+    value === 'inspect-target-data' ||
+    value === 'select-dataset' ||
+    value === 'plan-target-query' ||
+    value === 'execute-target-query' ||
+    value === 'present-target-result'
+}
+
+function isTargetWorkflowAction(action: WorkflowAction | undefined): boolean {
+  return Boolean(action && [
+    'inspect-target-data',
+    'select-dataset',
+    'plan-target-query',
+    'execute-target-query',
+    'present-target-result',
+  ].includes(action))
 }

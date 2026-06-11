@@ -50,6 +50,7 @@ export type WorkflowStage =
   | 'execute'
   | 'inspect-results'
   | 'write-report'
+  | 'target-recognition'
 
 export interface TurnBoundary {
   action: WorkflowAction
@@ -105,6 +106,14 @@ const interpretationTools = new Set([
   'interpret_invest_results',
   'write_invest_report',
 ])
+const targetRecognitionTools = new Set([
+  'request_target_clarification',
+  'inspect_scene_vector_data',
+  'finalize_dataset_selection',
+  'finalize_target_query',
+  'execute_target_query',
+  'present_target_result',
+])
 
 const allDomainTools = new Set([
   ...matchingTools,
@@ -112,6 +121,7 @@ const allDomainTools = new Set([
   ...confirmationTools,
   ...executionTools,
   ...interpretationTools,
+  ...targetRecognitionTools,
 ])
 
 const turnStageTools: Record<WorkflowStage, ReadonlySet<string>> = {
@@ -135,6 +145,7 @@ const turnStageTools: Record<WorkflowStage, ReadonlySet<string>> = {
     'interpret_invest_results',
   ]),
   'write-report': interpretationTools,
+  'target-recognition': targetRecognitionTools,
 }
 
 const TURN_BOUNDARY_BY_ACTION: Record<WorkflowAction, TurnBoundary> = {
@@ -201,6 +212,51 @@ const TURN_BOUNDARY_BY_ACTION: Record<WorkflowAction, TurnBoundary> = {
       description: 'Evidence-backed InVEST report',
     }],
   },
+  'inspect-target-data': {
+    action: 'inspect-target-data',
+    allowedStages: ['target-recognition'],
+    forbiddenCapabilities: ['invest', 'execute-model'],
+    evidenceRequirements: [{
+      artifactTypes: ['vector-property-profile'],
+      description: 'Current-scene GeoJSON property profiles',
+    }],
+  },
+  'select-dataset': {
+    action: 'select-dataset',
+    allowedStages: ['target-recognition'],
+    forbiddenCapabilities: ['invest', 'execute-model'],
+    evidenceRequirements: [{
+      artifactTypes: ['dataset-selection'],
+      description: 'Evidence-backed current dataset selection',
+    }],
+  },
+  'plan-target-query': {
+    action: 'plan-target-query',
+    allowedStages: ['target-recognition'],
+    forbiddenCapabilities: ['invest', 'execute-model'],
+    evidenceRequirements: [{
+      artifactTypes: ['target-query'],
+      description: 'Validated target query over selected property profiles',
+    }],
+  },
+  'execute-target-query': {
+    action: 'execute-target-query',
+    allowedStages: ['target-recognition'],
+    forbiddenCapabilities: ['invest', 'execute-model'],
+    evidenceRequirements: [{
+      artifactTypes: ['target-analysis', 'generated-target-geojson'],
+      description: 'Deterministic target analysis and generated target GeoJSON',
+    }],
+  },
+  'present-target-result': {
+    action: 'present-target-result',
+    allowedStages: ['target-recognition'],
+    forbiddenCapabilities: ['invest', 'execute-model'],
+    evidenceRequirements: [{
+      artifactTypes: ['target-analysis', 'map-presentation'],
+      description: 'Deterministic target analysis and map presentation',
+    }],
+  },
 }
 
 export function buildTurnBoundary(action: WorkflowAction | undefined): TurnBoundary | undefined {
@@ -238,6 +294,11 @@ export function workflowTurnBoundaryTransition(
     'assess-runnable-models': 'discovering-data',
     'match-inputs': 'matching-slots',
     validate: 'ready-for-validation',
+    'inspect-target-data': 'target-data-inspected',
+    'select-dataset': 'target-data-inspected',
+    'plan-target-query': 'target-data-inspected',
+    'execute-target-query': 'target-data-inspected',
+    'present-target-result': 'target-data-inspected',
   }
   const nextPhase = phaseByAction[boundary.action]
   if (!nextPhase) return { staleArtifactTypes: [] }
@@ -292,7 +353,7 @@ export function turnBoundaryAllowsTool(boundary: TurnBoundary, toolName: string)
 
 function turnBoundaryAllowsMatchingRollback(boundary: TurnBoundary | undefined): boolean {
   return Boolean(boundary?.allowedStages.some(stage =>
-    stage === 'explore' || stage === 'match' || stage === 'validate' || stage === 'confirm',
+    stage === 'explore' || stage === 'match' || stage === 'validate' || stage === 'confirm' || stage === 'target-recognition',
   ))
 }
 
@@ -343,11 +404,15 @@ function finishPassesEvidenceGate(
   const state = context.domainState.snapshot()
   const matchingContextId =
     typeof state.matchingContextId === 'string' ? state.matchingContextId : undefined
+  const analysisContextId =
+    typeof state.analysisContextId === 'string' ? state.analysisContextId : undefined
 
   const domainArtifacts = artifacts.filter(a => !['goal-progress'].includes(a.type))
 
   // Current-context artifacts (matching scope)
-  const currentArtifacts = matchingContextId
+  const currentArtifacts = analysisContextId
+    ? domainArtifacts.filter(a => !a.metadata?.analysisContextId || a.metadata.analysisContextId === analysisContextId)
+    : matchingContextId
     ? domainArtifacts.filter(a => !a.metadata?.matchingContextId || a.metadata.matchingContextId === matchingContextId)
     : domainArtifacts
 
@@ -384,6 +449,10 @@ function finishPassesEvidenceGate(
   // predate the generic mutation policy metadata.
   if (hasSceneImportRecord && !hasRefreshedSceneData && !has('candidate-set') && !has('sufficiency-report') && !has('binding-report')) {
     return false
+  }
+
+  if (turnBoundary?.allowedStages.includes('target-recognition') && has('target-clarification')) {
+    return true
   }
 
   if (turnBoundary?.evidenceRequirements.length) {

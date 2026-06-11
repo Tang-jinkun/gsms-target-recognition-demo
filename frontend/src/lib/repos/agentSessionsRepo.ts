@@ -10,6 +10,14 @@ export type AgentSession = {
   last_error?: string | null
   pending_confirmation_id?: string | null
   updated_at?: string | null
+  domain_state?: Record<string, unknown>
+  artifacts?: Array<{
+    id: string
+    type: string
+    data: unknown
+    metadata?: Record<string, unknown>
+    superseded?: boolean
+  }>
 }
 
 export type AgentMessage = {

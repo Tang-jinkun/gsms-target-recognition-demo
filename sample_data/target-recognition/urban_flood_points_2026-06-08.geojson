@@ -1,0 +1,419 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7812,
+          32.0617
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_001",
+        "collect_date": "2026-06-08",
+        "collect_time": "08:10",
+        "point_type": "积水点",
+        "status": "待处置",
+        "risk_level": "中",
+        "measured_value": 18.0,
+        "value_unit": "cm",
+        "district": "鼓楼区",
+        "data_source": "移动巡查",
+        "remark": "路面积水轻微"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8021,
+          32.0443
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_002",
+        "collect_date": "2026-06-08",
+        "collect_time": "08:15",
+        "point_type": "雨量站",
+        "status": "正常",
+        "risk_level": "低",
+        "measured_value": 12.4,
+        "value_unit": "mm",
+        "district": "秦淮区",
+        "data_source": "物联网传感器",
+        "remark": "小时雨量"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7549,
+          32.0932
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_003",
+        "collect_date": "2026-06-08",
+        "collect_time": "08:28",
+        "point_type": "河道水位点",
+        "status": "正常",
+        "risk_level": "低",
+        "measured_value": 3.21,
+        "value_unit": "m",
+        "district": "建邺区",
+        "data_source": "水位站",
+        "remark": "水位稳定"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8324,
+          32.0681
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_004",
+        "collect_date": "2026-06-08",
+        "collect_time": "08:35",
+        "point_type": "排水口",
+        "status": "正常",
+        "risk_level": "低",
+        "measured_value": 76.0,
+        "value_unit": "%",
+        "district": "玄武区",
+        "data_source": "排水监测",
+        "remark": "排水能力正常"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7698,
+          32.0237
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_005",
+        "collect_date": "2026-06-08",
+        "collect_time": "09:05",
+        "point_type": "积水点",
+        "status": "处理中",
+        "risk_level": "高",
+        "measured_value": 31.0,
+        "value_unit": "cm",
+        "district": "雨花台区",
+        "data_source": "群众上报",
+        "remark": "低洼路段积水"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8572,
+          32.0504
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_006",
+        "collect_date": "2026-06-08",
+        "collect_time": "09:20",
+        "point_type": "风险隐患点",
+        "status": "待核查",
+        "risk_level": "中",
+        "measured_value": 1.0,
+        "value_unit": "处",
+        "district": "栖霞区",
+        "data_source": "巡查上报",
+        "remark": "井盖周边塌陷风险"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7316,
+          32.0045
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_007",
+        "collect_date": "2026-06-08",
+        "collect_time": "09:48",
+        "point_type": "积水点",
+        "status": "已处置",
+        "risk_level": "低",
+        "measured_value": 9.0,
+        "value_unit": "cm",
+        "district": "浦口区",
+        "data_source": "移动巡查",
+        "remark": "积水已回落"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8127,
+          32.1018
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_008",
+        "collect_date": "2026-06-08",
+        "collect_time": "10:12",
+        "point_type": "雨量站",
+        "status": "正常",
+        "risk_level": "中",
+        "measured_value": 22.1,
+        "value_unit": "mm",
+        "district": "玄武区",
+        "data_source": "物联网传感器",
+        "remark": "短时强降雨"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.6992,
+          32.1321
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_009",
+        "collect_date": "2026-06-08",
+        "collect_time": "10:40",
+        "point_type": "河道水位点",
+        "status": "预警",
+        "risk_level": "中",
+        "measured_value": 4.05,
+        "value_unit": "m",
+        "district": "浦口区",
+        "data_source": "水位站",
+        "remark": "接近警戒水位"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7936,
+          32.0309
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_010",
+        "collect_date": "2026-06-08",
+        "collect_time": "11:05",
+        "point_type": "排水口",
+        "status": "异常",
+        "risk_level": "中",
+        "measured_value": 48.0,
+        "value_unit": "%",
+        "district": "秦淮区",
+        "data_source": "排水监测",
+        "remark": "疑似堵塞"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8459,
+          31.9976
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_011",
+        "collect_date": "2026-06-08",
+        "collect_time": "11:27",
+        "point_type": "积水点",
+        "status": "待处置",
+        "risk_level": "中",
+        "measured_value": 16.0,
+        "value_unit": "cm",
+        "district": "江宁区",
+        "data_source": "群众上报",
+        "remark": "学校附近积水"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.9045,
+          32.0803
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_012",
+        "collect_date": "2026-06-08",
+        "collect_time": "11:44",
+        "point_type": "风险隐患点",
+        "status": "待核查",
+        "risk_level": "高",
+        "measured_value": 2.0,
+        "value_unit": "处",
+        "district": "栖霞区",
+        "data_source": "巡查上报",
+        "remark": "边坡渗水"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7661,
+          32.0711
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_013",
+        "collect_date": "2026-06-08",
+        "collect_time": "12:10",
+        "point_type": "雨量站",
+        "status": "正常",
+        "risk_level": "低",
+        "measured_value": 8.6,
+        "value_unit": "mm",
+        "district": "鼓楼区",
+        "data_source": "物联网传感器",
+        "remark": "小时雨量"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8199,
+          32.0214
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_014",
+        "collect_date": "2026-06-08",
+        "collect_time": "12:32",
+        "point_type": "积水点",
+        "status": "处理中",
+        "risk_level": "中",
+        "measured_value": 21.0,
+        "value_unit": "cm",
+        "district": "雨花台区",
+        "data_source": "移动巡查",
+        "remark": "隧道口积水"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7164,
+          32.0638
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_015",
+        "collect_date": "2026-06-08",
+        "collect_time": "13:05",
+        "point_type": "排水口",
+        "status": "正常",
+        "risk_level": "低",
+        "measured_value": 82.0,
+        "value_unit": "%",
+        "district": "建邺区",
+        "data_source": "排水监测",
+        "remark": "排水正常"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.8615,
+          32.1149
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_016",
+        "collect_date": "2026-06-08",
+        "collect_time": "13:26",
+        "point_type": "河道水位点",
+        "status": "正常",
+        "risk_level": "低",
+        "measured_value": 3.44,
+        "value_unit": "m",
+        "district": "栖霞区",
+        "data_source": "水位站",
+        "remark": "水位正常"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7352,
+          32.0907
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_017",
+        "collect_date": "2026-06-08",
+        "collect_time": "14:08",
+        "point_type": "积水点",
+        "status": "已处置",
+        "risk_level": "低",
+        "measured_value": 7.0,
+        "value_unit": "cm",
+        "district": "建邺区",
+        "data_source": "移动巡查",
+        "remark": "积水消退"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          118.7885,
+          32.0874
+        ]
+      },
+      "properties": {
+        "record_id": "P0608_018",
+        "collect_date": "2026-06-08",
+        "collect_time": "14:35",
+        "point_type": "风险隐患点",
+        "status": "待核查",
+        "risk_level": "中",
+        "measured_value": 1.0,
+        "value_unit": "处",
+        "district": "鼓楼区",
+        "data_source": "巡查上报",
+        "remark": "树池周边沉降"
+      }
+    }
+  ]
+}

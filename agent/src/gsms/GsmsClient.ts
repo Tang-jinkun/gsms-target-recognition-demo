@@ -24,6 +24,22 @@ export class GsmsClient {
     return this.#request(`/api/scenes/${encodeURIComponent(sceneId)}/data-cards`)
   }
 
+  listSceneVectorProfiles(sceneId: string): Promise<unknown> {
+    return this.#request(`/api/target-recognition/scenes/${encodeURIComponent(sceneId)}/vector-profiles`)
+  }
+
+  runTargetQuery(input: {
+    sceneId: string
+    sourceAssetIds: string[]
+    targetDescription: string
+    conditions: Array<{ field: string; operator: string; value: unknown }>
+  }): Promise<unknown> {
+    return this.#request('/api/target-recognition/queries', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+
   discoverDataHubCandidates(input: {
     sceneId: string
     modelId: string

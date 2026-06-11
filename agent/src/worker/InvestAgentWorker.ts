@@ -20,6 +20,7 @@ import { createGsmsTools } from '../tools/gsmsTools.ts'
 import { createMatchingTools } from '../tools/matchingTools.ts'
 import { createReportTools } from '../tools/reportTools.ts'
 import { createReconTool } from '../tools/reconTools.ts'
+import { createTargetRecognitionTools } from '../tools/targetRecognitionTools.ts'
 import { TurnIntentRouter, summarizeTurnPlan } from '../intent/TurnIntentRouter.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import { workflowRunStartTransition } from '../policies/workflowPolicy.ts'
@@ -117,13 +118,14 @@ export class InvestAgentWorker {
     })
     await this.#sessionApi.appendEvent(session.id, 'turn.planned', summarizeTurnPlan(plan))
     const turnBoundary = buildTurnBoundary(plan.workflow?.action)
-    if (plan.intent === 'invest-workflow' || plan.intent === 'workflow-continue') {
+    if (plan.intent === 'invest-workflow' || plan.intent === 'target-workflow' || plan.intent === 'workflow-continue') {
       prepareWorkflowState(session, domainState, artifacts, turnBoundary)
     }
     const coreTools: AgentTool[] = [
       ...createGsmsTools(gsmsClient),
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
+      ...createTargetRecognitionTools(gsmsClient),
     ]
     const domainTools: AgentTool[] = coreTools.map(enforceWorkflowPhaseTransitions)
     if (this.options.experimentalRecon) {

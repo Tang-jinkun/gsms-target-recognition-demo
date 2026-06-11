@@ -113,3 +113,24 @@ test('turn intent router uses classifier as a no-tool fallback', async () => {
   assert.equal(plan.workflow?.modelId, 'carbon')
   assert.deepEqual(classifier.requests[0]?.tools, [])
 })
+
+test('turn intent router recognizes generic target analysis requests', () => {
+  const route = routeTurnIntent({
+    userMessage: 'Count high-risk points in the latest dataset and highlight them on the map.',
+  })
+
+  assert.equal(route.intent, 'target-workflow')
+  assert.equal(route.workflowAction, 'present-target-result')
+  assert.deepEqual(route.exposeSkills, ['identify-spatial-targets'])
+})
+
+test('turn intent router continues target selection after clarification', () => {
+  const route = routeTurnIntent({
+    userMessage: 'Use 2026-06-10.',
+    domainState: { phase: 'awaiting-target-clarification', sceneId: 'scene-1' },
+    artifacts: [{ id: 'clarification', type: 'target-clarification' }],
+  })
+
+  assert.equal(route.intent, 'target-workflow')
+  assert.equal(route.workflowAction, 'select-dataset')
+})
