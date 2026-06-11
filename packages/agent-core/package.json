@@ -9,6 +9,9 @@
   "bin": {
     "clean-room-agent": "./src/cli.ts"
   },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "start": "tsx src/cli.ts",
     "test": "tsx --test test/artifacts.test.ts test/runtime.test.ts test/tools.test.ts",

@@ -6,6 +6,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "test": "tsx --test test/loader-registry.test.ts test/executor-tool.test.ts test/watcher.test.ts",
     "typecheck": "tsc --noEmit"

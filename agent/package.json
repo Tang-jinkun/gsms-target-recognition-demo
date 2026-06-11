@@ -9,6 +9,9 @@
   "bin": {
     "invest-agent": "./src/cli.ts"
   },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "start": "tsx src/cli.ts",
     "worker": "tsx src/worker.ts",
