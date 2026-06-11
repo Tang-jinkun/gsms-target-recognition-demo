@@ -26,7 +26,7 @@ import { modelInputSchemaSchema } from '../domain/schemas.ts'
 import { TurnIntentRouter, summarizeTurnPlan } from '../intent/TurnIntentRouter.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import { evaluateDataAvailabilityPolicy } from '../policies/dataAvailabilityPolicy.ts'
-import { phaseResumeInstruction } from '../policies/workflowPolicy.ts'
+import { workflowEvidenceInstruction } from '../policies/workflowPolicy.ts'
 import {
   AgentSessionApiClient,
   type PersistedAgentSession,
@@ -598,62 +598,26 @@ function workflowDirective(
   counts: Record<string, number>,
   artifacts: readonly ReturnType<typeof normalizeArtifact>[],
 ): string {
-  const phaseInstruction = phaseResumeInstruction(phase, modelId)
-  if (phaseInstruction && (phase !== 'ready-for-validation' || counts['binding-report'])) {
-    return phaseInstruction
-  }
-  if (phase === 'matching-slots' && counts['candidate-set']) {
-    const schemaArtifact = [...artifacts].reverse().find(artifact => artifact?.type === 'model-input-schema')
-    const schema = schemaArtifact ? modelInputSchemaSchema.safeParse(schemaArtifact.data) : undefined
-    const candidateSlots = new Set(
-      artifacts
-        .filter(artifact => artifact?.type === 'candidate-set')
-        .map(artifact => artifact?.metadata?.slot),
-    )
-    const missing = schema?.success
-      ? schema.data.slots.filter(slot => slot.required && !candidateSlots.has(slot.name)).map(slot => slot.name)
-      : []
-    if (missing.length) {
-      return `Retrieve candidates for these required slots before finalizing: ${missing.join(', ')}. Prefer one call to retrieve_required_input_candidates for model "${modelId}" instead of parallel per-slot calls.`
-    }
-    return 'Reuse the persisted candidate sets and relation checks, then call finalize_data_matching. Do not construct a Binding Report manually.'
-  }
-  if (phase === 'sufficiency-assessed') {
-    return 'Sufficiency assessment is complete. Call finish with the report findings.'
-  }
-  if (phase === 'validation-failed') {
-    return 'Explain the persisted validation errors and stop unless the user changed bindings or parameters.'
-  }
-  if (phase === 'discovering-data' || phase === 'matching-slots') {
-    const hasSchema = counts['model-input-schema']
-    const hasDataCards = counts['gsms-scene-data-cards']
-    const hasCandidates = counts['candidate-set']
-    const hasSufficiencyReport = counts['sufficiency-report']
-    const hasBindingReport = counts['binding-report']
-    const dataAvailability = evaluateDataAvailabilityPolicy(
-      state,
-      artifacts.filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact)),
-    )
+  const definedArtifacts = artifacts.filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact))
+  const schemaArtifact = [...definedArtifacts].reverse().find(artifact => artifact.type === 'model-input-schema')
+  const schema = schemaArtifact ? modelInputSchemaSchema.safeParse(schemaArtifact.data) : undefined
+  const candidateSlots = new Set(
+    definedArtifacts
+      .filter(artifact => artifact.type === 'candidate-set')
+      .map(artifact => artifact.metadata?.slot),
+  )
+  const missingRequiredSlots = schema?.success
+    ? schema.data.slots.filter(slot => slot.required && !candidateSlots.has(slot.name)).map(slot => slot.name)
+    : []
+  const dataAvailability = evaluateDataAvailabilityPolicy(state, definedArtifacts)
 
-    if (dataAvailability.instruction) return dataAvailability.instruction
-    if (hasSufficiencyReport || hasBindingReport) {
-      return 'Assessment or matching complete. Call finish with the findings.'
-    }
-    if (hasSchema && hasDataCards && hasCandidates) {
-      return 'Schema, data cards, and candidates are loaded. If assessing sufficiency, call finalize_sufficiency_assessment. If matching, call finalize_data_matching.'
-    }
-    if (hasSchema && hasDataCards) {
-      return `Schema and data cards loaded. Call retrieve_required_input_candidates once for model "${modelId}" to check all required slots. Do not invent *_asset_id slot names and do not call retrieve_input_candidates in parallel.`
-    }
-    if (hasDataCards) {
-      return 'Data cards loaded. Call get_invest_model_schema for the target model, then retrieve_required_input_candidates once.'
-    }
-    if (hasSchema) {
-      return 'Schema loaded. Call list_scene_data_cards to load scene data, then retrieve_required_input_candidates once.'
-    }
-    return 'Start by calling list_scene_data_cards and/or get_invest_model_schema to gather evidence.'
-  }
-  return 'If the user question is answered by available evidence, call finish. Otherwise continue gathering evidence.'
+  return workflowEvidenceInstruction({
+    phase,
+    modelId,
+    counts,
+    missingRequiredSlots,
+    dataAvailabilityInstruction: dataAvailability.instruction,
+  })
 }
 
 function isArtifact(value: unknown): value is {

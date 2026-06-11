@@ -14,6 +14,7 @@ import {
   executionPhaseAllows,
   phaseResumeInstruction,
   workflowPhaseFilter,
+  workflowEvidenceInstruction,
   isExecutionPhase,
   WAITING_PHASES,
 } from '../src/index.ts'
@@ -802,6 +803,48 @@ test('workflow phase policy drives execution gate and resume instructions', () =
   assert.match(
     phaseResumeInstruction('results-analyzed', 'carbon') ?? '',
     /Call interpret_invest_results directly/,
+  )
+})
+
+test('workflow evidence policy directs dynamic matching and discovery steps', () => {
+  assert.match(
+    workflowEvidenceInstruction({
+      phase: 'discovering-data',
+      modelId: 'carbon',
+      counts: { 'model-input-schema': 1, 'gsms-scene-data-cards': 1 },
+      dataAvailabilityInstruction:
+        'Scene data cards are empty for model "carbon". Call discover_data_hub_candidates before retrieving candidates.',
+    }),
+    /Call discover_data_hub_candidates/,
+  )
+
+  assert.match(
+    workflowEvidenceInstruction({
+      phase: 'discovering-data',
+      modelId: 'carbon',
+      counts: { 'model-input-schema': 1, 'gsms-scene-data-cards': 1 },
+    }),
+    /retrieve_required_input_candidates once/,
+  )
+
+  assert.match(
+    workflowEvidenceInstruction({
+      phase: 'matching-slots',
+      modelId: 'carbon',
+      counts: { 'model-input-schema': 1, 'gsms-scene-data-cards': 1, 'candidate-set': 1 },
+      missingRequiredSlots: ['carbon_pools_path'],
+    }),
+    /carbon_pools_path/,
+  )
+
+  assert.match(
+    workflowEvidenceInstruction({
+      phase: 'matching-slots',
+      modelId: 'carbon',
+      counts: { 'model-input-schema': 1, 'gsms-scene-data-cards': 1, 'candidate-set': 2 },
+      missingRequiredSlots: [],
+    }),
+    /call finalize_data_matching/,
   )
 })
 
