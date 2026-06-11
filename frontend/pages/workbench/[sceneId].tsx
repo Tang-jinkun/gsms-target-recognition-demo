@@ -138,6 +138,7 @@ export default function WorkbenchPage() {
   const [streaming, setStreaming] = React.useState(false)
   const [agentSession, setAgentSession] = React.useState<AgentSession | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
+  const [confirmationChoices, setConfirmationChoices] = React.useState<Record<string, Record<string, string>>>({})
   const pendingConfirmationRef = React.useRef<AgentConfirmation | null>(null)
   const [agentError, setAgentError] = React.useState('')
   const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
@@ -577,13 +578,20 @@ export default function WorkbenchPage() {
     React.useEffect(() => {
       if (!proposal) return
       if (proposal.slots.length) {
-        setSelected(Object.fromEntries(
-          proposal.slots.flatMap(slot =>
-            slot.status === 'needs_user_choice' && slot.selectedFileId
-              ? [[slot.selectedFileId, true] as const]
-              : [],
-          ),
-        ))
+        setConfirmationChoices(prev => {
+          const existing = prev[confirmation?.id ?? ''] ?? {}
+          const next = { ...existing }
+          let changed = false
+          for (const slot of proposal.slots) {
+            if (slot.status !== 'needs_user_choice' || !slot.selectedFileId || next[slot.slot]) continue
+            next[slot.slot] = slot.selectedFileId
+            changed = true
+          }
+          return changed && confirmation?.id
+            ? { ...prev, [confirmation.id]: next }
+            : prev
+        })
+        setSelected({})
         return
       }
       setSelected(Object.fromEntries(proposal.fileIds.map(id => [id, true])))
@@ -612,6 +620,7 @@ export default function WorkbenchPage() {
       )
     }
     const hasSlotProposal = proposal.slots.length > 0
+    const slotChoices = confirmationChoices[confirmation.id] ?? {}
     const rows: DataHubImportSelection[] = proposal.selections.length
       ? proposal.selections
       : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
@@ -625,8 +634,8 @@ export default function WorkbenchPage() {
       : []
     const userSelectedRows = hasSlotProposal
       ? proposal.slots.flatMap(slot =>
-          slot.status === 'needs_user_choice'
-            ? slot.candidates.filter(candidate => selected[candidate.fileId])
+          slot.status === 'needs_user_choice' && slotChoices[slot.slot]
+            ? slot.candidates.filter(candidate => candidate.fileId === slotChoices[slot.slot])
             : [],
         )
       : []
@@ -653,13 +662,13 @@ export default function WorkbenchPage() {
       })
     }
     function setSlotChoice(slot: DataHubImportSlotGroup, fileId: string) {
-      setSelected(prev => {
-        const next = { ...prev }
-        for (const candidate of slot.candidates) {
-          next[candidate.fileId] = candidate.fileId === fileId
-        }
-        return next
-      })
+      setConfirmationChoices(prev => ({
+        ...prev,
+        [activeConfirmation.id]: {
+          ...(prev[activeConfirmation.id] ?? {}),
+          [slot.slot]: fileId,
+        },
+      }))
     }
     function importSelected() {
       const original = activeConfirmation.payload && typeof activeConfirmation.payload === 'object'
@@ -735,7 +744,7 @@ export default function WorkbenchPage() {
                         <div className="proposal-list">
                           {slot.candidates.map(candidate => (
                             <label className="proposal-row" key={`${slot.slot}:${candidate.fileId}`}>
-                              <input type="radio" name={`data-hub-slot-${slot.slot}`} disabled={!isPending} checked={selected[candidate.fileId] === true} onChange={() => setSlotChoice(slot, candidate.fileId)} />
+                              <input type="radio" name={`data-hub-slot-${activeConfirmation.id}-${slot.slot}`} disabled={!isPending} checked={slotChoices[slot.slot] === candidate.fileId} onChange={() => setSlotChoice(slot, candidate.fileId)} />
                               <span className="slot-pill">{slot.slot}</span>
                               <div className="proposal-copy">
                                 <div className="ftitle">{candidate.name || candidate.fileId}</div>
