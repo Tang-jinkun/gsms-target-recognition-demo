@@ -5,11 +5,11 @@ import type { AgentEvent } from './repos/agentSessionsRepo'
 /** Event types the backend pushes over SSE that the workbench cares about. */
 const SSE_EVENT_TYPES = [
   'model.streaming', 'tool.started', 'tool.progress',
-  'tool.completed', 'tool.failed', 'artifact.created',
+  'tool.completed', 'tool.failed', 'tool.deferred', 'artifact.created',
   'diagnostic.created', 'session.status', 'confirmation.requested',
-  'confirmation.resolved', 'message.queued', 'message.created',
+  'confirmation.resolved', 'confirmation.consumed', 'message.queued', 'message.created',
   'session.created', 'session.checkpoint', 'run.started',
-  'run.completed', 'run.failed', 'model.responded',
+  'run.paused', 'run.completed', 'run.failed', 'model.responded',
 ] as const
 
 type UseAgentEventSourceOptions = {

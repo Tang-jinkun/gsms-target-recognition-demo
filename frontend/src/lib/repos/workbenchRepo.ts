@@ -47,6 +47,16 @@ export type WbOutput = {
   bounds?: number[] | null
 }
 
+export type DataHubImportSelection = {
+  slot: string
+  fileId: string
+  name?: string
+  confidence?: string
+  score?: number
+  reasons?: string[]
+  risks?: string[]
+}
+
 const BACKEND_TO_UI: Record<string, AssetType> = {
   raster: 'raster',
   vector: 'vector',

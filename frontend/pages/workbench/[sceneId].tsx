@@ -12,10 +12,11 @@ import MapView, { type WbLayer } from '../../src/components/workbench/MapView'
 import { toast } from '../../src/lib/toast'
 import { scenesRepo } from '../../src/lib/repos/scenesRepo'
 import { settingsRepo, type ModelCfg } from '../../src/lib/repos/settingsRepo'
-import { workbenchRepo, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
+import { workbenchRepo, type DataHubImportSelection, type WbFile, type WbModel } from '../../src/lib/repos/workbenchRepo'
 import { agentSessionsRepo, type AgentConfirmation, type AgentEvent, type AgentMessage, type AgentSession } from '../../src/lib/repos/agentSessionsRepo'
 import { useAgentEventSource } from '../../src/lib/useAgentEventSource'
-import { applyEventToBlocks, finalizeBlocks, type Turn, type TurnBlock } from '../../src/lib/activityBlocks'
+import { applyEventToBlocks, buildTurnsFromMessagesAndRuns, type RunStatus, type Turn, type TurnBlock } from '../../src/lib/activityBlocks'
+import { dataImportProposalFromPayload } from '../../src/lib/confirmationPayload'
 import { fmtBytes, type AssetType } from '../../src/lib/apiClient'
 
 type View = 'agent' | 'map' | 'split'
@@ -35,6 +36,8 @@ const TOOL_LABEL: Record<string, string> = {
   list_invest_models: '列出可用模型',
   get_invest_model_schema: '加载模型输入要求',
   list_scene_data_cards: '读取场景数据',
+  discover_data_hub_candidates: '探测 Data Hub 候选',
+  import_data_hub_files_to_scene: '导入推荐文件',
   retrieve_input_candidates: '匹配候选数据',
   retrieve_required_input_candidates: '匹配必需输入',
   check_data_relation: '校验数据关系',
@@ -85,20 +88,25 @@ const backendType = (uiType: AssetType): string => (uiType === 'vector' ? 'geojs
 const uiFromBackendAssetType = (bt?: string): AssetType => (bt === 'geojson' ? 'vector' : (bt as AssetType) || 'other')
 const escapeHtml = (s: string) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string))
 const isAgentActionEvent = (type: string) =>
-  /^(run|model|tool|state|artifact|diagnostic|loop)\./.test(type)
+  /^(run|model|tool|state|artifact|diagnostic|loop|confirmation)\./.test(type)
 
 // Events that fold into a run's activity blocks (think card timeline).
 const isStreamFoldEvent = (type: string) =>
   type === 'model.streaming' || type === 'tool.started' ||
   type === 'tool.progress' || type === 'tool.completed' ||
-  type === 'tool.failed' || type === 'artifact.created' ||
-  type === 'diagnostic.created'
+  type === 'tool.failed' || type === 'tool.deferred' ||
+  type === 'artifact.created' || type === 'diagnostic.created' ||
+  type === 'confirmation.requested' || type === 'confirmation.resolved' ||
+  type === 'confirmation.consumed' ||
+  type === 'run.paused' || type === 'run.completed' ||
+  type === 'run.failed'
 
 // Events that change session/message/confirmation state and warrant a meta refresh.
 const isMetaEvent = (type: string) =>
   type === 'session.status' || type === 'confirmation.requested' ||
   type === 'confirmation.resolved' || type === 'message.created' ||
-  type === 'message.queued' || type === 'session.checkpoint'
+  type === 'message.queued' || type === 'session.checkpoint' ||
+  type === 'run.paused'
 
 export default function WorkbenchPage() {
   const router = useRouter()
@@ -130,6 +138,7 @@ export default function WorkbenchPage() {
   const [streaming, setStreaming] = React.useState(false)
   const [agentSession, setAgentSession] = React.useState<AgentSession | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = React.useState<AgentConfirmation | null>(null)
+  const pendingConfirmationRef = React.useRef<AgentConfirmation | null>(null)
   const [agentError, setAgentError] = React.useState('')
   const [agentEvents, setAgentEvents] = React.useState<AgentEvent[]>([])
   const agentEventCursorRef = React.useRef({ sessionId: '', afterId: 0 })
@@ -181,6 +190,8 @@ export default function WorkbenchPage() {
   // by first-seen so they map onto assistant messages chronologically.
   const runBlocksRef = React.useRef<Map<string, TurnBlock[]>>(new Map())
   const runOrderRef = React.useRef<string[]>([])
+  const runStatusRef = React.useRef<Map<string, RunStatus>>(new Map())
+  const confirmationRunRef = React.useRef<Map<string, string>>(new Map())
   // Guard against overlapping refreshes: two in-flight calls would both read the
   // same event cursor and fold the same streaming deltas, duplicating text N times.
   const refreshInFlightRef = React.useRef(false)
@@ -192,52 +203,13 @@ export default function WorkbenchPage() {
   // Rebuild the visible turns from persisted messages + accumulated run blocks.
   // Pure projection over the refs; safe to call after any event fold or refresh.
   const rebuildTurns = React.useCallback(() => {
-    const messages = messagesRef.current
-    const runOrder = runOrderRef.current
-    const assistantCount = messages.filter(m => m.role === 'assistant').length
-    // A trailing run with no persisted assistant message yet is the in-flight
-    // turn — its think card is live regardless of the (possibly lagging) status
-    // flag. SSE may deliver streaming events before the session.status→running
-    // event arrives, so we derive "live" from the run/message mapping, not the
-    // flag. Only settle the *answered* runs' blocks.
-    const hasLiveRun = runOrder.length > assistantCount
-    let mapped = 0
-    for (const runId of runOrder) {
-      const isLive = hasLiveRun && mapped >= assistantCount
-      if (!isLive) {
-        const blocks = runBlocksRef.current.get(runId)
-        if (blocks) finalizeBlocks(blocks)
-      }
-      mapped++
-    }
-    // Each assistant message gets the activity blocks of the run that produced it,
-    // mapped by chronological order. The think card (activity) is kept separate
-    // from the answer (the persisted message text).
-    let assistantSeen = 0
-    const baseTurns: Turn[] = messages.map(msg => {
-      if (msg.role !== 'assistant') {
-        return { role: 'user' as const, blocks: [{ type: 'text' as const, text: msg.content, status: 'done' as const }] }
-      }
-      const runId = runOrder[assistantSeen]
-      assistantSeen++
-      const activity = (runId && runBlocksRef.current.get(runId)) || []
-      return {
-        role: 'assistant' as const,
-        blocks: [
-          ...activity.map(b => ({ ...b })),
-          { type: 'text' as const, text: msg.content, status: 'done' as const },
-        ],
-      }
-    })
-    // Push the in-flight run as a live streaming turn (think card only; the
-    // answer arrives once the assistant message is persisted).
-    if (hasLiveRun) {
-      const liveBlocks = runBlocksRef.current.get(runOrder[assistantSeen])
-      if (liveBlocks && liveBlocks.length) {
-        baseTurns.push({ role: 'assistant', blocks: liveBlocks.map(b => ({ ...b })), streaming: true })
-      }
-    }
-    setTurns(baseTurns)
+    setTurns(buildTurnsFromMessagesAndRuns({
+      messages: messagesRef.current,
+      runOrder: runOrderRef.current,
+      runBlocks: runBlocksRef.current,
+      runStatuses: runStatusRef.current,
+      pendingConfirmation: Boolean(pendingConfirmationRef.current),
+    }))
   }, [])
 
   // Fold one event into its run's activity blocks. Returns true if the event was
@@ -247,16 +219,67 @@ export default function WorkbenchPage() {
       setAgentEvents(previous => [...previous, ev].slice(-500))
     }
     if (!isStreamFoldEvent(ev.type)) return false
-    const runId = (ev.data.run_id as string) ?? 'run'
+    const confirmationId = typeof ev.data.confirmation_id === 'string' ? ev.data.confirmation_id : undefined
+    const runId =
+      (ev.data.run_id as string | undefined) ??
+      (confirmationId ? confirmationRunRef.current.get(confirmationId) : undefined) ??
+      runOrderRef.current.at(-1) ??
+      'run'
+    let blocks = runBlocksRef.current.get(runId)
+    if (!blocks) {
+      blocks = []
+      runBlocksRef.current.set(runId, blocks)
+      runOrderRef.current.push(runId)
+      runStatusRef.current.set(runId, 'active')
+    }
+    if (ev.type === 'confirmation.requested' && confirmationId) {
+      confirmationRunRef.current.set(confirmationId, runId)
+    }
+    applyEventToBlocks(blocks, ev)
+    if (ev.type === 'run.paused') runStatusRef.current.set(runId, 'paused')
+    if (ev.type === 'run.completed') runStatusRef.current.set(runId, 'completed')
+    if (ev.type === 'run.failed') runStatusRef.current.set(runId, 'failed')
+    return true
+  }, [])
+
+  const ensurePendingConfirmationBlock = React.useCallback((confirmation: AgentConfirmation | null) => {
+    if (!confirmation) return
+    if (confirmationRunRef.current.has(confirmation.id)) return
+    const runId = [...runOrderRef.current].reverse().find(id =>
+      runStatusRef.current.get(id) === 'paused' || runBlocksRef.current.get(id)?.some(block => block.type === 'tool' && block.name === confirmation.kind),
+    ) ?? runOrderRef.current.at(-1)
+    if (!runId) return
     let blocks = runBlocksRef.current.get(runId)
     if (!blocks) {
       blocks = []
       runBlocksRef.current.set(runId, blocks)
       runOrderRef.current.push(runId)
     }
-    applyEventToBlocks(blocks, ev)
-    return true
+    if (!blocks.some(block => block.type === 'confirmation' && block.id === confirmation.id)) {
+      blocks.push({
+        type: 'confirmation',
+        id: confirmation.id,
+        kind: confirmation.kind,
+        status: confirmation.status,
+        prompt: confirmation.prompt,
+        payload: confirmation.payload,
+      })
+    }
+    confirmationRunRef.current.set(confirmation.id, runId)
   }, [])
+
+  const updateConfirmationBlockStatus = React.useCallback((confirmationId: string, status: AgentConfirmation['status']) => {
+    for (const blocks of runBlocksRef.current.values()) {
+      const block = blocks.find(item => item.type === 'confirmation' && item.id === confirmationId)
+      if (block && block.type === 'confirmation') block.status = status
+    }
+  }, [])
+
+  const syncConfirmationBlockStatuses = React.useCallback((confirmations: AgentConfirmation[]) => {
+    for (const confirmation of confirmations) {
+      updateConfirmationBlockStatus(confirmation.id, confirmation.status)
+    }
+  }, [updateConfirmationBlockStatus])
 
   // Reset all per-session accumulation when switching sessions.
   const resetSessionState = React.useCallback((sessionId: string) => {
@@ -264,6 +287,8 @@ export default function WorkbenchPage() {
     setAgentEvents([])
     runBlocksRef.current = new Map()
     runOrderRef.current = []
+    runStatusRef.current = new Map()
+    confirmationRunRef.current = new Map()
     messagesRef.current = []
   }, [])
 
@@ -280,10 +305,14 @@ export default function WorkbenchPage() {
     const isRunning = current.status === 'queued' || current.status === 'running'
     setStreaming(isRunning)
     messagesRef.current = messages
-    setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
+    const pending = [...confirmations].reverse().find(item => item.status === 'pending') ?? null
+    pendingConfirmationRef.current = pending
+    setPendingConfirmation(pending)
+    ensurePendingConfirmationBlock(pending)
+    syncConfirmationBlockStatuses(confirmations)
     setAgentError(current.last_error ?? '')
     rebuildTurns()
-  }, [rebuildTurns])
+  }, [ensurePendingConfirmationBlock, rebuildTurns, syncConfirmationBlockStatuses])
 
   // Full polling refresh (fallback path when SSE is unavailable): also fetches
   // events and folds them, replicating the original single-loop behavior.
@@ -301,14 +330,18 @@ export default function WorkbenchPage() {
     const isRunning = current.status === 'queued' || current.status === 'running'
     setStreaming(isRunning)
     messagesRef.current = messages
-    setPendingConfirmation([...confirmations].reverse().find(item => item.status === 'pending') ?? null)
+    const pending = [...confirmations].reverse().find(item => item.status === 'pending') ?? null
+    pendingConfirmationRef.current = pending
+    setPendingConfirmation(pending)
+    ensurePendingConfirmationBlock(pending)
     setAgentError(current.last_error ?? '')
     if (events.length) {
       agentEventCursorRef.current.afterId = events.at(-1)!.id
       for (const ev of events) foldEvent(ev)
     }
+    syncConfirmationBlockStatuses(confirmations)
     rebuildTurns()
-  }, [resetSessionState, foldEvent, rebuildTurns])
+  }, [resetSessionState, foldEvent, ensurePendingConfirmationBlock, rebuildTurns, syncConfirmationBlockStatuses])
 
   const refreshAgentSession = React.useCallback(async (session: AgentSession) => {
     if (refreshInFlightRef.current) return
@@ -513,15 +546,107 @@ export default function WorkbenchPage() {
     }
   }
 
-  async function resolveAgentConfirmation(approved: boolean) {
-    if (!agentSession || !pendingConfirmation) return
+  async function resolveAgentConfirmation(approved: boolean, confirmationId = pendingConfirmation?.id) {
+    if (!agentSession || !confirmationId) return
     try {
-      const result = await agentSessionsRepo.resolveConfirmation(agentSession.id, pendingConfirmation.id, approved)
+      updateConfirmationBlockStatus(confirmationId, approved ? 'approved' : 'rejected')
+      rebuildTurns()
+      const result = await agentSessionsRepo.resolveConfirmation(agentSession.id, confirmationId, approved)
       setPendingConfirmation(null)
       await refreshAfterAction(result.session)
     } catch {
       setAgentError('Could not resolve the Agent confirmation.')
     }
+  }
+
+  function pendingDataHubImport() {
+    if (!pendingConfirmation) return null
+    return dataImportProposalFromPayload(pendingConfirmation.kind, pendingConfirmation.payload)
+  }
+
+  async function importPartialRecommendation(fileIds: string[], confirmationId = pendingConfirmation?.id) {
+    if (!agentSession || !confirmationId || !sceneId || fileIds.length === 0) return
+    try {
+      const result = await workbenchRepo.importFiles(sceneId, fileIds)
+      toast(`已导入 ${result.imported} 个推荐文件`)
+      await refreshSceneFiles()
+      await resolveAgentConfirmation(false, confirmationId)
+    } catch {
+      setAgentError('Could not import the selected Data Hub files.')
+    }
+  }
+
+  function AgentConfirmationCard(props: { confirmation?: AgentConfirmation | null; compact?: boolean }) {
+    const confirmation = props.confirmation ?? pendingConfirmation
+    const proposal = confirmation
+      ? dataImportProposalFromPayload(confirmation.kind, confirmation.payload)
+      : pendingDataHubImport()
+    const [selected, setSelected] = React.useState<Record<string, boolean>>({})
+    React.useEffect(() => {
+      if (!proposal) return
+      setSelected(Object.fromEntries(proposal.fileIds.map(id => [id, true])))
+    }, [confirmation?.id, proposal?.fileIds.join('|')])
+    if (!confirmation) return null
+    const isPending = confirmation.status === 'pending'
+    const statusText =
+      confirmation.status === 'pending'
+        ? '等待确认'
+        : confirmation.status === 'approved'
+          ? '已确认，正在执行'
+          : confirmation.status === 'consumed'
+            ? '已确认并执行'
+            : '已取消'
+    if (!proposal) {
+      return (
+        <div className="agent-confirm">
+          <div><b>Agent confirmation required</b><p>{confirmation.prompt}</p></div>
+          {isPending
+            ? <>
+                <button className="btn btn-sm" onClick={() => resolveAgentConfirmation(false, confirmation.id)}>Reject</button>
+                <button className="btn btn-sm btn-primary" onClick={() => resolveAgentConfirmation(true, confirmation.id)}>Approve</button>
+              </>
+            : <span className="confirm-status">{statusText}</span>}
+        </div>
+      )
+    }
+    const rows: DataHubImportSelection[] = proposal.selections.length
+      ? proposal.selections
+      : proposal.fileIds.map(fileId => ({ slot: 'input', fileId }))
+    const selectedIds = proposal.fileIds.filter(id => selected[id])
+    const allSelected = selectedIds.length === proposal.fileIds.length
+    return (
+      <div className="agent-confirm import-proposal">
+        <div className="confirm-main">
+          <b>{proposal.title ?? '推荐导入 Data Hub 文件'}</b>
+          <p>{proposal.description ?? 'Agent 找到这些文件可能适合当前模型输入。确认后只会把 Data Hub 文件引用写入当前场景，不复制文件。'}</p>
+          <div className="proposal-list">
+            {rows.map(row => (
+              <label className="proposal-row" key={`${row.slot}:${row.fileId}`}>
+                <input type="checkbox" disabled={!isPending} checked={selected[row.fileId] !== false} onChange={e => setSelected(prev => ({ ...prev, [row.fileId]: e.target.checked }))} />
+                <span className="slot-pill">{row.slot}</span>
+                <div className="proposal-copy">
+                  <div className="ftitle">{row.name || row.fileId}</div>
+                  <div className="fsub">
+                    {row.confidence || 'candidate'}{typeof row.score === 'number' ? ` · ${(row.score * 100).toFixed(0)}%` : ''}
+                  </div>
+                  {!!row.reasons?.length && <div className="reason">{row.reasons.slice(0, 2).join('；')}</div>}
+                  {!!row.risks?.length && <div className="risk">{row.risks.slice(0, 1).join('；')}</div>}
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="confirm-actions">
+          {isPending
+            ? <>
+                <button className="btn btn-sm" onClick={() => resolveAgentConfirmation(false, confirmation.id)}>{proposal.rejectLabel ?? '取消'}</button>
+                {proposal.allowPartial !== false && !allSelected && <button className="btn btn-sm" disabled={!selectedIds.length} onClick={() => importPartialRecommendation(selectedIds, confirmation.id)}>只导入所选</button>}
+                <button className="btn btn-sm btn-primary" disabled={!selectedIds.length || !allSelected} onClick={() => resolveAgentConfirmation(true, confirmation.id)}>{proposal.approveLabel ?? '全部导入'}</button>
+              </>
+            : <span className="confirm-status">{statusText}</span>}
+        </div>
+      </div>
+    )
   }
 
   function sendPrototype() {
@@ -803,6 +928,33 @@ export default function WorkbenchPage() {
                                   </div>
                                 )
                               }
+                              if (block.type === 'confirmation') {
+                                const active = pendingConfirmation?.id === block.id ? pendingConfirmation : null
+                                const confirmation: AgentConfirmation = active ?? {
+                                  id: block.id,
+                                  session_id: agentSession?.id ?? '',
+                                  kind: block.kind,
+                                  status: block.status,
+                                  prompt: block.prompt ?? '需要用户确认',
+                                  payload: block.payload ?? {},
+                                }
+                                const isPending = confirmation.status === 'pending'
+                                return (
+                                  <div className={`tl-step ${isPending ? 'run' : confirmation.status === 'rejected' ? 'pending' : 'done'}`} key={j}>
+                                    <span className="tl-dot">
+                                      {isPending
+                                        ? <Icon name="help-circle" cls="ic-sm" />
+                                        : confirmation.status === 'rejected'
+                                          ? <Icon name="x" cls="ic-sm" />
+                                          : <Icon name="check" cls="ic-sm" />}
+                                    </span>
+                                    <div className="tl-title">用户确认</div>
+                                    <div className="tl-lines">
+                                      <AgentConfirmationCard confirmation={confirmation} compact />
+                                    </div>
+                                  </div>
+                                )
+                              }
                               if (block.type === 'notice') {
                                 return (
                                   <div className={`tl-step ${block.level === 'stop' ? 'pending' : 'run'}`} key={j}>
@@ -990,13 +1142,6 @@ export default function WorkbenchPage() {
                 <div className="composer">
                   <div className="composer-inner">
                     {agentSession && <div className="meta agent-status">Agent session: {agentSession.status}</div>}
-                    {pendingConfirmation && (
-                      <div className="agent-confirm">
-                        <div><b>Agent confirmation required</b><p>{pendingConfirmation.prompt}</p></div>
-                        <button className="btn btn-sm" onClick={() => resolveAgentConfirmation(false)}>Reject</button>
-                        <button className="btn btn-sm btn-primary" onClick={() => resolveAgentConfirmation(true)}>Approve</button>
-                      </div>
-                    )}
                     {agentError && <div className="meta agent-error">{agentError}</div>}
                     {atts.length > 0 && (
                       <div className="att-strip">
@@ -1294,7 +1439,7 @@ export default function WorkbenchPage() {
         .composer-inner { max-width: 760px; margin: 0 auto; }
         .agent-status { margin-bottom: 7px; text-align: right; }
         .agent-confirm { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding: 10px 11px; border: 1px solid var(--warn); border-radius: var(--r); background: var(--warn-soft); color: var(--fg); }
-        .agent-confirm div { flex: 1; min-width: 0; font-size: 12.5px; }
+        .agent-confirm > div:first-child { flex: 1; min-width: 0; font-size: 12.5px; }
         .agent-confirm p { margin: 3px 0 0; color: var(--muted); }
         .agent-error { margin-bottom: 8px; color: var(--danger); }
         .att-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -1334,6 +1479,16 @@ export default function WorkbenchPage() {
         .ti.run { background: var(--warn-soft); color: oklch(55% 0.12 65); }
         .ti.done { background: var(--ok-soft); color: var(--ok); }
         .ti.fail { background: var(--danger-soft); color: var(--danger); }
+        .agent-confirm.import-proposal { align-items: stretch; gap: 10px; }
+        .agent-confirm.import-proposal div { font-size: 12.5px; }
+        .confirm-main { flex: 1; min-width: 0; }
+        .confirm-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+        .proposal-list { display: grid; gap: 7px; margin-top: 8px; max-height: 178px; overflow: auto; }
+        .proposal-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: flex-start; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); cursor: pointer; }
+        .slot-pill { max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--border); border-radius: 999px; padding: 2px 7px; font-size: 11px; color: var(--muted); background: var(--inset); }
+        .proposal-copy { min-width: 0; }
+        .proposal-copy .reason { margin-top: 3px; font-size: 12px; line-height: 1.35; color: var(--fg); }
+        .proposal-copy .risk { margin-top: 3px; font-size: 12px; line-height: 1.35; color: var(--warn); }
       `}</style>
     </>
   )
