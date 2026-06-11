@@ -585,14 +585,32 @@ function workflowDirective(
     ? schema.data.slots.filter(slot => slot.required && !candidateSlots.has(slot.name)).map(slot => slot.name)
     : []
   const dataAvailability = evaluateDataAvailabilityPolicy(state, definedArtifacts)
+  const pendingImportFileIds = latestPendingImportFileIds(definedArtifacts)
 
   return workflowEvidenceInstruction({
     phase,
     modelId,
     counts,
     missingRequiredSlots,
+    pendingImportFileIds,
     dataAvailabilityInstruction: dataAvailability.instruction,
   })
+}
+
+function latestPendingImportFileIds(
+  artifacts: readonly NonNullable<ReturnType<typeof normalizeArtifact>>[],
+): string[] {
+  const proposal = [...artifacts]
+    .reverse()
+    .find(artifact =>
+      (artifact.type === 'confirmation-proposal' || artifact.type === 'data-hub-import-proposal') &&
+      (!artifact.metadata?.actionTool || artifact.metadata.actionTool === 'import_data_hub_files_to_scene') &&
+      Array.isArray(artifact.metadata?.proposedFileIds) &&
+      artifact.metadata.proposedFileIds.length > 0,
+    )
+  return Array.isArray(proposal?.metadata?.proposedFileIds)
+    ? proposal.metadata.proposedFileIds.map(String)
+    : []
 }
 
 function isArtifact(value: unknown): value is {

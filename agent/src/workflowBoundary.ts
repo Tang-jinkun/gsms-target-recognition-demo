@@ -138,6 +138,12 @@ function matchingPhaseAllows(toolName: string, state: DomainState, context: Agen
   const ambiguityUnresolved =
     state.bindingStatus === 'needs_review' || state.phase === 'resolving-ambiguity'
   if (ambiguityUnresolved && BLOCKED_WHILE_AMBIGUOUS.has(toolName)) return false
+  if (
+    toolName === 'import_data_hub_files_to_scene' &&
+    context.artifacts.list().some(hasImportableProposal)
+  ) {
+    return true
+  }
   const dataAvailability = evaluateDataAvailabilityPolicy(state, context.artifacts.list())
   if (dataAvailability.requiresExternalDiscovery) {
     return dataAvailability.allowedTools.has(toolName)
@@ -176,6 +182,7 @@ function finishPassesEvidenceGate(
   const has = (type: string) => currentArtifacts.some(a => a.type === type)
   const hasSceneImportRecord = has('scene-import-record')
   const hasRefreshedSceneData = hasRefreshedArtifact(currentArtifacts, 'gsms-scene-data-cards')
+  const hasPendingImportProposal = currentArtifacts.some(hasImportableProposal)
   const unsatisfiedMutationRefresh = findUnsatisfiedMutationRefresh(currentArtifacts, tools)
   const dataAvailability = evaluateDataAvailabilityPolicy(state, currentArtifacts)
 
@@ -184,6 +191,13 @@ function finishPassesEvidenceGate(
   // evidence that the current scene is empty, not evidence that there is no
   // usable data anywhere in the project.
   if (dataAvailability.requiresExternalDiscovery) return false
+
+  // Once discovery found importable Data Hub candidates, the workflow must
+  // enter the protected import tool so the UI can request confirmation. A plain
+  // text "please confirm" answer cannot satisfy this phase.
+  if (state.phase === 'awaiting-data-import-confirmation' && hasPendingImportProposal) {
+    return false
+  }
 
   // Importing Data Hub files changes the scene data universe. The agent must
   // refresh scene facts and continue from those facts before it can finish.
@@ -256,6 +270,17 @@ function hasRefreshedArtifact(
     artifact.type === type &&
     (artifact.metadata?.refreshedAfterMutation === true || artifact.metadata?.refreshedAfterImport === true),
   )
+}
+
+function hasImportableProposal(artifact: Artifact): boolean {
+  if (artifact.type !== 'confirmation-proposal' && artifact.type !== 'data-hub-import-proposal') {
+    return false
+  }
+  if (artifact.metadata?.actionTool && artifact.metadata.actionTool !== 'import_data_hub_files_to_scene') {
+    return false
+  }
+  const proposedFileIds = artifact.metadata?.proposedFileIds
+  return Array.isArray(proposedFileIds) && proposedFileIds.length > 0
 }
 
 // ── Intent Inference ───────────────────────────────────────────────────────────

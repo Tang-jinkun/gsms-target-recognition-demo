@@ -493,6 +493,27 @@ test('workflow resume context sends empty single-model scene to Data Hub discove
   assert.match(context, /before retrieving candidates, assessing readiness, finalizing sufficiency/)
 })
 
+test('workflow resume context sends pending Data Hub proposals through import confirmation tool', () => {
+  const context = buildWorkflowResumeContext(
+    { phase: 'awaiting-data-import-confirmation', modelId: 'carbon' },
+    [
+      {
+        id: 'proposal',
+        type: 'confirmation-proposal',
+        metadata: {
+          modelId: 'carbon',
+          actionTool: 'import_data_hub_files_to_scene',
+          proposedFileIds: ['lulc-1', 'pools-1'],
+        },
+      },
+    ],
+  )
+
+  assert.match(context, /Call import_data_hub_files_to_scene/)
+  assert.match(context, /lulc-1, pools-1/)
+  assert.match(context, /permission system can ask the user/)
+})
+
 test('data availability policy is provider-aware rather than Data Hub-only', () => {
   const baseArtifacts = [
     { id: 'schema', type: 'model-input-schema', data: { modelId: 'carbon' }, metadata: { modelId: 'carbon' } },
@@ -960,6 +981,7 @@ test('phase filter blocks finish for empty single-model scene before data hub di
     stubTool('retrieve_input_candidates'),
     stubTool('assess_scene_model_readiness'),
     stubTool('finalize_sufficiency_assessment'),
+    stubTool('import_data_hub_files_to_scene'),
     stubTool('list_scene_data_cards'),
     stubTool('get_invest_model_schema'),
   ])
@@ -1024,6 +1046,43 @@ test('phase filter blocks finish for empty single-model scene before data hub di
   assert.equal(filter(finish, makeContext(emptyScene)), true)
   assert.equal(filter(retrieveRequired, makeContext(emptyScene)), true)
   assert.equal(filter(readiness, makeContext(emptyScene)), true)
+
+  const importableProposal = new ArtifactStore()
+  importableProposal.createMany([
+    {
+      type: 'model-input-schema',
+      createdBy: 'tool',
+      data: { modelId: 'carbon', displayName: 'Carbon', version: '3.19.0', slots: [] },
+      metadata: { modelId: 'carbon' },
+    },
+    {
+      type: 'gsms-scene-data-cards',
+      createdBy: 'tool',
+      data: { data_cards: [] },
+      metadata: { sceneId: 'scene-1', modelId: 'carbon' },
+    },
+    {
+      type: 'confirmation-proposal',
+      createdBy: 'tool',
+      data: {},
+      metadata: {
+        sceneId: 'scene-1',
+        modelId: 'carbon',
+        actionTool: 'import_data_hub_files_to_scene',
+        proposedFileIds: ['lulc-1', 'pools-1'],
+      },
+    },
+  ])
+  const importTool = tools.list().find(tool => tool.name === 'import_data_hub_files_to_scene')!
+  const pendingContext = {
+    ...makeContext(importableProposal),
+    domainState: new DomainStateStore({
+      modelId: 'carbon',
+      phase: 'awaiting-data-import-confirmation',
+    }),
+  } satisfies AgentContext
+  assert.equal(filter(finish, pendingContext), false)
+  assert.equal(filter(importTool, pendingContext), true)
 })
 
 test('phase filter uses mutation policy to require refreshed facts before finish', () => {

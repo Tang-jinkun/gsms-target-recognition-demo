@@ -457,7 +457,7 @@ export function createGsmsTools(client: GsmsClient): AgentTool[] {
             role: 'user',
             hidden: true,
             content: proposedFileIds.length
-              ? `Data Hub discovery found import candidates for ${parsed.modelId}. Ask the user to confirm importing these Data Hub file references before calling import_data_hub_files_to_scene. Do not claim the scene has no data.`
+              ? `Data Hub discovery found import candidates for ${parsed.modelId}. Call import_data_hub_files_to_scene now with the recommended Data Hub file references so the permission system can show the user a confirmation UI. Do not finish with a plain-text confirmation question and do not claim the scene has no data.`
               : `Data Hub discovery found no complete import recommendation. Explain missing slots or ambiguities and ask the user to narrow the search or choose candidates.`,
           }],
         }

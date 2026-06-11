@@ -33,6 +33,12 @@ export const WORKFLOW_PHASE_POLICIES: readonly WorkflowPhasePolicy[] = [
     persistAcrossRuns: true,
   },
   {
+    phase: 'awaiting-data-import-confirmation',
+    group: 'matching',
+    persistAcrossRuns: true,
+    resumeInstruction: 'A Data Hub import proposal exists. Call import_data_hub_files_to_scene with the proposed file IDs so the permission system can request user confirmation; do not finish with a plain-text confirmation question.',
+  },
+  {
     phase: 'confirmed-for-execution',
     group: 'execution',
     allowedTool: 'execute_validated_snapshot',
@@ -302,11 +308,19 @@ export interface WorkflowEvidenceInstructionInput {
   modelId: string
   counts: Readonly<Record<string, number | undefined>>
   missingRequiredSlots?: readonly string[]
+  pendingImportFileIds?: readonly string[]
   dataAvailabilityInstruction?: string
 }
 
 export function workflowEvidenceInstruction(input: WorkflowEvidenceInstructionInput): string {
   const { phase, modelId, counts } = input
+  if (phase === 'awaiting-data-import-confirmation') {
+    const fileIds = input.pendingImportFileIds ?? []
+    return fileIds.length
+      ? `Call import_data_hub_files_to_scene with fileIds ${fileIds.join(', ')} for model "${modelId}" so the permission system can ask the user to confirm importing Data Hub references. Do not finish with a plain-text confirmation question.`
+      : 'A Data Hub import proposal exists. Call import_data_hub_files_to_scene with the proposed file IDs so the permission system can request user confirmation; do not finish with a plain-text confirmation question.'
+  }
+
   const phaseInstruction = phaseResumeInstruction(phase, modelId)
   if (phaseInstruction && (phase !== 'ready-for-validation' || counts['binding-report'])) {
     return phaseInstruction

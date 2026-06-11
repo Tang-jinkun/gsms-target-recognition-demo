@@ -257,6 +257,8 @@ test('Data Hub discovery proposal includes ambiguous candidates as importable op
     (result.artifacts?.[1]?.data as { selections: Array<{ fileId: string }> }).selections[0]?.fileId,
     'lulc-current',
   )
+  assert.match(result.hiddenMessages?.[0]?.content ?? '', /Call import_data_hub_files_to_scene now/)
+  assert.match(result.hiddenMessages?.[0]?.content ?? '', /confirmation UI/)
 })
 
 test('Data Hub import tool requires proposal evidence and posts selected file IDs', async () => {
