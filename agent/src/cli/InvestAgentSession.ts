@@ -16,6 +16,7 @@ import { SkillRegistry, SkillTool } from '@gsms/skills-core'
 import { TurnIntentRouter, summarizeTurnPlan, type TurnPlan } from '../intent/TurnIntentRouter.ts'
 import { workflowRunStartTransition } from '../policies/workflowPolicy.ts'
 import { workflowPhaseFilter } from '../workflowBoundary.ts'
+import { workflowToolRegistry } from '../workflowToolGuards.ts'
 
 export interface InvestAgentSessionOptions {
   model: ModelAdapter
@@ -96,7 +97,7 @@ export class InvestAgentSession {
       .join('\n\n')
     const runtime = new AgentRuntime({
       model: this.options.model,
-      tools: this.options.tools,
+      tools: workflowToolRegistry(this.options.tools),
       skills: this.options.skills,
       workspace: this.options.workspace,
       permissions: new PermissionManager({ approve: this.options.approve }),

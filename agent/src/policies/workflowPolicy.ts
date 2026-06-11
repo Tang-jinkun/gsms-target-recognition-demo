@@ -190,6 +190,87 @@ export function workflowRunStartTransition(
   }
 }
 
+export interface WorkflowPhaseTransitionCheckInput {
+  toolName: string
+  fromPhase?: unknown
+  toPhase?: unknown
+}
+
+export interface WorkflowPhaseTransitionCheck {
+  allowed: boolean
+  reason: string
+}
+
+const WORKFLOW_TOOL_PHASE_TRANSITIONS: Record<string, readonly string[]> = {
+  get_invest_model_schema: ['discovering-data'],
+  list_scene_data_cards: ['discovering-data'],
+  discover_data_hub_candidates: ['awaiting-data-import-confirmation', 'discovering-data'],
+  import_data_hub_files_to_scene: ['discovering-data'],
+  finalize_data_matching: ['ready-for-validation', 'resolving-ambiguity'],
+  validate_binding_report: ['awaiting-user-confirmation', 'validation-failed'],
+  confirm_validation_snapshot: ['confirmed-for-execution', 'confirmation-rejected'],
+  execute_validated_snapshot: ['job-running'],
+  get_invest_job_status: ['job-running', 'job-succeeded', 'job-failed'],
+  inspect_invest_job_outputs: ['outputs-inspected'],
+  analyze_invest_results: ['results-analyzed'],
+  interpret_invest_results: ['results-ready-for-interpretation'],
+  write_invest_report: ['report-written'],
+  finalize_sufficiency_assessment: ['sufficiency-assessed'],
+}
+
+const EXECUTION_PHASE_ORDER = [
+  'confirmed-for-execution',
+  'job-running',
+  'job-failed',
+  'job-succeeded',
+  'outputs-inspected',
+  'results-analyzed',
+  'results-ready-for-interpretation',
+  'report-written',
+] as const
+
+const EXECUTION_PHASE_RANK: ReadonlyMap<string, number> = new Map(
+  EXECUTION_PHASE_ORDER.map((phase, index) => [phase, index]),
+)
+
+export function checkWorkflowPhaseTransition(
+  input: WorkflowPhaseTransitionCheckInput,
+): WorkflowPhaseTransitionCheck {
+  if (typeof input.toPhase !== 'string') {
+    return { allowed: true, reason: 'no-phase-change' }
+  }
+  const fromPhase = typeof input.fromPhase === 'string' ? input.fromPhase : 'conversation-ready'
+  const toPhase = input.toPhase
+  const allowedTargets = WORKFLOW_TOOL_PHASE_TRANSITIONS[input.toolName]
+  if (!allowedTargets) {
+    return { allowed: true, reason: 'tool-has-no-state-machine-transition-policy' }
+  }
+  if (!allowedTargets.includes(toPhase)) {
+    return {
+      allowed: false,
+      reason: `tool "${input.toolName}" cannot transition workflow phase to "${toPhase}"`,
+    }
+  }
+  if (isExecutionPhase(fromPhase) && !isExecutionPhase(toPhase)) {
+    return {
+      allowed: false,
+      reason: `tool "${input.toolName}" cannot move workflow from execution phase "${fromPhase}" back to matching phase "${toPhase}"`,
+    }
+  }
+  if (!isExecutionPhase(fromPhase) || !isExecutionPhase(toPhase) || fromPhase === toPhase) {
+    return { allowed: true, reason: 'allowed-tool-target' }
+  }
+  const fromRank = EXECUTION_PHASE_RANK.get(fromPhase)
+  const toRank = EXECUTION_PHASE_RANK.get(toPhase)
+  if (fromRank === undefined || toRank === undefined || toRank >= fromRank) {
+    return { allowed: true, reason: 'execution-phase-progresses' }
+  }
+  return {
+    allowed: false,
+    reason: `execution phase cannot move backward from "${fromPhase}" to "${toPhase}"`,
+  }
+}
+
 export interface WorkflowEvidenceInstructionInput {
   phase: string
   modelId: string

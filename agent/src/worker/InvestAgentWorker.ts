@@ -26,13 +26,17 @@ import { modelInputSchemaSchema } from '../domain/schemas.ts'
 import { TurnIntentRouter, summarizeTurnPlan } from '../intent/TurnIntentRouter.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import { evaluateDataAvailabilityPolicy } from '../policies/dataAvailabilityPolicy.ts'
-import { workflowEvidenceInstruction, workflowRunStartTransition } from '../policies/workflowPolicy.ts'
+import {
+  workflowEvidenceInstruction,
+  workflowRunStartTransition,
+} from '../policies/workflowPolicy.ts'
 import {
   AgentSessionApiClient,
   type PersistedAgentSession,
   type PersistedConfirmation,
 } from './AgentSessionApiClient.ts'
 import { workflowPhaseFilter } from '../workflowBoundary.ts'
+import { enforceWorkflowPhaseTransitions } from '../workflowToolGuards.ts'
 
 export interface InvestAgentWorkerOptions {
   gsmsUrl: string
@@ -112,9 +116,9 @@ export class InvestAgentWorker {
       ...createMatchingTools(),
       ...createReportTools(gsmsClient),
     ]
-    const domainTools: AgentTool[] = [...coreTools]
+    const domainTools: AgentTool[] = coreTools.map(enforceWorkflowPhaseTransitions)
     if (this.options.experimentalRecon) {
-      domainTools.push(createReconTool(coreTools, () => model))
+      domainTools.push(enforceWorkflowPhaseTransitions(createReconTool(coreTools, () => model)))
     }
     const directConfirmation = approvedConfirmationForDirectExecution(confirmations, domainTools)
     let approvedContinuationContext = ''

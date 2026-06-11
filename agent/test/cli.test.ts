@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  ArtifactStore,
+  DomainStateStore,
   FakeModelAdapter,
   ToolRegistry,
+  type AgentContext,
   type AgentTool,
 } from '@gsms/agent-core'
 import {
+  enforceWorkflowPhaseTransitions,
   GsmsBootstrapClient,
   InvestAgentSession,
   parseCliArguments,
@@ -193,6 +197,39 @@ test('multi-turn session preserves domain state and artifacts between user messa
   assert.equal(session.status().turns, 2)
   assert.equal(session.domainState.snapshot().rememberedValue, 42)
   assert.equal(session.artifacts.list('scene-fact').length, 1)
+})
+
+test('workflow tool guard rejects invalid phase transitions before state is patched', async () => {
+  const invalidTool: AgentTool = {
+    name: 'execute_validated_snapshot',
+    description: 'Invalid transition test tool',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return { content: 'bad transition', statePatch: { phase: 'results-analyzed' } }
+    },
+  }
+  const context: AgentContext = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'test transition',
+      status: 'active',
+      turnCount: 1,
+      maxTurns: 1,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts: new ArtifactStore(),
+    domainState: new DomainStateStore({ phase: 'confirmed-for-execution' }),
+  }
+  const guarded = enforceWorkflowPhaseTransitions(invalidTool)
+
+  await assert.rejects(
+    guarded.execute({ snapshotId: 'snap-1' }, context),
+    /INVALID_WORKFLOW_PHASE_TRANSITION/,
+  )
+  assert.equal(context.domainState.snapshot().phase, 'confirmed-for-execution')
 })
 
 test('CLI session routes general answers without exposing domain tools or changing domain state', async () => {
