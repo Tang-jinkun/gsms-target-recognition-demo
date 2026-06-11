@@ -814,6 +814,7 @@ test('workflow phase policy validates tool-owned phase transitions', () => {
       toolName: 'execute_validated_snapshot',
       fromPhase: 'confirmed-for-execution',
       toPhase: 'job-running',
+      artifactTypes: ['model-job'],
     }).allowed,
     true,
   )
@@ -821,7 +822,17 @@ test('workflow phase policy validates tool-owned phase transitions', () => {
     checkWorkflowPhaseTransition({
       toolName: 'execute_validated_snapshot',
       fromPhase: 'confirmed-for-execution',
+      toPhase: 'job-running',
+      artifactTypes: [],
+    }).allowed,
+    false,
+  )
+  assert.equal(
+    checkWorkflowPhaseTransition({
+      toolName: 'execute_validated_snapshot',
+      fromPhase: 'confirmed-for-execution',
       toPhase: 'results-analyzed',
+      artifactTypes: ['result-analysis'],
     }).allowed,
     false,
   )
@@ -830,6 +841,7 @@ test('workflow phase policy validates tool-owned phase transitions', () => {
       toolName: 'analyze_invest_results',
       fromPhase: 'results-analyzed',
       toPhase: 'outputs-inspected',
+      artifactTypes: ['job-output-inventory'],
     }).allowed,
     false,
   )
@@ -838,6 +850,7 @@ test('workflow phase policy validates tool-owned phase transitions', () => {
       toolName: 'get_invest_model_schema',
       fromPhase: 'job-running',
       toPhase: 'discovering-data',
+      artifactTypes: ['model-input-schema'],
     }).allowed,
     false,
   )

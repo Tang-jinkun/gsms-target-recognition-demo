@@ -194,6 +194,7 @@ export interface WorkflowPhaseTransitionCheckInput {
   toolName: string
   fromPhase?: unknown
   toPhase?: unknown
+  artifactTypes?: readonly string[]
 }
 
 export interface WorkflowPhaseTransitionCheck {
@@ -216,6 +217,22 @@ const WORKFLOW_TOOL_PHASE_TRANSITIONS: Record<string, readonly string[]> = {
   interpret_invest_results: ['results-ready-for-interpretation'],
   write_invest_report: ['report-written'],
   finalize_sufficiency_assessment: ['sufficiency-assessed'],
+}
+
+const WORKFLOW_PHASE_REQUIRED_ARTIFACTS: Record<string, readonly string[]> = {
+  'ready-for-validation': ['binding-report'],
+  'awaiting-user-confirmation': ['validation-report'],
+  'validation-failed': ['validation-report'],
+  'confirmed-for-execution': ['confirmation-record'],
+  'confirmation-rejected': ['confirmation-record'],
+  'job-running': ['model-job'],
+  'job-failed': ['job-status'],
+  'job-succeeded': ['job-status'],
+  'outputs-inspected': ['job-output-inventory'],
+  'results-analyzed': ['result-analysis'],
+  'results-ready-for-interpretation': ['result-interpretation-context'],
+  'report-written': ['invest-report'],
+  'sufficiency-assessed': ['sufficiency-report'],
 }
 
 const EXECUTION_PHASE_ORDER = [
@@ -249,6 +266,15 @@ export function checkWorkflowPhaseTransition(
     return {
       allowed: false,
       reason: `tool "${input.toolName}" cannot transition workflow phase to "${toPhase}"`,
+    }
+  }
+  const artifactTypes = new Set(input.artifactTypes ?? [])
+  const missingArtifacts = (WORKFLOW_PHASE_REQUIRED_ARTIFACTS[toPhase] ?? [])
+    .filter(type => !artifactTypes.has(type))
+  if (missingArtifacts.length) {
+    return {
+      allowed: false,
+      reason: `phase "${toPhase}" requires artifact(s): ${missingArtifacts.join(', ')}`,
     }
   }
   if (isExecutionPhase(fromPhase) && !isExecutionPhase(toPhase)) {

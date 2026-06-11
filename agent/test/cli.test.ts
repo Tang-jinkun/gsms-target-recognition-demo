@@ -206,7 +206,7 @@ test('workflow tool guard rejects invalid phase transitions before state is patc
     risk: 'read',
     inputSchema: { type: 'object' },
     async execute() {
-      return { content: 'bad transition', statePatch: { phase: 'results-analyzed' } }
+      return { content: 'bad transition', statePatch: { phase: 'job-running' } }
     },
   }
   const context: AgentContext = {
@@ -227,9 +227,43 @@ test('workflow tool guard rejects invalid phase transitions before state is patc
 
   await assert.rejects(
     guarded.execute({ snapshotId: 'snap-1' }, context),
-    /INVALID_WORKFLOW_PHASE_TRANSITION/,
+    /model-job/,
   )
   assert.equal(context.domainState.snapshot().phase, 'confirmed-for-execution')
+})
+
+test('workflow tool guard accepts phase transitions backed by required evidence', async () => {
+  const validTool: AgentTool = {
+    name: 'execute_validated_snapshot',
+    description: 'Valid transition test tool',
+    risk: 'read',
+    inputSchema: { type: 'object' },
+    async execute() {
+      return {
+        content: 'ok',
+        artifacts: [{ type: 'model-job', createdBy: 'tool', data: { job_id: 'job-1' } }],
+        statePatch: { phase: 'job-running' },
+      }
+    },
+  }
+  const context: AgentContext = {
+    workspace: process.cwd(),
+    goal: {
+      objective: 'test transition',
+      status: 'active',
+      turnCount: 1,
+      maxTurns: 1,
+      evidence: [],
+      remainingIssues: [],
+      startedAt: new Date().toISOString(),
+    },
+    artifacts: new ArtifactStore(),
+    domainState: new DomainStateStore({ phase: 'confirmed-for-execution' }),
+  }
+
+  const result = await enforceWorkflowPhaseTransitions(validTool).execute({ snapshotId: 'snap-1' }, context)
+
+  assert.equal(result.statePatch?.phase, 'job-running')
 })
 
 test('CLI session routes general answers without exposing domain tools or changing domain state', async () => {

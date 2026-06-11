@@ -21,10 +21,15 @@ export function enforceWorkflowPhaseTransitions(tool: AgentTool): AgentTool {
     ): Promise<AgentToolResult> {
       const fromPhase = context.domainState.snapshot().phase
       const result = await tool.execute(input, context, onProgress)
+      const artifactTypes = [
+        ...context.artifacts.list().map(artifact => artifact.type),
+        ...(result.artifacts ?? []).map(artifact => artifact.type),
+      ]
       const check = checkWorkflowPhaseTransition({
         toolName: tool.name,
         fromPhase,
         toPhase: result.statePatch?.phase,
+        artifactTypes,
       })
       if (!check.allowed) {
         throw new Error(JSON.stringify({
