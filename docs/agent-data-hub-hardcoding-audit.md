@@ -97,11 +97,13 @@
 - **位置**：`agent/src/worker/InvestAgentWorker.ts`
 - **当前行为**：`workflowDirective()` 根据 phase、artifact counts 返回硬编码自然语言。
 - **为什么需要**：降低模型续跑时重复旧阶段或走错工具的概率。
-- **问题**：新增 phase、artifact 或工具后容易漏改；自然语言 directive 和工具可见性 gate 可能不一致。
+- **进展**：2026-06-11 已完成第一步，新增 `workflowPolicy` 模块集中声明 execution phase allowed tool、waiting phases、ambiguity blocked tools 和 phase resume instruction；`workflowPhaseFilter()` 与 Worker resume directive 已共用这份 phase policy。
+- **剩余问题**：discovering-data / matching-slots 的动态 evidence directive 仍在 Worker 内部，尚未完全迁到声明式 workflow policy。
 - **建议**：引入 `workflowPolicy`：
-  - 每个 phase 声明 `requiredEvidence`、`blockedTools`、`preferredNextTools`、`resumeInstruction`。
-  - `workflowPhaseFilter` 和 `buildWorkflowResumeContext` 读取同一份 policy。
-- **优先级**：P1。
+  - 已完成每个 execution phase 的 `allowedTool` 和 `resumeInstruction`。
+  - 待继续声明 `requiredEvidence`、`blockedTools`、`preferredNextTools`。
+  - `workflowPhaseFilter` 和 `buildWorkflowResumeContext` 继续向同一份 policy 收敛。
+- **优先级**：P1，第一阶段已完成。
 
 ### 3.4 前端 Data Hub import payload 专门解析
 
@@ -158,7 +160,8 @@
 - 已把 Worker 中 `approvedConfirmationForDirectExecution` 的工具名白名单改为读取 tool policy。
 - 已把 `permissionPayloadSummary()` 改为调用工具提供的 confirmation summary。
 - 已把空场景 external discovery 判断集中到 `evaluateDataAvailabilityPolicy()`，供 directive/filter 共用。
-- 待继续把完整 `workflowDirective()` 和 `workflowPhaseFilter()` 迁到同一份 workflow policy 数据。
+- 已把 execution phase allowed tool、waiting phases、ambiguity blocked tools、phase resume instruction 集中到 `workflowPolicy`。
+- 待继续把 discovering-data / matching-slots 的动态 evidence directive 迁到同一份 workflow policy 数据。
 - 保留当前所有用户可见行为和测试。
 
 ### v2：抽象 Data Hub-first 为数据可用性策略
@@ -218,7 +221,7 @@
 | P0 | 导入后刷新事实 contract | 第一阶段已完成；剩余是固化 mutation record schema |
 | P0 | direct execution 从工具名白名单改为 policy | 第一阶段已完成；剩余是补全 resume policy |
 | P0 | empty-scene discovery gate 抽象 | 第一阶段已完成；provider registry 已落地，剩余是真实多 provider 工具和通用 discovery report 生产 |
-| P1 | workflow directive/filter 共享 policy | 避免提示和工具可见性不一致 |
+| P1 | workflow directive/filter 共享 policy | 第一阶段已完成；剩余是动态 evidence directive policy 化 |
 | P1 | confirmation payload UI contract | 第一阶段已完成；剩余是共享 schema 和组件拆分 |
 | P1 | discovery report 与 confirmation proposal 拆分 | 第二阶段已完成；剩余是 schema 共享和前端引用式消费 |
 | P2 | tool label metadata | 降低 UI label 映射维护成本 |

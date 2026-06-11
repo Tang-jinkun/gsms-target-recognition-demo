@@ -11,8 +11,11 @@ import {
   approvedConfirmationForDirectExecution,
   buildWorkflowResumeContext,
   evaluateDataAvailabilityPolicy,
+  executionPhaseAllows,
+  phaseResumeInstruction,
   workflowPhaseFilter,
   isExecutionPhase,
+  WAITING_PHASES,
 } from '../src/index.ts'
 import { ToolRegistry, type AgentContext, type AgentTool, ArtifactStore, DomainStateStore } from '@gsms/agent-core'
 import type { PersistedAgentSession } from '../src/worker/AgentSessionApiClient.ts'
@@ -790,6 +793,16 @@ test('phase filter: matching group tools gated by evidence', () => {
   assert.ok(visibleTools.includes('confirm_validation_snapshot'), 'confirmation visible (gate inside tool)')
   assert.ok(visibleTools.includes('execute_validated_snapshot'), 'execution visible (gate inside tool)')
   assert.ok(visibleTools.includes('finish'), 'finish visible when evidence exists')
+})
+
+test('workflow phase policy drives execution gate and resume instructions', () => {
+  assert.equal(WAITING_PHASES.has('ready-for-validation'), true)
+  assert.equal(executionPhaseAllows('interpret_invest_results', 'results-analyzed'), true)
+  assert.equal(executionPhaseAllows('analyze_invest_results', 'results-analyzed'), false)
+  assert.match(
+    phaseResumeInstruction('results-analyzed', 'carbon') ?? '',
+    /Call interpret_invest_results directly/,
+  )
 })
 
 test('phase filter blocks finish for empty single-model scene before data hub discovery', () => {

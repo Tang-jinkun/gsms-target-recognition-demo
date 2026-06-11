@@ -1,5 +1,13 @@
 import type { AgentContext, AgentTool, Artifact, DomainState } from '@gsms/agent-core'
 import { evaluateDataAvailabilityPolicy } from './policies/dataAvailabilityPolicy.ts'
+import {
+  BLOCKED_WHILE_AMBIGUOUS,
+  executionPhaseAllows,
+  getPhaseGroup,
+  isExecutionPhase,
+  WAITING_PHASES,
+  type PhaseGroup,
+} from './policies/workflowPolicy.ts'
 
 // ── Phase Group ────────────────────────────────────────────────────────────────
 // Phases are divided into two groups:
@@ -12,54 +20,7 @@ import { evaluateDataAvailabilityPolicy } from './policies/dataAvailabilityPolic
 //                 Phases progress in strict order dictated by real computation outputs.
 //                 No rollback to the matching group is possible once execution starts.
 
-export type PhaseGroup = 'matching' | 'execution'
-
-// Execution pipeline: each entry defines which tool is allowed at that phase.
-// The pipeline is traversed in order; any phase not listed here is 'matching'.
-// Tools in the `alwaysAllowed` set are permitted at every execution phase.
-const EXECUTION_PIPELINE: Array<{ phase: string; allowedTool: string }> = [
-  { phase: 'confirmed-for-execution', allowedTool: 'execute_validated_snapshot' },
-  { phase: 'job-running',             allowedTool: 'get_invest_job_status' },
-  { phase: 'job-failed',              allowedTool: 'get_invest_job_status' },
-  { phase: 'job-succeeded',           allowedTool: 'inspect_invest_job_outputs' },
-  { phase: 'outputs-inspected',       allowedTool: 'analyze_invest_results' },
-  { phase: 'results-analyzed',        allowedTool: 'interpret_invest_results' },
-  { phase: 'results-ready-for-interpretation', allowedTool: 'write_invest_report' },
-  { phase: 'report-written',          allowedTool: 'get_invest_job_status' },
-]
-
-const EXECUTION_PHASES = new Set(EXECUTION_PIPELINE.map(e => e.phase))
-const EXECUTION_ALLOWED_TOOLS = new Map(EXECUTION_PIPELINE.map(e => [e.phase, e.allowedTool]))
-
-// Always allowed in both matching and execution groups
-const ALWAYS_ALLOWED = new Set(['skill', 'finish', 'update_goal', 'list_invest_models'])
-
-// While a finalized binding has an unresolved ambiguity (needs_review), these
-// forward/branch tools are hidden — the only way forward is a user decision +
-// re-finalize. Hiding them stops the agent from looping validate/confirm or
-// wandering into the off-path sufficiency survey.
-const BLOCKED_WHILE_AMBIGUOUS = new Set([
-  'validate_binding_report',
-  'confirm_validation_snapshot',
-  'finalize_sufficiency_assessment',
-])
-
-// Matching phases that must persist across runs (user interaction in progress).
-// Used by InvestAgentSession and InvestAgentWorker to avoid resetting active workflows.
-export const WAITING_PHASES = new Set([
-  'awaiting-user-confirmation',
-  'validation-failed',
-  'confirmation-rejected',
-  'ready-for-validation',
-])
-
-export function getPhaseGroup(phase: string): PhaseGroup {
-  return EXECUTION_PHASES.has(phase) ? 'execution' : 'matching'
-}
-
-export function isExecutionPhase(phase: string): boolean {
-  return getPhaseGroup(phase) === 'execution'
-}
+export { getPhaseGroup, isExecutionPhase, WAITING_PHASES, type PhaseGroup }
 
 // ── Workflow Intent ────────────────────────────────────────────────────────────
 // What the user is trying to do. Inferred from artifacts + message, not just keywords.
@@ -158,13 +119,6 @@ export function workflowPhaseFilter(tools: readonly AgentTool[] = []) {
 
     return matchingPhaseAllows(tool.name, state, context)
   }
-}
-
-// ── Execution Phase Gate (hard) ────────────────────────────────────────────────
-
-function executionPhaseAllows(toolName: string, phase: string): boolean {
-  if (ALWAYS_ALLOWED.has(toolName)) return true
-  return EXECUTION_ALLOWED_TOOLS.get(phase) === toolName
 }
 
 // ── Matching Phase Gate (tool-visibility) ──────────────────────────────────────
