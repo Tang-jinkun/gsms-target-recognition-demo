@@ -14,7 +14,8 @@ import {
 } from '@gsms/agent-core'
 import { SkillRegistry, SkillTool } from '@gsms/skills-core'
 import { TurnIntentRouter, summarizeTurnPlan, type TurnPlan } from '../intent/TurnIntentRouter.ts'
-import { isExecutionPhase, WAITING_PHASES, workflowPhaseFilter } from '../workflowBoundary.ts'
+import { workflowRunStartTransition } from '../policies/workflowPolicy.ts'
+import { workflowPhaseFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentSessionOptions {
   model: ModelAdapter
@@ -66,10 +67,15 @@ export class InvestAgentSession {
       )
     }
 
-    const currentPhase = String(this.domainState.snapshot().phase ?? 'conversation-ready')
-    if (!isExecutionPhase(currentPhase) && !WAITING_PHASES.has(currentPhase)) {
-      // Preserve matchingContextId — allows "继续" / "验证刚才的绑定" to work
-      this.domainState.applyPatch({ phase: 'discovering-data' })
+    const state = this.domainState.snapshot()
+    const transition = workflowRunStartTransition({
+      phase: state.phase,
+      previousSceneId: typeof state.sceneId === 'string' ? state.sceneId : undefined,
+      currentSceneId: this.options.sceneId,
+    })
+    if (transition.statePatch) this.domainState.applyPatch(transition.statePatch)
+    for (const type of transition.staleArtifactTypes) {
+      for (const artifact of this.artifacts.list(type)) this.artifacts.delete(artifact.id)
     }
     const objective = [
       `Current GSMS scene ID: ${this.options.sceneId}`,

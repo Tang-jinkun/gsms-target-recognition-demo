@@ -26,13 +26,13 @@ import { modelInputSchemaSchema } from '../domain/schemas.ts'
 import { TurnIntentRouter, summarizeTurnPlan } from '../intent/TurnIntentRouter.ts'
 import { registerSessionControlTools } from '../cli/InvestAgentSession.ts'
 import { evaluateDataAvailabilityPolicy } from '../policies/dataAvailabilityPolicy.ts'
-import { workflowEvidenceInstruction } from '../policies/workflowPolicy.ts'
+import { workflowEvidenceInstruction, workflowRunStartTransition } from '../policies/workflowPolicy.ts'
 import {
   AgentSessionApiClient,
   type PersistedAgentSession,
   type PersistedConfirmation,
 } from './AgentSessionApiClient.ts'
-import { isExecutionPhase, WAITING_PHASES, workflowPhaseFilter } from '../workflowBoundary.ts'
+import { workflowPhaseFilter } from '../workflowBoundary.ts'
 
 export interface InvestAgentWorkerOptions {
   gsmsUrl: string
@@ -465,44 +465,15 @@ function prepareWorkflowState(
   domainState: DomainStateStore,
   artifacts: ArtifactStore,
 ): void {
-  const currentPhase = typeof session.domain_state.phase === 'string' ? session.domain_state.phase : ''
-  // Execution phases that must persist across runs:
-  //   - Active: job-running (polling), confirmed-for-execution (user confirmed, ready to run)
-  //   - Terminal: results-ready-for-interpretation, report-written (execution complete,
-  //     user may ask to write/revise the report)
-  // Earlier execution phases (job-succeeded, outputs-inspected, results-analyzed) are
-  // mid-execution and reset so the model doesn't skip steps on a fresh request.
-  const PERSISTED_EXECUTION_PHASES = new Set([
-    'job-running', 'confirmed-for-execution',
-    'results-ready-for-interpretation', 'report-written',
-  ])
-  const shouldResetPhase =
-    !WAITING_PHASES.has(currentPhase) &&
-    (!isExecutionPhase(currentPhase) || !PERSISTED_EXECUTION_PHASES.has(currentPhase))
-  if (!shouldResetPhase) return
+  const transition = workflowRunStartTransition({
+    phase: session.domain_state.phase,
+    previousSceneId: typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined,
+    currentSceneId: session.scene_id,
+  })
+  if (!transition.shouldReset) return
+  if (transition.statePatch) domainState.applyPatch(transition.statePatch)
 
-  // Preserve matchingContextId if scene hasn't changed — allows "继续" / "验证刚才的绑定" to work
-  const previousSceneId = typeof session.domain_state.sceneId === 'string' ? session.domain_state.sceneId : undefined
-  if (previousSceneId && previousSceneId !== session.scene_id) {
-    // Scene changed — full reset
-    domainState.applyPatch({ phase: 'discovering-data', matchingContextId: null, slots: null, bindingStatus: null })
-  } else {
-    // Same scene — preserve context, just reset phase for re-discovery
-    domainState.applyPatch({ phase: 'discovering-data' })
-  }
-  // Clear stale execution artifacts from previous completed run so the model
-  // does not skip execution steps when the user requests a fresh run.
-  // Matching artifacts (schema, candidates, bindings, data cards) are preserved.
-  const staleExecutionTypes = [
-    // job lifecycle
-    'model-job', 'job-status',
-    // validation & confirmation
-    'validation-report', 'confirmation-record',
-    // results & interpretation
-    'job-output-inventory', 'result-analysis', 'result-interpretation-context',
-    'invest-report', 'raster-statistics', 'job-execution-log', 'output-inventory',
-  ]
-  for (const type of staleExecutionTypes) {
+  for (const type of transition.staleArtifactTypes) {
     for (const a of artifacts.list(type)) {
       artifacts.delete(a.id)
     }

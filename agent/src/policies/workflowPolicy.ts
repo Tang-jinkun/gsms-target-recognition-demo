@@ -100,6 +100,27 @@ export const WAITING_PHASES = new Set(
     .map(policy => policy.phase),
 )
 
+export const PERSISTED_EXECUTION_PHASES = new Set([
+  'job-running',
+  'confirmed-for-execution',
+  'results-ready-for-interpretation',
+  'report-written',
+])
+
+export const STALE_EXECUTION_ARTIFACT_TYPES = [
+  'model-job',
+  'job-status',
+  'validation-report',
+  'confirmation-record',
+  'job-output-inventory',
+  'result-analysis',
+  'result-interpretation-context',
+  'invest-report',
+  'raster-statistics',
+  'job-execution-log',
+  'output-inventory',
+] as const
+
 const WORKFLOW_PHASE_POLICY_BY_PHASE = new Map(
   WORKFLOW_PHASE_POLICIES.map(policy => [policy.phase, policy]),
 )
@@ -123,6 +144,50 @@ export function executionPhaseAllows(toolName: string, phase: string): boolean {
 
 export function phaseResumeInstruction(phase: string, modelId: string): string | undefined {
   return workflowPhasePolicy(phase)?.resumeInstruction?.replaceAll('{modelId}', modelId)
+}
+
+export interface WorkflowRunStartTransitionInput {
+  phase?: unknown
+  previousSceneId?: string
+  currentSceneId?: string
+}
+
+export interface WorkflowRunStartTransition {
+  shouldReset: boolean
+  statePatch?: Record<string, unknown>
+  staleArtifactTypes: readonly string[]
+  reason: string
+}
+
+export function workflowRunStartTransition(
+  input: WorkflowRunStartTransitionInput,
+): WorkflowRunStartTransition {
+  const phase = typeof input.phase === 'string' ? input.phase : ''
+  const shouldReset =
+    !WAITING_PHASES.has(phase) &&
+    (!isExecutionPhase(phase) || !PERSISTED_EXECUTION_PHASES.has(phase))
+
+  if (!shouldReset) {
+    return {
+      shouldReset: false,
+      staleArtifactTypes: [],
+      reason: 'phase-persists-across-run-start',
+    }
+  }
+
+  const sceneChanged = Boolean(
+    input.previousSceneId &&
+    input.currentSceneId &&
+    input.previousSceneId !== input.currentSceneId,
+  )
+  return {
+    shouldReset: true,
+    statePatch: sceneChanged
+      ? { phase: 'discovering-data', matchingContextId: null, slots: null, bindingStatus: null }
+      : { phase: 'discovering-data' },
+    staleArtifactTypes: STALE_EXECUTION_ARTIFACT_TYPES,
+    reason: sceneChanged ? 'scene-changed' : 'fresh-workflow-run',
+  }
 }
 
 export interface WorkflowEvidenceInstructionInput {

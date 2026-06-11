@@ -15,6 +15,7 @@ import {
   phaseResumeInstruction,
   workflowPhaseFilter,
   workflowEvidenceInstruction,
+  workflowRunStartTransition,
   isExecutionPhase,
   WAITING_PHASES,
 } from '../src/index.ts'
@@ -803,6 +804,52 @@ test('workflow phase policy drives execution gate and resume instructions', () =
   assert.match(
     phaseResumeInstruction('results-analyzed', 'carbon') ?? '',
     /Call interpret_invest_results directly/,
+  )
+})
+
+test('workflow state machine decides run-start phase reset and stale artifact cleanup', () => {
+  assert.deepEqual(
+    workflowRunStartTransition({
+      phase: 'ready-for-validation',
+      previousSceneId: 'scene-1',
+      currentSceneId: 'scene-1',
+    }),
+    {
+      shouldReset: false,
+      staleArtifactTypes: [],
+      reason: 'phase-persists-across-run-start',
+    },
+  )
+
+  const midExecution = workflowRunStartTransition({
+    phase: 'results-analyzed',
+    previousSceneId: 'scene-1',
+    currentSceneId: 'scene-1',
+  })
+  assert.equal(midExecution.shouldReset, true)
+  assert.deepEqual(midExecution.statePatch, { phase: 'discovering-data' })
+  assert.ok(midExecution.staleArtifactTypes.includes('result-analysis'))
+
+  const sceneChanged = workflowRunStartTransition({
+    phase: 'conversation-ready',
+    previousSceneId: 'scene-1',
+    currentSceneId: 'scene-2',
+  })
+  assert.deepEqual(sceneChanged.statePatch, {
+    phase: 'discovering-data',
+    matchingContextId: null,
+    slots: null,
+    bindingStatus: null,
+  })
+  assert.equal(sceneChanged.reason, 'scene-changed')
+
+  assert.equal(
+    workflowRunStartTransition({
+      phase: 'job-running',
+      previousSceneId: 'scene-1',
+      currentSceneId: 'scene-1',
+    }).shouldReset,
+    false,
   )
 })
 
