@@ -55,6 +55,9 @@ The dedicated page is:
 /demo/target-recognition/<scene-id>
 ```
 
+The complete frontend, Agent, backend, Artifact, and map coordination flow is
+documented in [`docs/target-recognition-coordination.md`](docs/target-recognition-coordination.md).
+
 ## Sample Data
 
 `sample_data/target-recognition/` contains three fixed GeoJSON datasets derived
